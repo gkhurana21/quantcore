@@ -1,0 +1,6 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: ui-monospace, 'Cascadia Code', monospace; background: #0f172a; color: #e2e8f0; }
+h1 { font-size: 1.5rem; font-weight: 700; }
+h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.75rem; color: #94a3b8; }
+section { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.25rem; }
+input[type=range] { width: 100%; accent-color: #38bdf8; cursor: pointer; }

@@ -1,0 +1,50 @@
+# Build artifacts
+build/
+*.so
+*.a
+*.dylib
+*.o
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+.eggs/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Playwright
+test-results/
+playwright-report/
+dashboard/tests/screenshots/
+
+# Cached market data (fetched live; no need to track)
+python/cache/
+
+# Environment / secrets (belt-and-suspenders)
+.env
+.env.*
+*.pem
+*.key
+*_secret*
+*_credentials*
+*api_key*
+secrets.json
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
