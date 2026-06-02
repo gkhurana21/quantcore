@@ -6,6 +6,9 @@
 #include "quantcore/monte_carlo.hpp"
 #include "quantcore/black_scholes_batch.hpp"
 #include "quantcore/monte_carlo_mt.hpp"
+#ifdef __APPLE__
+#  include "quantcore/monte_carlo_gpu.hpp"
+#endif
 
 namespace py = pybind11;
 using namespace pybind11::literals;
@@ -174,4 +177,34 @@ PYBIND11_MODULE(quantcore, m) {
           py::arg("paths"), py::arg("seed") = 42ULL, py::arg("n_threads") = -1,
           "Multithreaded GBM MC (vvexp SIMD + std::thread). "
           "n_threads=-1 uses hardware_concurrency.");
+
+#ifdef __APPLE__
+    // ── Phase 6: Apple Metal GPU MC ──────────────────────────────────────────
+    m.def("mc_price_gpu",
+          [](int type_int, double S, double K, double r, double sigma, double T,
+             long long paths, uint64_t seed) {
+              MCResult res;
+              {
+                  py::gil_scoped_release release;  // GIL released: Metal waits internally
+                  res = mc_price_gpu(static_cast<OptionType>(type_int),
+                                     S, K, r, sigma, T, paths, seed);
+              }
+              return py::dict(
+                  "price"_a     = res.price,
+                  "std_error"_a = res.std_error,
+                  "paths"_a     = res.paths
+              );
+          },
+          py::arg("type"), py::arg("S"), py::arg("K"),
+          py::arg("r"), py::arg("sigma"), py::arg("T"),
+          py::arg("paths"), py::arg("seed") = 42ULL,
+          "Apple Metal GPU GBM MC. "
+          "RNG: Philox 4x32-10 (counter-based, one independent stream per path). "
+          "Reduction: GPU threadgroup + host double-precision. "
+          "Timing: full round-trip (param upload + dispatch + readback).");
+
+    m.def("mc_gpu_device_name",
+          []() { return mc_gpu_device_name(); },
+          "Returns the MTLDevice name, e.g. 'Apple M4 Pro'.");
+#endif
 }
