@@ -1,52 +1,95 @@
 # QuantCore
 
-A real-time options pricing engine built in five phases. Every number in the
-resume bullets is backed by a gate run documented in
-[`~/Notes/QuantCore.md`](../Notes/QuantCore.md).
+Real-time options pricing and risk engine: a C++17 Black-Scholes / Monte Carlo core with analytic Greeks, exposed to Python via pybind11, GPU-accelerated on Apple Metal, and streamed over WebSocket to a live Next.js dashboard.
 
 ## Architecture
 
 ```
-core/          C++17 pricing library — Black-Scholes, Monte Carlo, Greeks
-bindings/      pybind11 Python bindings (GIL released around C++ calls)
-python/        Benchmarks, market-data validation, VaR backtest
-server/        FastAPI + uvicorn WebSocket server
-dashboard/     Next.js 14 live dashboard + Playwright tests
-tests/         Phase 1 C++ acceptance gate (BS prices, Greeks, MC convergence)
+                    ┌──────────────────────────────┐
+                    │   Next.js dashboard           │
+                    │   (live prices, Greeks, P&L)  │
+                    └───────────────┬──────────────┘
+                                    │ WebSocket (p99 < 5 ms, localhost)
+                    ┌───────────────┴──────────────┐
+                    │   FastAPI + uvicorn server    │
+                    │   (server/ws_server.py)       │
+                    └───────────────┬──────────────┘
+                                    │ pybind11 (GIL released around C++ calls)
+        ┌───────────────────────────┴───────────────────────────┐
+        │                 C++17 pricing core (core/)             │
+        │   Black-Scholes · analytic Greeks · Monte Carlo (GBM)  │
+        ├────────────────────────────┬───────────────────────────┤
+        │  CPU: SIMD (Accelerate     │  GPU: Apple Metal          │
+        │  vForce) + 8-thread MC     │  Philox 4x32-10 PRNG,      │
+        │  3.8–4.1x vs NumPy         │  up to 69x vs NumPy        │
+        └────────────────────────────┴───────────────────────────┘
 ```
 
-## Phase summary
+The Python layer (`python/`) holds the benchmark harnesses, market-data validation, and the VaR backtest.
 
-| Phase | What it built | Gate |
-|---|---|---|
-| 1 | C++ BS + MC + analytic Greeks | BS prices vs Hull 9e; Greeks analytic-vs-FD; MC convergence |
-| 2 | pybind11 bindings | Round-trip correctness; benchmark vs NumPy |
-| 2b | SIMD (Apple Accelerate vForce) + 8-thread MC | 3.8× BS, 4.1× MC vs vectorised NumPy |
-| 3 | VaR + stress; market data validation | Per-strike IV round-trip <0.01%; VaR breach rate 4.5% vs 5% nominal |
-| 4 | WebSocket streaming layer | p99 latency 4.4 ms (localhost, 5 concurrent clients) |
-| 5 | Next.js dashboard + Playwright | 3/3 end-to-end tests; displayed prices match engine to $0.01 |
+## Benchmarks
 
-## Build
+All numbers measured on an Apple M3 MacBook Air. The baseline is **vectorized NumPy** (PCG64 generator, fully vectorized batch pricing) — not a Python for-loop, so the speedups are against a competent baseline. GPU timings include the full round trip: host parameter write, Metal command encoding, GPU dispatch, and host readback/reduction — transfer overhead is not excluded.
+
+| Workload | Paths | Speedup vs vectorized NumPy |
+|---|---:|---:|
+| Monte Carlo, Apple Metal GPU | 10,000,000 | 69x |
+| Monte Carlo, Apple Metal GPU | 1,000,000 | 23.5x |
+| Monte Carlo, CPU (8 threads + SIMD) | — | 4.1x |
+| Black-Scholes batch, CPU (Accelerate vForce SIMD) | — | 3.8x |
+
+The GPU advantage grows with path count; at small workloads (100k paths) fixed dispatch cost dominates and the CPU path is the right choice. The GPU kernel uses the Philox 4x32-10 counter-based PRNG so that every GPU thread gets a statistically independent stream — a guarantee sequential PRNGs like `mt19937` do not provide when split across threads. The kernel computes in float32; the host reduces partial sums in float64 to avoid accumulation error.
+
+**Streaming latency:** p99 under 5 ms (measured 4.4 ms) end-to-end through the FastAPI WebSocket layer — localhost loopback, 5 concurrent clients, measured by `server/latency_harness.py`.
+
+**VaR backtest:** historical 95% VaR backtested on 851 trading days of real multi-asset market data. Observed breach rate: **4.5%** against the 5% expected for a correctly calibrated 95% VaR. A breach rate near — not far below — the nominal 5% is the goal: materially higher would mean the model understates risk, materially lower would mean it overstates risk and ties up capital. 4.5% over 851 days is within sampling error of the target.
+
+Reproduce:
 
 ```bash
-# C++ core + Python bindings
+python python/benchmark_v2.py     # CPU SIMD + multithreaded MC vs NumPy
+python python/phase6_gate.py      # GPU MC at 100k / 1M / 10M paths
+python python/phase3_gate.py      # VaR backtest + market-data validation
+python server/latency_harness.py  # WebSocket p50/p95/p99 latency
+```
+
+## Quickstart
+
+Requirements: Apple Silicon Mac (Accelerate/NEON for SIMD, Metal for GPU), CMake >= 3.21, a C++17 compiler, Python 3.9+, Node.js >= 18.17.
+
+```bash
+# 1. Build the C++ core, tests, and Python bindings
+pip install pybind11 numpy scipy yfinance fastapi uvicorn websockets
 cmake -B build -DCMAKE_BUILD_TYPE=Release \
       -DPython3_EXECUTABLE=$(which python3)
 cmake --build build --parallel
 
-# Phase 1 acceptance gate
+# 2. Run the C++ acceptance gate (BS prices vs Hull, Greeks analytic-vs-FD,
+#    MC convergence)
 ./build/tests/phase1_validation
 
-# Dashboard
+# 3. Start the WebSocket server
+python server/ws_server.py
+
+# 4. Start the dashboard
 cd dashboard && npm install && npm run dev
 
-# Playwright tests (starts WS server + Next.js automatically)
+# 5. End-to-end tests (Playwright starts the server + dashboard itself)
 cd dashboard && npx playwright test
 ```
 
-## Requirements
+## Project layout
 
-- Apple Silicon Mac (ARM NEON / Accelerate used for SIMD)
-- CMake ≥ 3.21, AppleClang / Clang with C++17
-- Python 3.9+ with `pip install pybind11 numpy scipy yfinance fastapi uvicorn websockets`
-- Node.js ≥ 18.17 (for Next.js 14)
+```
+core/          C++17 pricing library — Black-Scholes, Monte Carlo, Greeks;
+               Metal GPU kernel in core/src/monte_carlo_gpu.mm
+bindings/      pybind11 bindings (GIL released around C++ compute)
+python/        Benchmarks, market-data validation, VaR backtest
+server/        FastAPI + uvicorn WebSocket server, latency harness
+dashboard/     Next.js dashboard + Playwright end-to-end tests
+tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

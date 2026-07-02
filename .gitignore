@@ -39,6 +39,9 @@ python/cache/
 *api_key*
 secrets.json
 
+# Obsidian / local notes
+.obsidian/
+
 # macOS
 .DS_Store
 .AppleDouble
