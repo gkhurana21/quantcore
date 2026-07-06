@@ -1,6 +1,10 @@
 # QuantCore
 
+### ▶ [**Live Demo**](https://quantcore-gk.netlify.app) &nbsp;·&nbsp; [Portfolio](https://gaurangkhurana.ca)
+
 Real-time options pricing and risk engine: a C++17 Black-Scholes / Monte Carlo core with analytic Greeks, exposed to Python via pybind11, GPU-accelerated on Apple Metal, and streamed over WebSocket to a live Next.js dashboard.
+
+> **[▶ Try the live demo](https://quantcore-gk.netlify.app)** — interactive scenario dashboard (Black-Scholes priced in-browser; the native GPU/Monte-Carlo engine runs locally).
 
 ## Architecture
 
