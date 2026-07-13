@@ -94,6 +94,40 @@ input[type=range]::-moz-range-thumb {
 .preset:active { transform: translateY(1px); }
 .preset[aria-pressed="true"] { background: rgba(201,168,106,0.20); border-color: var(--line-strong); color: var(--gold-bright); }
 
+/* ── leg builder ─────────────────────────────────────────────────── */
+.leg-row {
+  display: flex; align-items: center; gap: .45rem; flex-wrap: wrap;
+  padding: .45rem .5rem; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.leg-input {
+  font-family: var(--mono); font-size: .8rem; color: var(--ink-bright);
+  background: rgba(255,255,255,0.03); border: 1px solid var(--line);
+  border-radius: 7px; padding: 4px 6px; width: 4.6em;
+}
+.leg-input:focus { border-color: var(--line-strong); outline: none; }
+.leg-lbl { font-size: .66rem; color: var(--muted-2); display: inline-flex; align-items: center; gap: .25rem; }
+.kind-btn {
+  font: inherit; font-family: var(--mono); font-size: .66rem; font-weight: 700;
+  letter-spacing: .06em; cursor: pointer; padding: 4px 8px; border-radius: 7px;
+  border: 1px solid; background: transparent; transition: .15s;
+}
+.kind-btn.call { color: var(--green); border-color: rgba(99,216,145,0.4); }
+.kind-btn.put  { color: var(--red);   border-color: rgba(244,122,128,0.4); }
+.kind-btn:hover { background: rgba(255,255,255,0.05); }
+.x-btn {
+  font: inherit; font-size: .9rem; line-height: 1; cursor: pointer;
+  color: var(--muted-2); background: none; border: none; padding: 2px 6px;
+  border-radius: 6px; margin-left: auto; transition: .15s;
+}
+.x-btn:hover { color: var(--red); background: rgba(244,122,128,0.1); }
+.dropzone {
+  border: 1px dashed var(--line-strong); border-radius: 11px;
+  padding: .65rem .8rem; text-align: center;
+  color: var(--muted-2); font-size: .7rem; cursor: pointer; transition: .15s;
+}
+.dropzone:hover, .dropzone.drag { background: rgba(201,168,106,0.07); color: var(--gold-bright); }
+
 /* ── value flash on change ───────────────────────────────────────── */
 @keyframes flash {
   0%   { color: var(--gold-bright); text-shadow: 0 0 14px rgba(201,168,106,0.6); }
@@ -113,14 +147,21 @@ input[type=range]::-moz-range-thumb {
 @keyframes dotPulse { 0%,100% { opacity: .38; } 50% { opacity: .08; } }
 .dot-ring { animation: dotPulse 2.2s ease-in-out infinite; }
 
-/* ── staggered entrance (opacity-only; safe for position:sticky) ──── */
+/* ── Monte Carlo path animation ──────────────────────────────────── */
+@keyframes mcDraw { to { stroke-dashoffset: 0; } }
+.mc-path {
+  stroke-dasharray: 1500; stroke-dashoffset: 1500;
+  animation: mcDraw 1.05s ease-out forwards;
+}
+@keyframes barGrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.mc-bar { transform-origin: bottom; animation: barGrow .5s ease-out backwards; }
+
+/* ── page entrance ──────────────────────────────────────────────────
+   No fill-mode and no per-element delay: the resting state is fully
+   visible, so content can never be stuck at opacity 0 if animations
+   are paused (background tabs, tab restore, print). */
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-main > * { animation: fadeIn .45s ease both; }
-main > *:nth-child(2) { animation-delay: .04s; }
-main > *:nth-child(3) { animation-delay: .09s; }
-main > *:nth-child(4) { animation-delay: .14s; }
-main > *:nth-child(5) { animation-delay: .19s; }
-main > *:nth-child(6) { animation-delay: .24s; }
+main { animation: fadeIn .4s ease; }
 
 /* ── reduced motion ──────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {

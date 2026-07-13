@@ -4,7 +4,7 @@
 
 Real-time options pricing and risk engine: a C++17 Black-Scholes / Monte Carlo core with analytic Greeks, exposed to Python via pybind11, GPU-accelerated on Apple Metal, and streamed over WebSocket to a live Next.js dashboard.
 
-> **[▶ Try the live demo](https://quantcore-gk.netlify.app)** — interactive scenario dashboard (Black-Scholes priced in-browser; the native GPU/Monte-Carlo engine runs locally).
+> **[▶ Try the live demo](https://quantcore-gk.netlify.app)** — pick an underlying (SPY/AAPL/NVDA/TSLA/QQQ), build multi-leg strategies (straddles, spreads, iron condors) or upload a CSV portfolio, and watch the P&L diagram, Greeks, and risk surface re-price live. Black-Scholes runs in-browser; the native GPU/Monte-Carlo engine runs locally.
 
 ## Architecture
 
