@@ -1,0 +1,19 @@
+# Netlify build configuration for the QuantCore dashboard.
+# The site source lives in dashboard/ (Next.js 14 static export → dashboard/out).
+# With this file committed, a connected Netlify site auto-builds correctly on
+# every push to the default branch — no manual build-settings needed.
+
+[build]
+  base    = "dashboard"
+  command = "npm run build"
+  publish = "out"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Static export already emits 404.html; no SPA rewrite needed (single route).
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy        = "strict-origin-when-cross-origin"
