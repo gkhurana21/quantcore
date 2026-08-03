@@ -167,3 +167,14 @@ main { animation: fadeIn .4s ease; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
+
+/* ── responsive safety ──────────────────────────────────────────────
+   Grid/flex items default to min-width:auto, so a wide child (chart,
+   table, pill row) forces the whole track past the viewport. Clamping
+   to 0 lets each panel shrink and scroll its own overflow instead. */
+.qc-grid > *,
+.lab-grid > *,
+.qc-grid > * > *,
+.lab-grid > * > *,
+main section { min-width: 0; }
+main section > * { max-width: 100%; }
