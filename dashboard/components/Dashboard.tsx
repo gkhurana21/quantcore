@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { fetchQuote, fetchExpirations } from '../lib/marketData';
 
 // ── constants ──────────────────────────────────────────────────────────────
 
@@ -34,6 +35,17 @@ const INSTRUMENTS: Inst[] = [
   { sym: 'TSLA', name: 'Tesla',          spot: 251.80, vol: 0.450, min: 222, max: 282, step: 0.5,  kstep: 5   },
   { sym: 'QQQ',  name: 'Nasdaq-100 ETF', spot: 515.20, vol: 0.165, min: 455, max: 575, step: 0.5,  kstep: 5   },
 ];
+
+// Builds an Inst for a live-quoted ticker: slider/chart ranges scale with
+// spot, strike/step granularity follows price magnitude.
+function mkLiveInst(sym: string, name: string, spot: number, vol: number): Inst {
+  const kstep = spot >= 200 ? 5 : spot >= 100 ? 2.5 : spot >= 40 ? 1 : spot >= 10 ? 0.5 : 0.25;
+  const step  = spot >= 400 ? 0.5 : spot >= 100 ? 0.25 : spot >= 20 ? 0.1 : 0.01;
+  const r = (v: number) => Math.round(v * 100) / 100;
+  return { sym, name, spot, vol, min: r(spot * 0.873), max: r(spot * 1.137), step, kstep };
+}
+
+const TICKER_RE = /^[A-Z][A-Z0-9.\-]{0,9}$/;
 
 // Market scenario presets: multipliers on the instrument's base spot / vol.
 const SCENARIOS = [
@@ -613,7 +625,10 @@ function McHistChart({ viz, animKey }: { viz: LabViz; animKey: string }) {
 export default function Dashboard() {
   const spyInst = INSTRUMENTS[0];
   const [instKey, setInstKey] = useState('SPY');
-  const inst = INSTRUMENTS.find(i => i.sym === instKey)!;
+  // Live-quoted instruments (presets refreshed from the proxy + user-searched
+  // tickers) take precedence over the hardcoded snapshot presets.
+  const [liveInsts, setLiveInsts] = useState<Record<string, Inst>>({});
+  const inst = liveInsts[instKey] ?? INSTRUMENTS.find(i => i.sym === instKey)!;
 
   const [status,  setStatus]  = useState<'connecting' | 'connected' | 'demo'>('connecting');
   const [snap,    setSnap]    = useState<Snapshot | null>(null);
@@ -631,12 +646,22 @@ export default function Dashboard() {
   const [mcTick,  setMcTick]  = useState(0);
   const [lab,     setLab]     = useState<LabResult | null>(null);
 
+  // live market data via the Go proxy (falls back to indicative snapshots)
+  const [dataMode,  setDataMode]  = useState<'checking' | 'live' | 'snapshot'>('checking');
+  const [tickerQ,   setTickerQ]   = useState('');
+  const [tickerMsg, setTickerMsg] = useState('');
+  const [expiries,  setExpiries]  = useState<string[]>([]);
+  const [expiry,    setExpiry]    = useState('');
+
   const wsRef    = useRef<WebSocket | null>(null);
   const demoRef  = useRef(false);
   const localRef = useRef(false);          // true → price in-browser even if WS is up
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileRef  = useRef<HTMLInputElement | null>(null);
-  const legsRef  = useRef(legs); legsRef.current = legs;
+  const legsRef  = useRef(legs);  legsRef.current  = legs;
+  const stratRef = useRef(strat); stratRef.current = strat;
+  const sigmaRef = useRef(sigma); sigmaRef.current = sigma;
+  const rateRef  = useRef(rate);  rateRef.current  = rate;
 
   // ── local portfolio pricing ───────────────────────────────────────────────
 
@@ -730,6 +755,36 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [legs, instKey]);
 
+  // ── live quote for the selected instrument (proxy → snapshot fallback) ────
+  useEffect(() => {
+    let stale = false;
+    setDataMode('checking');
+    fetchQuote(instKey).then(q => {
+      if (stale || !isFinite(q.last) || q.last <= 0) return;
+      const preset = INSTRUMENTS.find(i => i.sym === instKey);
+      const ni = mkLiveInst(instKey, preset?.name ?? instKey, q.last, preset?.vol ?? 0.30);
+      setLiveInsts(m => ({ ...m, [instKey]: ni }));
+      setDataMode('live');
+      setSpot(q.last);
+      // Re-centre template strategies on the live spot; never touch custom legs.
+      if (stratRef.current) {
+        setLegs(strategyLegs(stratRef.current, ni, q.last, sigmaRef.current, rateRef.current));
+      }
+    }).catch(() => { if (!stale) setDataMode('snapshot'); });
+    return () => { stale = true; };
+  }, [instKey]);
+
+  // ── real expiration dates for the selected instrument ─────────────────────
+  useEffect(() => {
+    setExpiries([]); setExpiry('');
+    if (dataMode !== 'live') return;
+    let stale = false;
+    fetchExpirations(instKey)
+      .then(e => { if (!stale) setExpiries(e.expirations.slice(0, 16)); })
+      .catch(() => { /* expiry picker simply stays hidden */ });
+    return () => { stale = true; };
+  }, [dataMode, instKey]);
+
   // ── pricing-models lab (debounced; BS vs Binomial vs seeded MC) ───────────
   useEffect(() => {
     const id = setTimeout(() => {
@@ -783,10 +838,41 @@ export default function Dashboard() {
 
   // ── instrument / strategy / legs actions ──────────────────────────────────
   const pickInstrument = (sym: string) => {
-    const ni = INSTRUMENTS.find(i => i.sym === sym)!;
+    const ni = liveInsts[sym] ?? INSTRUMENTS.find(i => i.sym === sym)!;
     setInstKey(sym); setScen('Reset'); setStrat('Long Call'); setCsvMsg('');
     setSpot(ni.spot); setSigma(ni.vol);
     setLegs(defaultLegs(ni, ni.spot, ni.vol, rate));
+  };
+
+  // ── any-ticker search via the live proxy ──────────────────────────────────
+  const searchTicker = async () => {
+    const sym = tickerQ.trim().toUpperCase();
+    if (!TICKER_RE.test(sym)) { setTickerMsg('✗ enter a ticker, e.g. AMD'); return; }
+    setTickerMsg(`… looking up ${sym}`);
+    try {
+      const q = await fetchQuote(sym);
+      if (!isFinite(q.last) || q.last <= 0) throw new Error('no price');
+      const ni = mkLiveInst(sym, sym, q.last, 0.30);
+      setLiveInsts(m => ({ ...m, [sym]: ni }));
+      setTickerMsg(''); setTickerQ('');
+      setInstKey(sym); setScen('Reset'); setStrat('Long Call'); setCsvMsg('');
+      setSpot(q.last); setSigma(ni.vol);
+      setLegs(defaultLegs(ni, q.last, ni.vol, rate));
+    } catch {
+      setTickerMsg(`✗ no live quote for ${sym} — unknown symbol or data proxy offline`);
+    }
+  };
+
+  // Apply a real expiration date to every leg.
+  const applyExpiry = (dateStr: string) => {
+    setExpiry(dateStr);
+    if (!dateStr) return;
+    const days = Math.max(1, Math.round(
+      (Date.parse(`${dateStr}T21:00:00Z`) - Date.now()) / 86_400_000));
+    setLegs(ls => ls.map(l => ({
+      ...l, T: days / 365,
+      entry: bs(spot, l.K, rate, sigma, days / 365, l.call).price,
+    })));
   };
 
   const pickStrategy = (name: string) => {
@@ -796,6 +882,7 @@ export default function Dashboard() {
 
   const editLeg = (id: string, patch: Partial<Pick<Leg, 'call' | 'K' | 'qty'>> & { days?: number }) => {
     setStrat(''); setCsvMsg('');
+    if (patch.days != null) setExpiry('');   // manual days override the picked expiry
     setLegs(ls => ls.map(l => {
       if (l.id !== id) return l;
       const call = patch.call ?? l.call;
@@ -932,6 +1019,19 @@ export default function Dashboard() {
                          background: statusColor, boxShadow: `0 0 8px ${statusColor}` }} />
             {statusText}
           </span>
+          <span data-testid="data-status" role="status"
+                title={dataMode === 'live'
+                  ? 'Live quotes via Alpaca (IEX / indicative feed) — for education and analysis, not execution'
+                  : 'Indicative snapshot prices — live data proxy unreachable'}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '.4rem',
+                         padding: '4px 11px', borderRadius: 999, fontSize: '.72rem',
+                         fontWeight: 600,
+                         color: dataMode === 'live' ? 'var(--green)' : 'var(--muted-2)',
+                         background: 'rgba(255,255,255,0.03)', border: '1px solid var(--line-strong)' }}>
+            <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: '50%',
+                         background: dataMode === 'live' ? 'var(--green)' : 'var(--muted-2)' }} />
+            {dataMode === 'live' ? 'Live data' : dataMode === 'checking' ? 'Data…' : 'Snapshots'}
+          </span>
           <nav style={{ marginLeft: 'auto', display: 'flex', gap: '1.1rem', fontSize: '.82rem' }}>
             <a href="https://github.com/gkhurana21/quantcore" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
             <a href="https://gaurangkhurana.ca" target="_blank" rel="noopener noreferrer">Portfolio ↗</a>
@@ -944,10 +1044,16 @@ export default function Dashboard() {
         {status === 'demo' && (
           <p style={{ marginTop: '.55rem', fontSize: '.78rem', color: 'var(--muted-2)' }}>
             Hosted demo — everything is priced live in your browser with the same math as the C++
-            engine, including a real seeded Monte Carlo. Market data are indicative snapshots; the
-            native GPU backend runs locally.
+            engine, including a real seeded Monte Carlo. The native GPU backend runs locally.
           </p>
         )}
+        <p style={{ marginTop: '.45rem', fontSize: '.78rem', color: 'var(--muted-2)' }}>
+          {dataMode === 'live'
+            ? 'Market data: live via Alpaca (IEX stocks / indicative options) — for education and analysis, not execution.'
+            : dataMode === 'snapshot'
+            ? 'Market data: indicative snapshots — the live data feed is unreachable, so prices are illustrative.'
+            : 'Market data: connecting to live feed…'}
+        </p>
       </header>
 
       {/* ── benchmark strip ─────────────────────────────────────────────── */}
@@ -991,10 +1097,33 @@ export default function Dashboard() {
               {INSTRUMENTS.map(i => (
                 <button key={i.sym} className="preset" type="button"
                         aria-pressed={instKey === i.sym}
-                        title={`${i.name} — indicative snapshot`}
+                        title={liveInsts[i.sym] ? `${i.name} — live quote` : `${i.name} — indicative snapshot`}
                         onClick={() => pickInstrument(i.sym)}>{i.sym}</button>
               ))}
+              {Object.keys(liveInsts)
+                .filter(s => !INSTRUMENTS.some(i => i.sym === s))
+                .map(s => (
+                  <button key={s} className="preset" type="button"
+                          aria-pressed={instKey === s}
+                          title={`${s} — live quote`}
+                          onClick={() => pickInstrument(s)}>{s}</button>
+                ))}
             </div>
+
+            {/* any-ticker search (live proxy) */}
+            <form style={{ display: 'flex', gap: '.4rem', alignItems: 'center', margin: '.55rem 0 .1rem' }}
+                  onSubmit={e => { e.preventDefault(); searchTicker(); }}>
+              <input className="leg-input" type="text" value={tickerQ}
+                     placeholder="any ticker… e.g. AMD"
+                     aria-label="Search any US-listed ticker"
+                     maxLength={10} style={{ width: '11em' }}
+                     onChange={e => { setTickerQ(e.target.value); setTickerMsg(''); }} />
+              <button type="submit" className="preset" aria-pressed={false}>Load</button>
+            </form>
+            {tickerMsg && (
+              <p role="status" style={{ margin: '.3rem 0 0', fontSize: '.7rem',
+                    color: tickerMsg.startsWith('…') ? 'var(--muted)' : 'var(--red)' }}>{tickerMsg}</p>
+            )}
 
             {/* scenario presets */}
             <div role="group" aria-label="Market scenarios"
@@ -1057,6 +1186,21 @@ export default function Dashboard() {
                         onClick={() => pickStrategy(n)}>{n}</button>
               ))}
             </div>
+
+            {/* real expiration dates (live proxy) */}
+            {expiries.length > 0 && (
+              <label style={{ display: 'flex', gap: '.5rem', alignItems: 'center',
+                              margin: '0 0 .8rem', fontSize: '.75rem', color: 'var(--muted)' }}>
+                Expiry
+                <select className="leg-input" value={expiry} aria-label="Real expiration date"
+                        style={{ width: 'auto', padding: '2px 6px' }}
+                        onChange={e => applyExpiry(e.target.value)}>
+                  <option value="">custom days</option>
+                  {expiries.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <span style={{ fontSize: '.66rem', color: 'var(--muted-2)' }}>applies to all legs</span>
+              </label>
+            )}
 
             <div style={{ display: 'grid', gap: '.45rem' }}>
               {legs.map(l => (
