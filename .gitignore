@@ -32,6 +32,8 @@ python/cache/
 # Environment / secrets (belt-and-suspenders)
 .env
 .env.*
+!.env.template
+!*.example
 *.pem
 *.key
 *_secret*

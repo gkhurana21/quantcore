@@ -199,7 +199,22 @@ func (a *alpacaClient) Quote(symbol string) (*Quote, error) {
 
 // contracts pages through the trading API's option contracts endpoint,
 // optionally filtered to one expiration.
+// contractFilter narrows the contracts query. Alpaca defaults
+// expiration_date_lte to "the next weekend", so without an explicit upper
+// bound you only ever see this week's expiries — set expLTE to look further out.
+type contractFilter struct {
+	expiration string // exact date; when set, the range fields are ignored
+	expGTE     string
+	expLTE     string
+	strikeGTE  float64
+	strikeLTE  float64
+}
+
 func (a *alpacaClient) contracts(symbol, expiration string) ([]awContract, error) {
+	return a.contractsFiltered(symbol, contractFilter{expiration: expiration})
+}
+
+func (a *alpacaClient) contractsFiltered(symbol string, f contractFilter) ([]awContract, error) {
 	var out []awContract
 	pageToken := ""
 	for page := 0; page < maxPages; page++ {
@@ -208,8 +223,21 @@ func (a *alpacaClient) contracts(symbol, expiration string) ([]awContract, error
 			"status":             {"active"},
 			"limit":              {"10000"},
 		}
-		if expiration != "" {
-			params.Set("expiration_date", expiration)
+		if f.expiration != "" {
+			params.Set("expiration_date", f.expiration)
+		} else {
+			if f.expGTE != "" {
+				params.Set("expiration_date_gte", f.expGTE)
+			}
+			if f.expLTE != "" {
+				params.Set("expiration_date_lte", f.expLTE)
+			}
+		}
+		if f.strikeGTE > 0 {
+			params.Set("strike_price_gte", strconv.FormatFloat(f.strikeGTE, 'f', -1, 64))
+		}
+		if f.strikeLTE > 0 {
+			params.Set("strike_price_lte", strconv.FormatFloat(f.strikeLTE, 'f', -1, 64))
 		}
 		if pageToken != "" {
 			params.Set("page_token", pageToken)
@@ -235,9 +263,30 @@ func (a *alpacaClient) contracts(symbol, expiration string) ([]awContract, error
 }
 
 func (a *alpacaClient) Expirations(symbol string) (*Expirations, error) {
-	contracts, err := a.contracts(symbol, "")
+	// Deriving dates by pulling every contract is O(100k) for a name like SPY
+	// and blows past the page cap. Instead: bound the date range explicitly
+	// (Alpaca otherwise stops at this weekend) and keep only strikes near spot,
+	// which still surfaces every expiry at a fraction of the rows.
+	f := contractFilter{
+		expGTE: time.Now().UTC().Format("2006-01-02"),
+		expLTE: time.Now().UTC().AddDate(2, 0, 0).Format("2006-01-02"),
+	}
+	if q, qerr := a.Quote(symbol); qerr == nil && q.Last > 0 {
+		f.strikeGTE = q.Last * 0.95
+		f.strikeLTE = q.Last * 1.05
+	}
+
+	contracts, err := a.contractsFiltered(symbol, f)
 	if err != nil {
 		return nil, err
+	}
+	if len(contracts) == 0 && (f.strikeGTE > 0 || f.strikeLTE > 0) {
+		// Illiquid or unusually-priced underlying: retry without the strike band.
+		f.strikeGTE, f.strikeLTE = 0, 0
+		contracts, err = a.contractsFiltered(symbol, f)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(contracts) == 0 {
 		return nil, &upstreamError{status: http.StatusNotFound, msg: "no options for: " + symbol}
