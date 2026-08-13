@@ -1,0 +1,29 @@
+# Deploy:  fly launch --no-deploy   (first time, creates the app)
+#          fly secrets set ALPACA_API_KEY_ID=... ALPACA_API_SECRET_KEY=...
+#          fly deploy
+app = "quantcore-proxy"
+primary_region = "yyz"           # Toronto — closest to the users
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"    # scales to zero between visits (free tier)
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "8s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "4s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"               # in-memory symbol universe is ~2MB
+
+[env]
+  # Locked to the sites that may call this. Anything else is refused by CORS.
+  ALLOWED_ORIGINS = "https://gaurangkhurana.ca,https://www.gaurangkhurana.ca,https://quantcore-gk.netlify.app"

@@ -57,6 +57,7 @@ func main() {
 	mux.HandleFunc("GET /v1/quote", s.handleQuote)
 	mux.HandleFunc("GET /v1/expirations", s.handleExpirations)
 	mux.HandleFunc("GET /v1/chain", s.handleChain)
+	mux.HandleFunc("GET /v1/search", s.handleSearch)
 
 	log.Printf("quantcore proxy listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, s.cors(mux)))
