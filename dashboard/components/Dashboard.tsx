@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { fetchQuote, fetchExpirations } from '../lib/marketData';
+import { fetchQuote, fetchExpirations, fetchChain } from '../lib/marketData';
+import type { LiveChainOption } from '../lib/marketData';
 
 // ── constants ──────────────────────────────────────────────────────────────
 
@@ -652,6 +653,9 @@ export default function Dashboard() {
   const [tickerMsg, setTickerMsg] = useState('');
   const [expiries,  setExpiries]  = useState<string[]>([]);
   const [expiry,    setExpiry]    = useState('');
+  const [chain,     setChain]     = useState<LiveChainOption[]>([]);
+  const [chainMsg,  setChainMsg]  = useState('');
+  const [atmIV,     setAtmIV]     = useState(0);
 
   const wsRef    = useRef<WebSocket | null>(null);
   const demoRef  = useRef(false);
@@ -776,7 +780,7 @@ export default function Dashboard() {
 
   // ── real expiration dates for the selected instrument ─────────────────────
   useEffect(() => {
-    setExpiries([]); setExpiry('');
+    setExpiries([]); setExpiry(''); setChain([]); setChainMsg(''); setAtmIV(0);
     if (dataMode !== 'live') return;
     let stale = false;
     fetchExpirations(instKey)
@@ -863,9 +867,31 @@ export default function Dashboard() {
     }
   };
 
+  // A quoted IV is only meaningful when it sits in a plausible range around the
+  // market's own ATM level. Deep ITM contracts have negligible time value, so a
+  // cent of quote noise implies absurd vol (SPY shows 90%+ against a 10% ATM).
+  // Those are surfaced as unquoted rather than presented as market data.
+  const usableIV = (iv?: number) => {
+    if (!iv || iv <= 0) return false;
+    if (!atmIV) return true;
+    return iv <= atmIV * 2.5 && iv >= atmIV * 0.25;
+  };
+
+  // Strikes of one type from the loaded chain, ascending and deduped.
+  // Contracts without market IV stay in the list but render disabled.
+  const strikesFor = (call: boolean) => {
+    const want = call ? 'call' : 'put';
+    const seen = new Set<number>();
+    return chain
+      .filter(o => o.type === want)
+      .filter(o => (seen.has(o.strike) ? false : (seen.add(o.strike), true)))
+      .sort((a, b) => a.strike - b.strike);
+  };
+
   // Apply a real expiration date to every leg.
   const applyExpiry = (dateStr: string) => {
     setExpiry(dateStr);
+    setChain([]); setChainMsg(''); setAtmIV(0);
     if (!dateStr) return;
     const days = Math.max(1, Math.round(
       (Date.parse(`${dateStr}T21:00:00Z`) - Date.now()) / 86_400_000));
@@ -873,6 +899,29 @@ export default function Dashboard() {
       ...l, T: days / 365,
       entry: bs(spot, l.K, rate, sigma, days / 365, l.call).price,
     })));
+
+    // Real strikes for this expiry. The indicative feed omits IV/Greeks on
+    // deep-OTM contracts, so those strikes render disabled rather than absent.
+    setChainMsg('loading chain…');
+    fetchChain(instKey, dateStr)
+      .then(c => {
+        setChain(c.options);
+        const withIv = c.options.filter(o => o.iv && o.iv > 0);
+        const ref = withIv.filter(o => o.type === 'call')
+          .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))[0]?.iv ?? 0;
+        const quoted = ref
+          ? withIv.filter(o => o.iv! <= ref * 2.5 && o.iv! >= ref * 0.25)
+          : withIv;
+        setChainMsg(quoted.length
+          ? `${c.options.length} strikes · ${quoted.length} with market IV · ${c.feed}`
+          : `${c.options.length} strikes · no market IV on this expiry`);
+        // anchor vol to the market ATM implied vol so pricing matches the market
+        const atm = quoted
+          .filter(o => o.type === 'call')
+          .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot))[0];
+        if (atm?.iv) { setAtmIV(atm.iv); setSigma(Math.min(2, Math.max(0.01, atm.iv))); }
+      })
+      .catch(() => { setChain([]); setAtmIV(0); setChainMsg('chain unavailable — using model strikes'); });
   };
 
   const pickStrategy = (name: string) => {
@@ -1198,7 +1247,9 @@ export default function Dashboard() {
                   <option value="">custom days</option>
                   {expiries.map(d => <option key={d} value={d}>{d}</option>)}
                 </select>
-                <span style={{ fontSize: '.66rem', color: 'var(--muted-2)' }}>applies to all legs</span>
+                <span style={{ fontSize: '.66rem', color: 'var(--muted-2)' }}>
+                  {chainMsg || 'applies to all legs'}
+                </span>
               </label>
             )}
 
@@ -1211,9 +1262,29 @@ export default function Dashboard() {
                     {l.call ? 'CALL' : 'PUT'}
                   </button>
                   <span className="leg-lbl">K
-                    <input className="leg-input" type="number" value={l.K}
-                           min={1} step={inst.kstep} aria-label="Strike"
-                           onChange={e => editLeg(l.id, { K: parseFloat(e.target.value) })} />
+                    {chain.length > 0 ? (
+                      <select className="leg-input" value={String(l.K)}
+                              aria-label="Strike (from the live option chain)"
+                              style={{ width: 'auto', minWidth: '5.4em' }}
+                              onChange={e => editLeg(l.id, { K: parseFloat(e.target.value) })}>
+                        {!strikesFor(l.call).some(o => o.strike === l.K) && (
+                          <option value={String(l.K)}>{l.K}</option>
+                        )}
+                        {strikesFor(l.call).map(o => (
+                          <option key={o.strike} value={String(o.strike)}
+                                  disabled={!usableIV(o.iv)}
+                                  title={usableIV(o.iv)
+                                    ? `IV ${(o.iv! * 100).toFixed(1)}%  ·  bid ${o.bid} / ask ${o.ask}`
+                                    : 'no reliable market quote at this strike'}>
+                            {o.strike}{usableIV(o.iv) ? ` · ${(o.iv! * 100).toFixed(1)}%` : ' · —'}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input className="leg-input" type="number" value={l.K}
+                             min={1} step={inst.kstep} aria-label="Strike"
+                             onChange={e => editLeg(l.id, { K: parseFloat(e.target.value) })} />
+                    )}
                   </span>
                   <span className="leg-lbl">days
                     <input className="leg-input" type="number" value={Math.round(l.T * 365)}
