@@ -18,8 +18,8 @@
 
   --ink:   #ece9e2;
   --ink-2: #bfbbb2;
-  --ink-3: #928e86;
-  --ink-4: #6d6a64;
+  --ink-3: #a09c93;   /* ≥ 6:1 on every surface */
+  --ink-4: #8a867e;   /* ≥ 4.5:1 on surface-2 and darker (WCAG AA body text) */
 
   --amber:      #e5a947;
   --amber-2:    #f5c77e;

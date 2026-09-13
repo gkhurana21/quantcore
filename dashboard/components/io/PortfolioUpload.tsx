@@ -83,6 +83,7 @@ export function PortfolioUpload({ market, symbol, onApply }: {
         <span className={io.dropHint}>.csv · .xlsx · .xls — up to {MAX_LEGS} legs</span>
       </div>
       <input ref={inputRef} type="file" className="sr-only" data-testid="upload-input" tabIndex={-1}
+             aria-label="Portfolio file (CSV, XLSX or XLS)"
              accept=".csv,.tsv,.txt,.xlsx,.xlsm,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
              onChange={e => { handleFile(e.target.files?.[0]); e.target.value = ''; }} />
 

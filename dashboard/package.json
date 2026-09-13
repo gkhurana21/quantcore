@@ -18,6 +18,7 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.44.0",
     "@types/node": "^20.12.7",
     "@types/react": "^18.3.1",

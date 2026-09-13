@@ -228,26 +228,26 @@ export function MonteCarloPanel({ legs, market, active }: { legs: Leg[]; market:
           <dl className={l.mcStats}>
             <div className={l.mcStat}>
               <dt>Horizon</dt><dd>{days(v.firstT)}d</dd>
-              <small>{v.expiries.length > 1 ? `paths run to ${days(v.horizonT)}d` : dateIn(days(v.firstT))}</small>
+              <dd className={l.statSub}>{v.expiries.length > 1 ? `paths run to ${days(v.horizonT)}d` : dateIn(days(v.firstT))}</dd>
             </div>
             <div className={l.mcStat}>
               <dt>Mean simulated S</dt><dd>{num(v.dist.mean, 2)}</dd>
-              <small>forward F = {num(v.forward, 2)}</small>
+              <dd className={l.statSub}>forward F = {num(v.forward, 2)}</dd>
             </div>
             {single && v.analyticItm != null && (
               <div className={l.mcStat}>
                 <dt>P(in the money)</dt>
                 <dd data-testid="mc-pitm" data-value={v.dist.pItm ?? ''}>{pct(v.dist.pItm ?? 0, 2)}</dd>
-                <small>analytic N(d₂) = {pct(v.analyticItm, 2)}</small>
+                <dd className={l.statSub}>analytic N(d₂) = {pct(v.analyticItm, 2)}</dd>
               </div>
             )}
             <div className={l.mcStat}>
               <dt>P(profit)</dt><dd data-testid="mc-pprofit" data-value={v.pProfit}>{pct(v.pProfit, 1)}</dd>
-              <small>risk-neutral, at {days(v.firstT)}d</small>
+              <dd className={l.statSub}>risk-neutral, at {days(v.firstT)}d</dd>
             </div>
             <div className={l.mcStat}>
               <dt>Expected P&amp;L</dt><dd>{usdSigned(v.expectedPnl)}</dd>
-              <small>risk-neutral, undiscounted</small>
+              <dd className={l.statSub}>risk-neutral, undiscounted</dd>
             </div>
           </dl>
         </div>

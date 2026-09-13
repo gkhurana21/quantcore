@@ -55,7 +55,7 @@
 .mcStat { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: var(--bg-raise); min-width: 0; }
 .mcStat dt { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
 .mcStat dd { font-family: var(--mono); font-size: 14px; color: var(--ink); margin-top: 2px; white-space: nowrap; }
-.mcStat small { display: block; font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mcStat dd.statSub { margin-top: 0; font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .path { stroke-dasharray: 1; stroke-dashoffset: 0; animation: draw 1.25s var(--ease) both; }
 @keyframes draw { from { stroke-dashoffset: 1; } }
 .bar { transform-box: fill-box; transform-origin: 50% 100%; animation: grow .55s var(--ease) both; }
