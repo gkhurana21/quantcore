@@ -10,12 +10,12 @@ over WebSocket when it runs locally.
 
 | | What it does |
 |---|---|
-| **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA. Spot, volatility, rate and dividend-yield inputs. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium. |
+| **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA. Spot, volatility, rate and dividend-yield inputs. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
 | **Greeks & payoff** | Price, Δ, Γ, Θ, ν and P&L tiles; exact max profit / max loss and break-evens; an interactive payoff chart with P&L · Δ · Γ · Vega · Θ modes (hover or keyboard crosshair); a full-revaluation spot × vol P&L surface. |
-| **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve and a per-leg breakdown. |
+| **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice. |
 | **Monte Carlo** | Animated risk-neutral GBM paths with spot, strike, expiry and in-the-money markers; a 50,000-sample terminal distribution against its analytic lognormal density; simulated P(ITM) vs N(d₂). |
 | **Stress Lab** | 2008-style credit crisis, COVID-style crash, volatility spike, rate shock, melt-up / vol crush, or a custom shock. Shows Spot → Vol → Greeks → P&L → VaR, P&L by leg, a P&L-vs-spot ladder and all scenarios side by side; apply a shock to the whole terminal and reset. |
-| **Risk / VaR** | 1-day 95% parametric VaR, plus delta-normal, delta-gamma and Monte Carlo full-revaluation VaR with expected shortfall at 90 / 95 / 99% over 1 / 5 / 10 days, exposures and stated assumptions. |
+| **Risk / VaR** | 1-day 95% parametric VaR, plus delta-normal, delta-gamma and Monte Carlo full-revaluation VaR — spot only, and spot with correlated implied-vol shocks — with expected shortfall at 90 / 95 / 99% over 1 / 5 / 10 days, exposures and stated assumptions. |
 | **Portfolio Upload** | CSV, XLSX or XLS, parsed entirely in the browser. Tolerant column names (`option_type`, `cp`, `action`, `strike_price`, `dte`, `expiration`, `contracts`, `fill_price`, …), ISO / US / Excel dates, accounting negatives, a row-by-row preview with errors and warnings, and downloadable samples. |
 | **C++ Engine** | Live engine status, which engine produced each number and why, measured round-trip latency, engine-vs-browser agreement, and 100k–10M-path Monte Carlo on the native kernel. |
 
@@ -53,21 +53,28 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
 ## Models
 
 - **Black-Scholes-Merton** with continuous dividend yield *q*; analytic Greeks (Θ per year, ν per 1.00 of σ).
-  With *q* = 0 these are the formulas in `core/src/black_scholes.cpp`, and the unit tests check the TypeScript
-  implementation against the C++ bindings.
-- **Cox-Ross-Rubinstein** lattice: u = e^(σ√Δt), p = (e^((r−q)Δt) − d)/(u − d), backward induction.
+  The C++ core (`core/src/black_scholes.cpp`) and the TypeScript models implement the same formulas with
+  double-precision N(x) — erfc in C++, Hart/West in TypeScript — and the unit tests require them to agree to
+  1e-12 on price and every Greek, with and without dividends.
+- **Cox-Ross-Rubinstein** lattice: u = e^(σ√Δt), p = (e^((r−q)Δt) − d)/(u − d), backward induction; the American
+  variant takes the larger of continuation and exercise value at every node.
+- **Implied volatility**: Newton-Raphson on vega inside a shrinking bisection bracket; no solution is reported for
+  prices outside the no-arbitrage bounds.
 - **Monte Carlo**: seeded mulberry32 + Box-Muller; one Brownian path observed at every distinct leg expiry so
   mixed maturities stay correlated; standard error from the per-path portfolio value; optional antithetic variates.
 - **Payoff analytics**: exact piecewise-linear max P/L and break-evens for single-expiry portfolios; a numerical scan
   of first-expiry P&L (later legs at model value) for mixed expiries.
 - **VaR**: delta-normal z·|Δ·S|·σ√(h/252); delta-gamma at dS = ±z·S·σ√h; Monte Carlo full revaluation with the
-  horizon's time decay; expected shortfall.
+  horizon's time decay, optionally with a second factor — implied vol σ·exp(−½ν²h + ν√h·Z₂) correlated with spot
+  by ρ; expected shortfall.
 - **Stress**: instantaneous spot, volatility (points or multiplier), rate (floored at 0) and time shocks, every leg
   fully repriced.
 
 ## WebSocket protocol
 
-`server/ws_server.py`. Version 1 messages are unchanged; version 2 adds request/response messages matched by `id`.
+`server/ws_server.py`. Version 1 messages are unchanged; version 2 adds request/response messages matched by `id`;
+version 3 adds an optional continuous dividend yield `q` to every pricing message and reports `dividends: true` in
+`info`.
 
 | Client → server | Server → client | Notes |
 |---|---|---|
@@ -117,7 +124,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
       -DPython3_EXECUTABLE=$(which python3)
 cmake --build build --parallel
 
-# 2. Run the C++ acceptance gate (BS prices vs Hull, Greeks analytic-vs-FD, MC convergence)
+# 2. Run the C++ acceptance gate (BS prices vs Hull, Greeks analytic-vs-FD, MC convergence, dividend yield)
 ./build/tests/phase1_validation
 
 # 3. Start the WebSocket engine
@@ -135,19 +142,24 @@ The terminal also runs without the engine: everything is then computed in the br
 cd dashboard
 npm run lint && npm run typecheck      # ESLint (next/core-web-vitals) + tsc --noEmit
 npm run test:unit                      # pricing, risk, payoff and import libraries (no browser)
-npx playwright test                    # everything: unit + terminal flows + C++ engine integration
+npx playwright test                    # everything: unit + terminal flows + C++ engine + accessibility
 python3 ../server/protocol_check.py    # every WebSocket message type against the bindings
 ```
 
-- `tests/quant.spec.ts` — Hull reference prices, put-call parity with dividends, Greeks vs finite differences, the
-  TypeScript Greeks vs the C++ `bs_full`, CRR convergence, Monte Carlo within 3 SE and seed determinism, antithetic
-  variance reduction, VaR scaling, payoff analytics for spreads/condors/unbounded legs, and CSV/XLSX/XLS parsing.
+- `tests/quant.spec.ts` — Hull reference prices (including a dividend-yield index option and the American put
+  example), put-call parity with dividends, Greeks vs finite differences, N(x) against erfc, the TypeScript Greeks vs
+  the C++ `bs_full`, CRR convergence and early exercise, implied-vol round trips, Monte Carlo within 3 SE and seed
+  determinism, antithetic variance reduction, one- and two-factor VaR, payoff analytics for spreads/condors/unbounded
+  legs, and CSV/XLSX/XLS parsing.
 - `tests/terminal.spec.ts` — preset, instrument switch, Pricing Lab, Monte Carlo view, chart modes, CSV upload,
   XLSX and XLS upload, Stress Lab, Risk / VaR.
-- `tests/engine.spec.ts` and `tests/dashboard.spec.ts` — the live C++ path: streamed prices matching the bindings,
-  source switching (stream → batch → browser when q ≠ 0), engine/browser agreement and native Monte Carlo convergence.
+- `tests/engine.spec.ts` and `tests/dashboard.spec.ts` — the live C++ path: streamed prices matching the bindings
+  (including with a dividend yield), stream and batch source switching, engine/browser agreement and native Monte
+  Carlo convergence.
+- `tests/a11y.spec.ts` — axe-core WCAG 2.1 A/AA audit of the terminal and every research tab.
 
-Playwright starts the engine and the dev server itself.
+Playwright starts the engine and the dev server itself. GitHub Actions (`.github/workflows/dashboard.yml`) runs lint,
+typecheck, the library unit tests and the production build on every push to `dashboard/`.
 
 ## Build & deploy
 
@@ -184,12 +196,13 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
 
 ## Limitations
 
-- European exercise and a flat volatility surface — no skew, smile or term structure; American early exercise is not modelled.
-- The C++ core has no dividend yield, so the engine is authoritative only when *q* = 0; the native Monte Carlo kernel prices one contract per run.
+- A flat volatility surface — no skew, smile or term structure.
+- American early exercise is priced only by the CRR lattice in the Pricing Models Lab; Greeks, charts, stress and VaR treat options as European.
+- The native Monte Carlo kernel prices one European contract per run.
 - The engine is a local service: the hosted terminal always computes in the browser.
 - Instrument prices are indicative snapshots unless the optional data proxy is configured.
 - Stress scenarios are illustrative instantaneous shocks, not calibrated historical replays.
-- VaR is a single-factor research model (spot only; volatility and rates held fixed) — educational, not a regulatory or trading risk measure.
+- VaR is a single-underlying research model: the two-factor row adds implied-vol risk with illustrative, uncalibrated parameters, and rates stay fixed — educational, not a regulatory or trading risk measure.
 
 ## License
 
