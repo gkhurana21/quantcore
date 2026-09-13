@@ -36,14 +36,18 @@ Server → Client  result:
     {"type":"result","price":...,"delta":...,"gamma":...,"theta":...,
      "vega":...,"pnl":...,"t_ns":<echo>,"calc_us":...}
 
+v3 — every pricing message (subscribe option, update, portfolio, mc) accepts
+an optional continuous dividend yield "q" (default 0, so v1/v2 clients are
+unaffected); info reports "dividends": true.
+
 v2 — request/response messages, any number per connection, matched by "id":
 
   ping       {"type":"ping","t_ns":...}
           →  {"type":"pong","t_ns":<echo>}
 
   info       {"type":"info"}
-          →  {"type":"info","protocol":2,"metal":bool,"device":"Apple M3",
-              "cpu_threads":8}
+          →  {"type":"info","protocol":3,"metal":bool,"device":"Apple M3",
+              "cpu_threads":8,"dividends":true}
 
   portfolio  {"type":"portfolio","id":7,"S":...,"sigma":...,"r":...,
               "legs":[{"call":true,"K":755,"T":0.129}, ...]}        (≤ 64 legs)
@@ -80,7 +84,7 @@ import quantcore
 
 app = FastAPI()
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 MAX_LEGS         = 64
 MAX_PATHS        = 10_000_000
 HAS_METAL        = hasattr(quantcore, "mc_price_gpu")
@@ -123,7 +127,7 @@ def _finite(d: dict) -> dict:
     return d
 
 
-def price_portfolio(S: float, sigma: float, r: float, legs: list) -> tuple:
+def price_portfolio(S: float, sigma: float, r: float, q: float, legs: list) -> tuple:
     """Per-share price and Greeks for every leg; returns (results, calc_us)."""
     out = [None] * len(legs)
     t0 = time.perf_counter()
@@ -136,7 +140,8 @@ def price_portfolio(S: float, sigma: float, r: float, legs: list) -> tuple:
             is_call,
             np.full(n, S), np.array([legs[i]["K"] for i in idx], dtype=np.float64),
             np.full(n, r), np.full(n, sigma),
-            np.array([legs[i]["T"] for i in idx], dtype=np.float64))
+            np.array([legs[i]["T"] for i in idx], dtype=np.float64),
+            q=q)
         for j, i in enumerate(idx):
             p, d, g, t, v = (float(x) for x in res[j])
             out[i] = {"price": p, "delta": d, "gamma": g, "theta": t, "vega": v}
@@ -152,18 +157,18 @@ def price_portfolio(S: float, sigma: float, r: float, legs: list) -> tuple:
 
 
 def run_mc(call: bool, S: float, K: float, r: float, sigma: float, T: float,
-           paths: int, seed: int) -> dict:
+           paths: int, seed: int, q: float = 0.0) -> dict:
     t_int = 0 if call else 1
     if HAS_METAL:
         try:
             t0 = time.perf_counter()
-            res = quantcore.mc_price_gpu(t_int, S, K, r, sigma, T, paths, seed)
+            res = quantcore.mc_price_gpu(t_int, S, K, r, sigma, T, paths, seed, q)
             ms = (time.perf_counter() - t0) * 1e3
             return {**res, "ms": ms, "backend": "metal", "device": gpu_device()}
         except Exception:
             pass                                # fall through to the CPU kernel
     t0 = time.perf_counter()
-    res = quantcore.mc_price_mt(t_int, S, K, r, sigma, T, paths, seed, -1)
+    res = quantcore.mc_price_mt(t_int, S, K, r, sigma, T, paths, seed, -1, q)
     ms = (time.perf_counter() - t0) * 1e3
     return {**res, "ms": ms, "backend": "cpu-mt", "device": f"CPU · {CPU_THREADS} threads"}
 
@@ -192,7 +197,8 @@ async def ws_endpoint(ws: WebSocket):
             T     = _number(msg, "T", 0, 30, lo_open=True)
             paths = int(_number(msg, "paths", 1, MAX_PATHS))
             seed  = int(_number(msg, "seed", 0, 2**63 - 1))
-            res   = _finite(await asyncio.to_thread(run_mc, call, S, K, r, sigma, T, paths, seed))
+            q     = _number(msg, "q", -1, 1) if "q" in msg else 0.0
+            res   = _finite(await asyncio.to_thread(run_mc, call, S, K, r, sigma, T, paths, seed, q))
             await send({"type": "mc_result", "id": req_id,
                         "price": float(res["price"]), "std_error": float(res["std_error"]),
                         "paths": int(res["paths"]), "ms": res["ms"],
@@ -215,7 +221,8 @@ async def ws_endpoint(ws: WebSocket):
                 t_int       = 0 if opt.get("call", True) else 1
 
                 res         = quantcore.bs_full(
-                    t_int, opt["S"], opt["K"], opt["r"], opt["sigma"], opt["T"])
+                    t_int, opt["S"], opt["K"], opt["r"], opt["sigma"], opt["T"],
+                    float(opt.get("q", 0.0)))
                 entry_price = res["price"]
 
                 await send({
@@ -234,12 +241,13 @@ async def ws_endpoint(ws: WebSocket):
                 S     = float(msg.get("S",     option_spec["S"]))
                 sigma = float(msg.get("sigma", option_spec["sigma"]))
                 r     = float(msg.get("r",     option_spec["r"]))
+                q     = float(msg.get("q",     option_spec.get("q", 0.0)))
                 t_int = 0 if option_spec.get("call", True) else 1
 
                 t0    = time.perf_counter()
                 # GIL released inside bs_full for the C++ computation
                 res   = quantcore.bs_full(
-                    t_int, S, option_spec["K"], r, sigma, option_spec["T"])
+                    t_int, S, option_spec["K"], r, sigma, option_spec["T"], q)
                 calc_us = (time.perf_counter() - t0) * 1e6
 
                 pnl = (res["price"] - entry_price) * position * 100
@@ -264,7 +272,7 @@ async def ws_endpoint(ws: WebSocket):
             elif msg["type"] == "info":
                 await send({"type": "info", "protocol": PROTOCOL_VERSION,
                             "metal": HAS_METAL, "device": gpu_device(),
-                            "cpu_threads": CPU_THREADS})
+                            "cpu_threads": CPU_THREADS, "dividends": True})
 
             # ── v2: portfolio ──────────────────────────────────────────────
             elif msg["type"] == "portfolio":
@@ -273,6 +281,7 @@ async def ws_endpoint(ws: WebSocket):
                     S     = _number(msg, "S", 0, lo_open=True)
                     sigma = _number(msg, "sigma", 0, 5, lo_open=True)
                     r     = _number(msg, "r", -1, 1)
+                    q     = _number(msg, "q", -1, 1) if "q" in msg else 0.0
                     raw_legs = msg.get("legs")
                     if not isinstance(raw_legs, list) or not raw_legs:
                         raise ValueError("legs must be a non-empty list")
@@ -281,7 +290,7 @@ async def ws_endpoint(ws: WebSocket):
                     legs = [{"call": bool(l.get("call", True)),
                              "K": _number(l, "K", 0, lo_open=True),
                              "T": _number(l, "T", None, 30)} for l in raw_legs]
-                    results, calc_us = price_portfolio(S, sigma, r, legs)
+                    results, calc_us = price_portfolio(S, sigma, r, q, legs)
                     await send({"type": "portfolio_result", "id": req_id,
                                 "legs": results, "calc_us": calc_us})
                 except Exception as exc:

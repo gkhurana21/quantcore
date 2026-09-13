@@ -54,7 +54,8 @@ async def main():
         pong = await rpc(ws, {"type": "ping", "t_ns": 987654321}, "pong")
         check("ping → pong echo", pong.get("t_ns") == 987654321)
         info = await rpc(ws, {"type": "info"}, "info")
-        check("info", info.get("protocol") == 2, json.dumps(info))
+        check("info (protocol 3, dividends)", info.get("protocol") == 3 and info.get("dividends") is True,
+              json.dumps(info))
 
         # v2 portfolio (mixed calls/puts, one expired leg)
         legs = [{"call": False, "K": 715, "T": 0.129}, {"call": False, "K": 735, "T": 0.129},
@@ -90,6 +91,26 @@ async def main():
                   f"{got_mc['ms']:.1f} ms, {got_mc['backend']} ({got_mc['device']})")
             check("mc id echo + paths", got_mc["id"] == 8 and got_mc["paths"] == 1_000_000)
         check("ping answered while mc runs", "pong" in order, f"order {order}")
+
+        # v3 dividend yield: stream update, portfolio and Monte Carlo
+        upd_q = await rpc(ws, {"type": "update", "S": 771.0, "sigma": 0.138, "q": 0.02, "t_ns": 456}, "result")
+        ref_q = quantcore.bs_full(0, 771.0, 755.0, 0.045, 0.138, 0.129, 0.02)
+        check("update with q == bs_full(q)", upd_q["price"] == ref_q["price"], f"{upd_q['price']:.4f}")
+        hull = [{"call": True, "K": 900, "T": 2 / 12}, {"call": False, "K": 900, "T": 2 / 12}]
+        prq = await rpc(ws, {"type": "portfolio", "id": 11, "S": 930.0, "sigma": 0.2, "r": 0.08, "q": 0.03,
+                             "legs": hull}, "portfolio_result")
+        want_c = quantcore.bs_full(0, 930.0, 900.0, 0.08, 0.2, 2 / 12, 0.03)
+        got_c = prq["legs"][0]["price"] if prq["type"] == "portfolio_result" else float("nan")
+        check("portfolio with q: Hull index call 51.83, == bs_full(q)",
+              abs(got_c - want_c["price"]) < 1e-12 and abs(got_c - 51.83) < 0.01, f"{got_c:.4f}")
+        mcq = await rpc(ws, {"type": "mc", "id": 12, "call": True, "S": 930.0, "K": 900.0, "r": 0.08, "q": 0.03,
+                             "sigma": 0.2, "T": 2 / 12, "paths": 1_000_000, "seed": 7}, "mc_result")
+        if mcq["type"] == "mc_result":
+            zq = abs(mcq["price"] - want_c["price"]) / mcq["std_error"]
+            check("mc with q within 3 SE of bs_full(q)", zq < 3,
+                  f"{mcq['price']:.4f} ± {mcq['std_error']:.4f}, |z| {zq:.2f}, {mcq['backend']}")
+        else:
+            check("mc with q", False, mcq.get("msg", ""))
 
         # errors keep the connection open
         err = await rpc(ws, {"type": "portfolio", "id": 9, "S": -1, "sigma": 0.2, "r": 0.04, "legs": legs}, "portfolio_result")
