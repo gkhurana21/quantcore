@@ -10,10 +10,10 @@ struct MCResult {
     long long paths;
 };
 
-// European option price via GBM Monte Carlo.
-// Fully deterministic given (paths, seed).
+// European option price via GBM Monte Carlo with continuous dividend yield q
+// (risk-neutral drift r − q). Fully deterministic given (paths, seed).
 MCResult mc_price(OptionType type,
                   double S, double K, double r, double sigma, double T,
-                  long long paths, uint64_t seed = 42);
+                  long long paths, uint64_t seed = 42, double q = 0.0);
 
 } // namespace quantcore

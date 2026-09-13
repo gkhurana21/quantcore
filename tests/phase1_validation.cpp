@@ -11,6 +11,7 @@
 
 #include "quantcore/black_scholes.hpp"
 #include "quantcore/monte_carlo.hpp"
+#include "quantcore/monte_carlo_mt.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -94,14 +95,14 @@ static void section_bs_prices() {
 // Central-difference approximations:
 //   delta_num = [V(S+h)  − V(S−h)]        / 2h       h = 0.01·S
 //   gamma_num = [V(S+h)  − 2V(S) + V(S−h)] / h²      h = 0.01·S
-//   theta_num = [V(T−dt) − V(T)]           / dt       dt = 1/365
+//   theta_num = [V(T−dt) − V(T+dt)]        / 2dt      dt = 1e-4 yr (central)
 //   vega_num  = [V(σ+dσ) − V(σ−dσ)]       / 2dσ      dσ = 0.001
 //
 // theta sign convention: dV/dt where t is calendar time (T = maturity−t
 // decreases as time passes), so theta < 0 means the option loses value daily.
 // Both analytic and numerical use the same convention — they must match.
 //
-// Tolerances: delta/gamma/vega 1e-4; theta 5e-3 (1-day bump is coarser).
+// Tolerances: delta/gamma 1e-4, vega 1e-3, theta 5e-3 (unchanged).
 
 struct GreeksSpec {
     const char* label;
@@ -117,22 +118,29 @@ static const GreeksSpec kGreeksSpecs[] = {
 struct NumGreeks { double delta, gamma, theta, vega; };
 
 static NumGreeks finite_diff(OptionType type,
-                              double S, double K, double r, double sigma, double T) {
+                              double S, double K, double r, double sigma, double T,
+                              double q = 0.0) {
     const double hS  = 0.001 * S;   // 0.1% of spot
-    const double hT  = 1.0 / 365.0; // 1 calendar day
+    // Theta: central difference with a 1e-4-year (~53 min) bump. The earlier
+    // one-sided 1-day bump had truncation error ≈ ½·dt·|∂²V/∂T²|, which grows
+    // like S·σ·T^(-3/2) — ~0.003 on the Hull case and ~0.37 on a short-dated
+    // index option — so it could not verify theta at a fixed tolerance.
+    // Central-difference truncation here is ~1e-6; roundoff ~ε·V/hT ~1e-10.
+    const double hT  = 1.0e-4;
     const double hSg = 0.001;        // 0.1 vol-point
 
-    double v0  = bsm_price(type, S,     K, r, sigma,       T);
-    double vUp = bsm_price(type, S+hS,  K, r, sigma,       T);
-    double vDn = bsm_price(type, S-hS,  K, r, sigma,       T);
-    double vTm = bsm_price(type, S,     K, r, sigma,       T - hT);
-    double vVu = bsm_price(type, S,     K, r, sigma + hSg, T);
-    double vVd = bsm_price(type, S,     K, r, sigma - hSg, T);
+    double v0  = bsm_price(type, S,     K, r, sigma,       T,      q);
+    double vUp = bsm_price(type, S+hS,  K, r, sigma,       T,      q);
+    double vDn = bsm_price(type, S-hS,  K, r, sigma,       T,      q);
+    double vTm = bsm_price(type, S,     K, r, sigma,       T - hT, q);
+    double vTp = bsm_price(type, S,     K, r, sigma,       T + hT, q);
+    double vVu = bsm_price(type, S,     K, r, sigma + hSg, T,      q);
+    double vVd = bsm_price(type, S,     K, r, sigma - hSg, T,      q);
 
     NumGreeks g;
     g.delta = (vUp - vDn) / (2.0 * hS);
     g.gamma = (vUp - 2.0*v0 + vDn) / (hS * hS);
-    g.theta = (vTm - v0) / hT;               // −∂V/∂T ≡ ∂V/∂t
+    g.theta = (vTm - vTp) / (2.0 * hT);      // −∂V/∂T ≡ ∂V/∂t
     g.vega  = (vVu - vVd) / (2.0 * hSg);
     return g;
 }
@@ -198,6 +206,68 @@ static void section_mc_convergence() {
     printf("\n  Each row should show ~3× error reduction and |Err|/SE ≈ O(1).\n");
 }
 
+// ── Section 4: continuous dividend yield (Black-Scholes-Merton) ──────────────
+//
+// Reference: Hull, "Options, Futures, and Other Derivatives" — European call on
+// a stock index: S=930, K=900, r=0.08, q=0.03, σ=0.20, T=2/12  →  call = 51.83.
+// Plus put-call parity with dividends (C − P = S·e^{-qT} − K·e^{-rT}), Greeks vs
+// finite differences with the same bumps/tolerances as section 2, and Monte
+// Carlo (scalar and multithreaded) converging within 3 standard errors.
+
+static void section_dividend_yield() {
+    banner("4. DIVIDEND YIELD  (Hull index call: S=930 K=900 r=0.08 q=0.03 σ=0.20 T=2/12)");
+
+    const double S=930, K=900, r=0.08, q=0.03, sigma=0.20, T=2.0/12.0;
+    bool all_ok = true;
+
+    double call = bsm_price(OptionType::Call, S, K, r, sigma, T, q);
+    double put  = bsm_price(OptionType::Put,  S, K, r, sigma, T, q);
+    bool price_ok = std::fabs(call - 51.83) < 0.01;
+    all_ok = all_ok && price_ok;
+    printf("  Call price:  computed %.4f  expected 51.83  error %+.4f  %s\n",
+           call, call - 51.83, price_ok ? "OK" : "*** FAIL ***");
+
+    double parity = (call - put) - (S * std::exp(-q * T) - K * std::exp(-r * T));
+    bool parity_ok = std::fabs(parity) < 1e-10;
+    all_ok = all_ok && parity_ok;
+    printf("  Put-call parity with q:  residual %.2e  %s\n", parity, parity_ok ? "OK" : "*** FAIL ***");
+
+    for (OptionType type : { OptionType::Call, OptionType::Put }) {
+        BSMResult res = bsm_full(type, S, K, r, sigma, T, q);
+        NumGreeks num = finite_diff(type, S, K, r, sigma, T, q);
+        struct Row { const char* name; double analytic; double numerical; double tol; };
+        Row rows[] = {
+            { "delta", res.greeks.delta, num.delta, 1e-4 },
+            { "gamma", res.greeks.gamma, num.gamma, 1e-4 },
+            { "theta", res.greeks.theta, num.theta, 5e-3 },
+            { "vega",  res.greeks.vega,  num.vega,  1e-3 },
+        };
+        printf("\n  %s with q — Greeks analytic vs finite-difference\n",
+               type == OptionType::Call ? "Call" : "Put");
+        for (const auto& row : rows) {
+            double diff = row.analytic - row.numerical;
+            bool   ok   = std::fabs(diff) <= row.tol;
+            all_ok = all_ok && ok;
+            printf("  %-6s  %12.6f  %12.6f  %+12.6f  %s\n",
+                   row.name, row.analytic, row.numerical, diff, ok ? "OK" : "*** FAIL ***");
+        }
+    }
+
+    printf("\n  Monte Carlo with q (seed 42)\n");
+    for (long long n : { 100'000LL, 1'000'000LL }) {
+        MCResult mc   = mc_price(OptionType::Call, S, K, r, sigma, T, n, 42, q);
+        MCResult mcmt = mc_price_mt(OptionType::Call, S, K, r, sigma, T, n, 42, -1, q);
+        double z   = std::fabs(mc.price - call) / mc.std_error;
+        double zmt = std::fabs(mcmt.price - call) / mcmt.std_error;
+        bool ok = z < 3.0 && zmt < 3.0;
+        all_ok = all_ok && ok;
+        printf("  %-9lld  scalar %9.4f ± %.4f (|z| %.2f)   mt %9.4f ± %.4f (|z| %.2f)  %s\n",
+               n, mc.price, mc.std_error, z, mcmt.price, mcmt.std_error, zmt, ok ? "OK" : "*** FAIL ***");
+    }
+
+    printf("\n  %-22s  %s\n", "Dividend yield overall:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -208,6 +278,7 @@ int main() {
     section_bs_prices();
     section_greeks();
     section_mc_convergence();
+    section_dividend_yield();
 
     banner("End of Phase 1 report");
     return 0;

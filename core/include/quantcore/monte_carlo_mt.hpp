@@ -34,6 +34,7 @@ MCResult mc_price_mt(OptionType type,
                      double    T,
                      long long paths,
                      uint64_t  seed      = 42,
-                     int       n_threads = -1);
+                     int       n_threads = -1,
+                     double    q         = 0.0);   // continuous dividend yield
 
 } // namespace quantcore

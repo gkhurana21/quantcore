@@ -18,7 +18,7 @@ static constexpr int MC_CHUNK = 4096;
 
 static void mc_worker(OptionType type,
                        double S, double K, double r,
-                       double sigma, double T,
+                       double sigma, double T, double q,
                        long long paths,
                        uint64_t  seed,
                        double&   out_sum,
@@ -27,7 +27,7 @@ static void mc_worker(OptionType type,
     std::mt19937_64 rng(seed);
     std::normal_distribution<double> dist(0.0, 1.0);
 
-    const double drift     = (r - 0.5 * sigma * sigma) * T;
+    const double drift     = (r - q - 0.5 * sigma * sigma) * T;
     const double vol_sqrtT = sigma * std::sqrt(T);
     const double disc      = std::exp(-r * T);
     const bool   is_call   = (type == OptionType::Call);
@@ -98,7 +98,8 @@ MCResult mc_price_mt(OptionType type,
                      double     T,
                      long long  paths,
                      uint64_t   seed,
-                     int        n_threads)
+                     int        n_threads,
+                     double     q)
 {
     if (n_threads <= 0)
         n_threads = static_cast<int>(std::thread::hardware_concurrency());
@@ -118,7 +119,7 @@ MCResult mc_price_mt(OptionType type,
         // Golden-ratio splitmix64 step — distinct, well-separated seeds per thread
         uint64_t tseed = seed + static_cast<uint64_t>(t) * 0x9e3779b97f4a7c15ULL;
         threads.emplace_back(mc_worker,
-                             type, S, K, r, sigma, T, n, tseed,
+                             type, S, K, r, sigma, T, q, n, tseed,
                              std::ref(sums[t]), std::ref(sum_sqs[t]));
     }
     for (auto& th : threads) th.join();

@@ -2,6 +2,9 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
+#include <stdexcept>
+
 #include "quantcore/black_scholes.hpp"
 #include "quantcore/monte_carlo.hpp"
 #include "quantcore/black_scholes_batch.hpp"
@@ -19,47 +22,63 @@ using namespace quantcore;
 // The Python→C++ boundary is crossed once per batch, not once per option.
 // C++ loops over the arrays; no GIL re-acquisition per element.
 
+using DoubleArray = py::array_t<double, py::array::c_style | py::array::forcecast>;
+
+// Dividend yields for a batch: None → all zero, a scalar → broadcast to every
+// option, or an array with one entry per option.
+static DoubleArray dividend_yields(const py::object& q_obj, py::ssize_t n) {
+    DoubleArray out(n);
+    double* dst = out.mutable_data();
+    if (q_obj.is_none()) {
+        std::fill(dst, dst + n, 0.0);
+        return out;
+    }
+    DoubleArray q = q_obj.cast<DoubleArray>();
+    if (q.size() == 1) {
+        std::fill(dst, dst + n, *q.data());
+    } else if (q.ndim() == 1 && q.size() == n) {
+        std::copy(q.data(), q.data() + n, dst);
+    } else {
+        throw std::invalid_argument("q must be None, a scalar, or a 1-D array the same length as S");
+    }
+    return out;
+}
+
 static py::array_t<double>
-batch_bs_price_impl(bool is_call,
-                    py::array_t<double, py::array::c_style | py::array::forcecast> S,
-                    py::array_t<double, py::array::c_style | py::array::forcecast> K,
-                    py::array_t<double, py::array::c_style | py::array::forcecast> r,
-                    py::array_t<double, py::array::c_style | py::array::forcecast> sigma,
-                    py::array_t<double, py::array::c_style | py::array::forcecast> T) {
+batch_bs_price_impl(bool is_call, DoubleArray S, DoubleArray K, DoubleArray r,
+                    DoubleArray sigma, DoubleArray T, const py::object& q_obj) {
     auto n = S.size();
-    // The output array is a Python object: allocate it with the GIL held, then
-    // release the GIL only around the pure C++ loop over raw memory.
+    // Python objects (dividend array, output array) are created with the GIL
+    // held; the GIL is released only around the pure C++ loop over raw memory.
+    DoubleArray q = dividend_yields(q_obj, n);
     auto out = py::array_t<double>(n);
-    auto s_ = S.unchecked<1>(), k_ = K.unchecked<1>(),
-         r_ = r.unchecked<1>(), sg_ = sigma.unchecked<1>(), t_ = T.unchecked<1>();
+    auto s_ = S.unchecked<1>(), k_ = K.unchecked<1>(), r_ = r.unchecked<1>(),
+         sg_ = sigma.unchecked<1>(), t_ = T.unchecked<1>(), q_ = q.unchecked<1>();
     auto o_ = out.mutable_unchecked<1>();
     OptionType type = is_call ? OptionType::Call : OptionType::Put;
     {
         py::gil_scoped_release release;
         for (py::ssize_t i = 0; i < n; ++i)
-            o_(i) = bsm_price(type, s_(i), k_(i), r_(i), sg_(i), t_(i));
+            o_(i) = bsm_price(type, s_(i), k_(i), r_(i), sg_(i), t_(i), q_(i));
     }
     return out;
 }
 
 // Returns shape (N, 5): columns = [price, delta, gamma, theta, vega]
 static py::array_t<double>
-batch_bs_full_impl(bool is_call,
-                   py::array_t<double, py::array::c_style | py::array::forcecast> S,
-                   py::array_t<double, py::array::c_style | py::array::forcecast> K,
-                   py::array_t<double, py::array::c_style | py::array::forcecast> r,
-                   py::array_t<double, py::array::c_style | py::array::forcecast> sigma,
-                   py::array_t<double, py::array::c_style | py::array::forcecast> T) {
+batch_bs_full_impl(bool is_call, DoubleArray S, DoubleArray K, DoubleArray r,
+                   DoubleArray sigma, DoubleArray T, const py::object& q_obj) {
     auto n = S.size();
+    DoubleArray q = dividend_yields(q_obj, n);
     auto out = py::array_t<double>({(py::ssize_t)n, (py::ssize_t)5});
-    auto s_ = S.unchecked<1>(), k_ = K.unchecked<1>(),
-         r_ = r.unchecked<1>(), sg_ = sigma.unchecked<1>(), t_ = T.unchecked<1>();
+    auto s_ = S.unchecked<1>(), k_ = K.unchecked<1>(), r_ = r.unchecked<1>(),
+         sg_ = sigma.unchecked<1>(), t_ = T.unchecked<1>(), q_ = q.unchecked<1>();
     auto o_ = out.mutable_unchecked<2>();
     OptionType type = is_call ? OptionType::Call : OptionType::Put;
     {
         py::gil_scoped_release release;   // see batch_bs_price_impl
         for (py::ssize_t i = 0; i < n; ++i) {
-            BSMResult res = bsm_full(type, s_(i), k_(i), r_(i), sg_(i), t_(i));
+            BSMResult res = bsm_full(type, s_(i), k_(i), r_(i), sg_(i), t_(i), q_(i));
             o_(i, 0) = res.price;
             o_(i, 1) = res.greeks.delta;
             o_(i, 2) = res.greeks.gamma;
@@ -73,7 +92,7 @@ batch_bs_full_impl(bool is_call,
 // ── module definition ─────────────────────────────────────────────────────────
 
 PYBIND11_MODULE(quantcore, m) {
-    m.doc() = "QuantCore: C++ options pricing engine (Phase 2 bindings)";
+    m.doc() = "QuantCore: C++ options pricing engine (Black-Scholes-Merton, Monte Carlo, Metal GPU)";
 
     py::enum_<OptionType>(m, "OptionType")
         .value("Call", OptionType::Call)
@@ -82,15 +101,15 @@ PYBIND11_MODULE(quantcore, m) {
 
     // ── scalar API ────────────────────────────────────────────────────────────
     m.def("bs_price",
-          [](int type_int, double S, double K, double r, double sigma, double T) {
-              return bsm_price(static_cast<OptionType>(type_int), S, K, r, sigma, T);
+          [](int type_int, double S, double K, double r, double sigma, double T, double q) {
+              return bsm_price(static_cast<OptionType>(type_int), S, K, r, sigma, T, q);
           },
           py::arg("type"), py::arg("S"), py::arg("K"),
-          py::arg("r"), py::arg("sigma"), py::arg("T"),
-          "Black-Scholes price for a European option.");
+          py::arg("r"), py::arg("sigma"), py::arg("T"), py::arg("q") = 0.0,
+          "Black-Scholes-Merton price for a European option (q = continuous dividend yield).");
 
     m.def("bs_full",
-          [](int type_int, double S, double K, double r, double sigma, double T) {
+          [](int type_int, double S, double K, double r, double sigma, double T, double q) {
               // GIL released for the C++ computation; re-acquired before
               // constructing the Python dict.  Allows concurrent WebSocket
               // handlers to overlap their pricing calls without serialising
@@ -98,7 +117,7 @@ PYBIND11_MODULE(quantcore, m) {
               BSMResult res;
               {
                   py::gil_scoped_release release;
-                  res = bsm_full(static_cast<OptionType>(type_int), S, K, r, sigma, T);
+                  res = bsm_full(static_cast<OptionType>(type_int), S, K, r, sigma, T, q);
               }
               return py::dict(
                   "price"_a = res.price,
@@ -109,17 +128,17 @@ PYBIND11_MODULE(quantcore, m) {
               );
           },
           py::arg("type"), py::arg("S"), py::arg("K"),
-          py::arg("r"), py::arg("sigma"), py::arg("T"),
-          "Black-Scholes price + analytic Greeks. GIL released during C++ compute.");
+          py::arg("r"), py::arg("sigma"), py::arg("T"), py::arg("q") = 0.0,
+          "Black-Scholes-Merton price + analytic Greeks. GIL released during C++ compute.");
 
     m.def("mc_price",
           [](int type_int, double S, double K, double r, double sigma, double T,
-             long long paths, uint64_t seed) {
+             long long paths, uint64_t seed, double q) {
               MCResult res;
               {
                   py::gil_scoped_release release;   // GIL released during MC sim
                   res = mc_price(static_cast<OptionType>(type_int),
-                                 S, K, r, sigma, T, paths, seed);
+                                 S, K, r, sigma, T, paths, seed, q);
               }
               return py::dict(
                   "price"_a     = res.price,
@@ -129,32 +148,28 @@ PYBIND11_MODULE(quantcore, m) {
           },
           py::arg("type"), py::arg("S"), py::arg("K"),
           py::arg("r"), py::arg("sigma"), py::arg("T"),
-          py::arg("paths"), py::arg("seed") = 42ULL,
+          py::arg("paths"), py::arg("seed") = 42ULL, py::arg("q") = 0.0,
           "GBM Monte Carlo price for a European option. GIL released during sim.");
 
     // ── batch API (one Python→C++ crossing per batch) ─────────────────────────
-    // Batch functions: the GIL is released inside the impls around the compute
-    // loop only. (A call_guard released it for the whole call, including the
-    // NumPy output allocation, which segfaulted.)
+    // The GIL is released inside the impls around the compute loop only. (A
+    // call_guard released it for the whole call, including the NumPy output
+    // allocation, which segfaulted.)
     m.def("batch_bs_price", &batch_bs_price_impl,
           py::arg("is_call"), py::arg("S"), py::arg("K"),
-          py::arg("r"), py::arg("sigma"), py::arg("T"),
-          "Batch BS price. Returns 1-D array of length N. GIL released during compute.");
+          py::arg("r"), py::arg("sigma"), py::arg("T"), py::arg("q") = py::none(),
+          "Batch BSM price. Returns 1-D array of length N. q: None, scalar or array. "
+          "GIL released during compute.");
 
     m.def("batch_bs_full", &batch_bs_full_impl,
           py::arg("is_call"), py::arg("S"), py::arg("K"),
-          py::arg("r"), py::arg("sigma"), py::arg("T"),
-          "Batch BS price+Greeks. Returns shape (N,5): [price,delta,gamma,theta,vega]. "
-          "GIL released during compute.");
+          py::arg("r"), py::arg("sigma"), py::arg("T"), py::arg("q") = py::none(),
+          "Batch BSM price+Greeks. Returns shape (N,5): [price,delta,gamma,theta,vega]. "
+          "q: None, scalar or array. GIL released during compute.");
 
-    // ── Phase 2b: Accelerate-SIMD batch BS ───────────────────────────────────
+    // ── Phase 2b: Accelerate-SIMD batch BS (benchmark kernel, no dividend yield) ──
     m.def("batch_bs_full_accel",
-          [](bool is_call,
-             py::array_t<double, py::array::c_style | py::array::forcecast> S,
-             py::array_t<double, py::array::c_style | py::array::forcecast> K,
-             py::array_t<double, py::array::c_style | py::array::forcecast> r,
-             py::array_t<double, py::array::c_style | py::array::forcecast> sigma,
-             py::array_t<double, py::array::c_style | py::array::forcecast> T) {
+          [](bool is_call, DoubleArray S, DoubleArray K, DoubleArray r, DoubleArray sigma, DoubleArray T) {
               auto n   = (std::size_t)S.size();
               auto out = py::array_t<double>({(py::ssize_t)n, (py::ssize_t)5});
               batch_bs_full_accel(is_call,
@@ -171,9 +186,9 @@ PYBIND11_MODULE(quantcore, m) {
     // ── Phase 2b: multithreaded + SIMD MC ────────────────────────────────────
     m.def("mc_price_mt",
           [](int type_int, double S, double K, double r, double sigma, double T,
-             long long paths, uint64_t seed, int n_threads) {
+             long long paths, uint64_t seed, int n_threads, double q) {
               MCResult res = mc_price_mt(static_cast<OptionType>(type_int),
-                                         S, K, r, sigma, T, paths, seed, n_threads);
+                                         S, K, r, sigma, T, paths, seed, n_threads, q);
               return py::dict(
                   "price"_a     = res.price,
                   "std_error"_a = res.std_error,
@@ -183,6 +198,7 @@ PYBIND11_MODULE(quantcore, m) {
           py::arg("type"), py::arg("S"), py::arg("K"),
           py::arg("r"), py::arg("sigma"), py::arg("T"),
           py::arg("paths"), py::arg("seed") = 42ULL, py::arg("n_threads") = -1,
+          py::arg("q") = 0.0,
           "Multithreaded GBM MC (vvexp SIMD + std::thread). "
           "n_threads=-1 uses hardware_concurrency.");
 
@@ -190,12 +206,12 @@ PYBIND11_MODULE(quantcore, m) {
     // ── Phase 6: Apple Metal GPU MC ──────────────────────────────────────────
     m.def("mc_price_gpu",
           [](int type_int, double S, double K, double r, double sigma, double T,
-             long long paths, uint64_t seed) {
+             long long paths, uint64_t seed, double q) {
               MCResult res;
               {
                   py::gil_scoped_release release;  // GIL released: Metal waits internally
                   res = mc_price_gpu(static_cast<OptionType>(type_int),
-                                     S, K, r, sigma, T, paths, seed);
+                                     S, K, r, sigma, T, paths, seed, q);
               }
               return py::dict(
                   "price"_a     = res.price,
@@ -205,7 +221,7 @@ PYBIND11_MODULE(quantcore, m) {
           },
           py::arg("type"), py::arg("S"), py::arg("K"),
           py::arg("r"), py::arg("sigma"), py::arg("T"),
-          py::arg("paths"), py::arg("seed") = 42ULL,
+          py::arg("paths"), py::arg("seed") = 42ULL, py::arg("q") = 0.0,
           "Apple Metal GPU GBM MC. "
           "RNG: Philox 4x32-10 (counter-based, one independent stream per path). "
           "Reduction: GPU threadgroup + host double-precision. "

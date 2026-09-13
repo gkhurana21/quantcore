@@ -31,12 +31,17 @@ inline double norm_pdf(double x) noexcept {
     return kInvSqrt2Pi * std::exp(-0.5 * x * x);
 }
 
+// Black-Scholes-Merton with a continuous dividend yield q (default 0, which
+// reduces exactly to the original Black-Scholes formulas).
+
 // Price only — lightweight path used inside finite-difference loops.
 double bsm_price(OptionType type,
-                 double S, double K, double r, double sigma, double T);
+                 double S, double K, double r, double sigma, double T,
+                 double q = 0.0);
 
 // Price + analytic Greeks in a single pass (shared intermediate values).
 BSMResult bsm_full(OptionType type,
-                   double S, double K, double r, double sigma, double T);
+                   double S, double K, double r, double sigma, double T,
+                   double q = 0.0);
 
 } // namespace quantcore

@@ -43,7 +43,8 @@ MCResult mc_price_gpu(OptionType type,
                       double     sigma,
                       double     T,
                       long long  paths,
-                      uint64_t   seed = 42);
+                      uint64_t   seed = 42,
+                      double     q    = 0.0);   // continuous dividend yield
 
 // Returns the MTLDevice name, e.g. "Apple M4 Pro".
 // Triggers lazy Metal initialisation.

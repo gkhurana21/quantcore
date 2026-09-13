@@ -6,13 +6,13 @@ namespace quantcore {
 
 MCResult mc_price(OptionType type,
                   double S, double K, double r, double sigma, double T,
-                  long long paths, uint64_t seed) {
+                  long long paths, uint64_t seed, double q) {
     // std::mt19937_64 seeded deterministically — same seed → same price.
     std::mt19937_64 rng(seed);
     std::normal_distribution<double> dist(0.0, 1.0);
 
-    // GBM terminal price: S·exp((r - σ²/2)·T + σ·√T·Z),  Z ~ N(0,1)
-    const double drift     = (r - 0.5 * sigma * sigma) * T;
+    // GBM terminal price: S·exp((r - q - σ²/2)·T + σ·√T·Z),  Z ~ N(0,1)
+    const double drift     = (r - q - 0.5 * sigma * sigma) * T;
     const double vol_sqrtT = sigma * std::sqrt(T);
     const double disc      = std::exp(-r * T);
 

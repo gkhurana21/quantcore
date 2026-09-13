@@ -83,10 +83,10 @@ static float2 box_muller(float u1, float u2) {
 
 // ── parameter struct (must match CPP-side GPUParams layout exactly) ──────────
 struct MCParams {
-    float S, K, r, sigma, T;   // 5×4 = 20 bytes
-    uint  is_call;              //     = 24
-    uint  seed;                 //     = 28
-    uint  n_paths;              //     = 32
+    float S, K, r, sigma, T, q; // 6×4 = 24 bytes
+    uint  is_call;              //     = 28
+    uint  seed;                 //     = 32
+    uint  n_paths;              //     = 36
 };
 
 // ── compute kernel ────────────────────────────────────────────────────────────
@@ -111,7 +111,7 @@ kernel void mc_gbm(
         float2 n01 = box_muller(u32_to_f01(rnd[0]), u32_to_f01(rnd[1]));
         float  Z   = n01[0];
 
-        float drift  = (p.r - 0.5f * p.sigma * p.sigma) * p.T;
+        float drift  = (p.r - p.q - 0.5f * p.sigma * p.sigma) * p.T;
         float volSqT = p.sigma * sqrt(p.T);
         float ST     = p.S * exp(drift + volSqT * Z);
 
@@ -192,12 +192,12 @@ static void ensure_metal() {
 
 // ── parameter struct (must match MSL layout) ─────────────────────────────────
 struct GPUParams {
-    float    S, K, r, sigma, T;  // 5 × 4 = 20 bytes
-    uint32_t is_call;             // 4 bytes → 24
-    uint32_t seed;                // 4 bytes → 28
-    uint32_t n_paths;             // 4 bytes → 32
+    float    S, K, r, sigma, T, q;  // 6 × 4 = 24 bytes
+    uint32_t is_call;                // 4 bytes → 28
+    uint32_t seed;                   // 4 bytes → 32
+    uint32_t n_paths;                // 4 bytes → 36
 };
-static_assert(sizeof(GPUParams) == 32, "GPUParams size mismatch");
+static_assert(sizeof(GPUParams) == 36, "GPUParams size mismatch");
 
 
 // ── public functions ──────────────────────────────────────────────────────────
@@ -208,7 +208,8 @@ std::string mc_gpu_device_name() {
 }
 
 MCResult mc_price_gpu(OptionType type, double S, double K, double r,
-                       double sigma, double T, long long paths, uint64_t seed) {
+                       double sigma, double T, long long paths, uint64_t seed,
+                       double q) {
     ensure_metal();
 
     @autoreleasepool {
@@ -223,6 +224,7 @@ MCResult mc_price_gpu(OptionType type, double S, double K, double r,
         p.r       = float(r);
         p.sigma   = float(sigma);
         p.T       = float(T);
+        p.q       = float(q);
         p.is_call = (type == OptionType::Call) ? 1u : 0u;
         p.seed    = uint32_t(seed & 0xFFFFFFFFu);
         p.n_paths = N;
