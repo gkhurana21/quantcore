@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import type { RefObject } from 'react';
 
 /** Rendered width of an element, tracked with ResizeObserver (charts draw at real pixel size). */
-export function useElementWidth<T extends HTMLElement>(ref: RefObject<T>, fallback: number): number {
+export function useElementWidth<T extends HTMLElement>(ref: RefObject<T | null>, fallback: number): number {
   const [width, setWidth] = useState(fallback);
   useEffect(() => {
     const el = ref.current;
