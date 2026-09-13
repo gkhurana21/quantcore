@@ -53,3 +53,6 @@ secrets.json
 .idea/
 *.swp
 *~
+
+# Netlify Drop bundle (generated from dashboard/out)
+/quantcore-demo-site.zip
