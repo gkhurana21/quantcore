@@ -7,7 +7,7 @@ import type { PayoffAnalytics } from '@/lib/strategy/portfolio';
 import { pnlAtFirstExpiry, pnlNow, portfolioGreeks } from '@/lib/strategy/portfolio';
 import { days, num, signed, signedPct, usdSigned } from '@/lib/format';
 import type { ChartMode } from '@/components/terminal/useTerminalState';
-import { linear, nearestIndex, niceTicks, numTick, pathD, usdTick } from '@/components/charts/scale';
+import { linear, nearestIndex, niceTicks, numTick, pathD, strikeTick, usdTick } from '@/components/charts/scale';
 import { useElementWidth } from '@/components/ui/useElementWidth';
 import c from './analytics.module.css';
 
@@ -174,7 +174,7 @@ export const StrategyChart = memo(function StrategyChart({ legs, market, anchorS
             <g key={`k${k}`}>
               <line x1={px} x2={px} y1={pad.t} y2={pad.t + plotH} stroke="var(--ink-4)" strokeDasharray="2 4" />
               <text x={px} y={pad.t - (crowded && i % 2 ? 16 : 6)} textAnchor="middle" className={c.markerText}
-                    fill="var(--ink-3)">K {numTick(k)}</text>
+                    fill="var(--ink-3)">K {strikeTick(k)}</text>
             </g>
           );
         })}

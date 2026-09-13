@@ -6,7 +6,7 @@ import type { McVizResult } from '@/lib/compute/tasks';
 import { useWorkerTask } from '@/lib/compute/useWorkerTask';
 import { legsKeyOf } from '@/lib/strategy/labels';
 import { days, num, pct, usdSigned } from '@/lib/format';
-import { linear, niceTicks, numTick } from '@/components/charts/scale';
+import { linear, niceTicks, numTick, strikeTick } from '@/components/charts/scale';
 import { useElementWidth } from '@/components/ui/useElementWidth';
 import { Button, cx, Segmented } from '@/components/ui/primitives';
 import { SeedInput } from './SeedInput';
@@ -86,7 +86,7 @@ const PathsChart = memo(function PathsChart({ v, legs, visible, replay }: {
         {v.strikes.filter(k => k > lo && k < hi).map(k => (
           <g key={k}>
             <line x1={pad.l} x2={width - pad.r} y1={Y(k)} y2={Y(k)} stroke="var(--ink-3)" strokeDasharray="4 4" />
-            <text x={width - pad.r + 6} y={Y(k) + 3.5} className={l.label} fill="var(--ink-2)">K {numTick(k)}</text>
+            <text x={width - pad.r + 6} y={Y(k) + 3.5} className={l.label} fill="var(--ink-2)">K {strikeTick(k)}</text>
           </g>
         ))}
         <line x1={pad.l} x2={width - pad.r} y1={Y(s0)} y2={Y(s0)} stroke="var(--blue)" strokeDasharray="2 3" opacity={0.8} />
@@ -155,7 +155,7 @@ const HistChart = memo(function HistChart({ v, legs }: { v: McVizResult; legs: L
         {v.strikes.filter(inRange).map(k => (
           <g key={k}>
             <line x1={X(k)} x2={X(k)} y1={pad.t} y2={height - pad.b} stroke="var(--ink-2)" strokeDasharray="4 4" />
-            <text x={X(k)} y={pad.t - 6} textAnchor="middle" className={l.label} fill="var(--ink-2)">K {numTick(k)}</text>
+            <text x={X(k)} y={pad.t - 6} textAnchor="middle" className={l.label} fill="var(--ink-2)">K {strikeTick(k)}</text>
           </g>
         ))}
         {inRange(s0) && <line x1={X(s0)} x2={X(s0)} y1={pad.t} y2={height - pad.b} stroke="var(--blue)" strokeDasharray="2 3" />}

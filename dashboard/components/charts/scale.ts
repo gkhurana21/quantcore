@@ -60,6 +60,11 @@ export function usdTick(v: number): string {
   return `${s}$${+a.toFixed(a < 10 && a > 0 ? 1 : 0)}`;
 }
 
+/** Strike labels show the listed strike exactly (157.5, 2.25, 10,250); axis-tick rounding would misstate it. */
+export function strikeTick(k: number): string {
+  return k.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
 export function numTick(v: number): string {
   const a = Math.abs(v), s = v < 0 ? MINUS : '';
   if (a >= 1e6) return `${s}${+(a / 1e6).toFixed(1)}M`;

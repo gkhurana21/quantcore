@@ -20,7 +20,7 @@ import { deltaNormalVaR, mcVaR } from '../lib/risk/var';
 import { pnlSurface } from '../lib/risk/surface';
 import { importPortfolio, parseCsvText } from '../lib/io/portfolioParser';
 import { num, pct, signed, usd, usdCompact, usdSigned } from '../lib/format';
-import { niceTicks } from '../components/charts/scale';
+import { niceTicks, strikeTick } from '../components/charts/scale';
 
 function rng(seed: number) {
   const u = mulberry32(seed);
@@ -323,6 +323,20 @@ test.describe('property: import and formatting', () => {
       const ok = ticks.length >= 1 && ticks.length <= 4 * count + 1 && ticks.every(Number.isFinite) &&
                  ticks.every((t, k) => k === 0 || t > ticks[k - 1]);
       if (!ok) bad.push({ lo, width, count, ticks });
+    }
+    expect(bad.slice(0, 5)).toEqual([]);
+  });
+
+  test('strike labels show the listed strike exactly', () => {
+    // PLTR iron condor strikes were drawn as "K 158 · K 163" by the rounding axis formatter
+    expect([157.5, 162.5, 485, 2.25, 0.5, 10250, 1052.5].map(strikeTick))
+      .toEqual(['157.5', '162.5', '485', '2.25', '0.5', '10,250', '1,052.5']);
+    const g = rng(15);
+    const bad: string[] = [];
+    for (let i = 0; i < 5000; i++) {
+      const K = +(g.logRange(0.05, 50_000) / 0.05).toFixed(0) * 0.05;   // any strike on a 0.05 grid
+      const shown = strikeTick(K);
+      if (Math.abs(+shown.replace(/,/g, '') - K) > 1e-9) bad.push(`${K} → ${shown}`);
     }
     expect(bad.slice(0, 5)).toEqual([]);
   });
