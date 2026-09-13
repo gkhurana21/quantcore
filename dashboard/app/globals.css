@@ -1,180 +1,135 @@
+/* QuantCore terminal — design tokens and base elements.
+   Graphite surfaces, a single amber accent, hairline borders, tabular mono numbers. */
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:          #060606;
-  --panel:       #0c0b0a;
-  --panel-2:     #090807;
-  --line:        rgba(201,168,106,0.14);
-  --line-strong: rgba(201,168,106,0.32);
-  --gold:        #c9a86a;
-  --gold-bright: #edd3a0;
-  --ink:         #ece7dc;
-  --ink-bright:  #f8f4ec;
-  --muted:       #b3a98f;
-  --muted-2:     #8b8270;
-  --green:       #63d891;
-  --green-deep:  rgba(99,216,145,0.72);
-  --red:         #f47a80;
-  --red-deep:    rgba(244,122,128,0.72);
-  --mono: ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, 'Cascadia Code', monospace;
-  --sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: dark;
+
+  --bg:        #0a0b0d;
+  --bg-raise:  #0d0f12;
+  --surface:   #121418;
+  --surface-2: #171a1f;
+  --surface-3: #1e2228;
+  --hover:     rgba(255, 255, 255, 0.045);
+  --line:      rgba(255, 255, 255, 0.075);
+  --line-2:    rgba(255, 255, 255, 0.13);
+  --line-3:    rgba(255, 255, 255, 0.22);
+
+  --ink:   #ece9e2;
+  --ink-2: #bfbbb2;
+  --ink-3: #928e86;
+  --ink-4: #6d6a64;
+
+  --amber:      #e5a947;
+  --amber-2:    #f5c77e;
+  --amber-ink:  #1c1405;
+  --amber-soft: rgba(229, 169, 71, 0.13);
+  --amber-line: rgba(229, 169, 71, 0.42);
+
+  --green:      #4ccb8d;
+  --green-soft: rgba(76, 203, 141, 0.14);
+  --red:        #f06a6e;
+  --red-soft:   rgba(240, 106, 110, 0.14);
+  --blue:       #72a9fb;
+  --blue-soft:  rgba(114, 169, 251, 0.14);
+  --violet:     #b598ff;
+
+  --radius:    8px;
+  --radius-sm: 6px;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+
+  --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
 
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 132px; }
 
 body {
   font-family: var(--sans);
-  background:
-    radial-gradient(1200px 560px at 50% -12%, rgba(201,168,106,0.10), transparent 60%),
-    radial-gradient(900px 520px at 90% 6%, rgba(201,168,106,0.05), transparent 55%),
-    var(--bg);
+  font-size: 14px;
+  line-height: 1.45;
+  background: var(--bg);
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-  font-variant-numeric: tabular-nums;
+  -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
-h1 { font-size: 1.55rem; font-weight: 650; letter-spacing: -0.02em; color: var(--ink-bright); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: 0; }
+button:disabled { cursor: not-allowed; }
+table { border-collapse: collapse; }
+svg { overflow: visible; }
 
-h2 {
-  font-size: 0.7rem; font-weight: 600; color: var(--muted);
-  text-transform: uppercase; letter-spacing: 0.22em;
-  display: flex; align-items: baseline; gap: 0.55rem;
-}
+a { color: var(--amber-2); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 3px; }
 
-section {
-  background: linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0)), var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 1.5rem 1.6rem;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045), 0 24px 60px -32px rgba(0,0,0,0.9);
-}
+::selection { background: rgba(229, 169, 71, 0.35); color: #fff; }
 
-a { color: var(--gold-bright); text-decoration: none; transition: color .15s; }
-a:hover { color: #f6e3b8; }
-::selection { background: rgba(201,168,106,0.32); color: #fff; }
-
-/* ── focus visibility (a11y) ─────────────────────────────────────── */
-:focus-visible { outline: 2px solid var(--gold-bright); outline-offset: 3px; border-radius: 6px; }
-input[type=range]:focus-visible { outline-offset: 7px; }
-
-/* ── range sliders ───────────────────────────────────────────────── */
-input[type=range] {
-  -webkit-appearance: none; appearance: none;
-  width: 100%; height: 5px; border-radius: 999px;
-  background: rgba(201,168,106,0.14); cursor: pointer; outline-offset: 7px;
-}
-input[type=range]::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none;
-  width: 18px; height: 18px; border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #f7e8c6, var(--gold) 70%);
-  border: 1px solid rgba(0,0,0,0.45);
-  box-shadow: 0 0 0 4px rgba(201,168,106,0.15), 0 2px 6px rgba(0,0,0,0.55);
-  transition: box-shadow .15s, transform .1s;
-}
-input[type=range]::-webkit-slider-thumb:hover { box-shadow: 0 0 0 6px rgba(201,168,106,0.22), 0 2px 8px rgba(0,0,0,0.6); }
-input[type=range]:active::-webkit-slider-thumb { transform: scale(1.09); }
-input[type=range]::-moz-range-thumb {
-  width: 17px; height: 17px; border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #f7e8c6, var(--gold) 70%);
-  border: 1px solid rgba(0,0,0,0.45); box-shadow: 0 0 0 4px rgba(201,168,106,0.15);
-}
-
-/* ── preset buttons ──────────────────────────────────────────────── */
-.preset {
-  font: inherit; font-size: .72rem; font-weight: 600; letter-spacing: .01em;
-  color: var(--ink); cursor: pointer;
-  padding: 6px 12px; border-radius: 999px;
-  background: rgba(201,168,106,0.06);
-  border: 1px solid var(--line);
-  transition: background .15s, border-color .15s, transform .08s, color .15s;
-}
-.preset:hover { background: rgba(201,168,106,0.14); border-color: var(--line-strong); color: var(--ink-bright); }
-.preset:active { transform: translateY(1px); }
-.preset[aria-pressed="true"] { background: rgba(201,168,106,0.20); border-color: var(--line-strong); color: var(--gold-bright); }
-
-/* ── leg builder ─────────────────────────────────────────────────── */
-.leg-row {
-  display: flex; align-items: center; gap: .45rem; flex-wrap: wrap;
-  padding: .45rem .5rem; border-radius: 10px;
-  background: var(--panel-2); border: 1px solid var(--line);
-}
-.leg-input {
-  font-family: var(--mono); font-size: .8rem; color: var(--ink-bright);
-  background: rgba(255,255,255,0.03); border: 1px solid var(--line);
-  border-radius: 7px; padding: 4px 6px; width: 4.6em;
-}
-.leg-input:focus { border-color: var(--line-strong); outline: none; }
-.leg-lbl { font-size: .66rem; color: var(--muted-2); display: inline-flex; align-items: center; gap: .25rem; }
-.kind-btn {
-  font: inherit; font-family: var(--mono); font-size: .66rem; font-weight: 700;
-  letter-spacing: .06em; cursor: pointer; padding: 4px 8px; border-radius: 7px;
-  border: 1px solid; background: transparent; transition: .15s;
-}
-.kind-btn.call { color: var(--green); border-color: rgba(99,216,145,0.4); }
-.kind-btn.put  { color: var(--red);   border-color: rgba(244,122,128,0.4); }
-.kind-btn:hover { background: rgba(255,255,255,0.05); }
-.x-btn {
-  font: inherit; font-size: .9rem; line-height: 1; cursor: pointer;
-  color: var(--muted-2); background: none; border: none; padding: 2px 6px;
-  border-radius: 6px; margin-left: auto; transition: .15s;
-}
-.x-btn:hover { color: var(--red); background: rgba(244,122,128,0.1); }
-.dropzone {
-  border: 1px dashed var(--line-strong); border-radius: 11px;
-  padding: .65rem .8rem; text-align: center;
-  color: var(--muted-2); font-size: .7rem; cursor: pointer; transition: .15s;
-}
-.dropzone:hover, .dropzone.drag { background: rgba(201,168,106,0.07); color: var(--gold-bright); }
-
-/* ── value flash on change ───────────────────────────────────────── */
-@keyframes flash {
-  0%   { color: var(--gold-bright); text-shadow: 0 0 14px rgba(201,168,106,0.6); }
-  100% { text-shadow: none; }
-}
-.flash { animation: flash 0.5s ease-out; }
+:focus-visible { outline: 2px solid var(--amber-2); outline-offset: 2px; border-radius: 4px; }
 
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.pos  { color: var(--green); }
+.neg  { color: var(--red); }
 
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
 
-/* ── chart ───────────────────────────────────────────────────────── */
-.chart-line { transition: d .12s linear; }
-@keyframes dotPulse { 0%,100% { opacity: .38; } 50% { opacity: .08; } }
-.dot-ring { animation: dotPulse 2.2s ease-in-out infinite; }
-
-/* ── Monte Carlo path animation ──────────────────────────────────── */
-@keyframes mcDraw { to { stroke-dashoffset: 0; } }
-.mc-path {
-  stroke-dasharray: 1500; stroke-dashoffset: 1500;
-  animation: mcDraw 1.05s ease-out forwards;
+/* ── range inputs: track fill driven by --pct ─────────────────────── */
+input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 20px; background: transparent; cursor: pointer;
+  --pct: 50%;
 }
-@keyframes barGrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
-.mc-bar { transform-origin: bottom; animation: barGrow .5s ease-out backwards; }
+input[type=range]::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 999px;
+  background: linear-gradient(90deg, var(--amber) 0 var(--pct), var(--surface-3) var(--pct) 100%);
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; margin-top: -5px; border-radius: 50%;
+  background: var(--amber-2); border: 2px solid var(--bg);
+  box-shadow: 0 0 0 1px var(--amber-line);
+  transition: transform .12s var(--ease), box-shadow .12s;
+}
+input[type=range]:hover::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--amber-soft), 0 0 0 1px var(--amber-line); }
+input[type=range]:active::-webkit-slider-thumb { transform: scale(1.15); }
+input[type=range]::-moz-range-track { height: 4px; border-radius: 999px; background: var(--surface-3); }
+input[type=range]::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--amber); }
+input[type=range]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--amber-2); border: 2px solid var(--bg);
+}
+input[type=range]:focus-visible { outline: none; }
+input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(245, 199, 126, 0.45); }
+input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 4px rgba(245, 199, 126, 0.45); }
 
-/* ── page entrance ──────────────────────────────────────────────────
-   No fill-mode and no per-element delay: the resting state is fully
-   visible, so content can never be stuck at opacity 0 if animations
-   are paused (background tabs, tab restore, print). */
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-main { animation: fadeIn .4s ease; }
+/* numeric fields: no spinners */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 
-/* ── reduced motion ──────────────────────────────────────────────── */
+/* scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--surface-3) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 999px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* value change flash */
+@keyframes qc-flash { from { color: var(--amber-2); } }
+.flash { animation: qc-flash .6s var(--ease); }
+
+@keyframes qc-fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
-
-/* ── responsive safety ──────────────────────────────────────────────
-   Grid/flex items default to min-width:auto, so a wide child (chart,
-   table, pill row) forces the whole track past the viewport. Clamping
-   to 0 lets each panel shrink and scroll its own overflow instead. */
-.qc-grid > *,
-.lab-grid > *,
-.qc-grid > * > *,
-.lab-grid > * > *,
-main section { min-width: 0; }
-main section > * { max-width: 100%; }

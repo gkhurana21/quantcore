@@ -33,7 +33,9 @@ export default defineConfig({
       cwd: __dirname,
       port: 3000,
       reuseExistingServer: true,
-      timeout: 60_000,
+      timeout: 90_000,
+      // deterministic tests: never call the optional live market-data proxy
+      env: { NEXT_PUBLIC_PROXY_URL: 'disabled' },
     },
   ],
 });

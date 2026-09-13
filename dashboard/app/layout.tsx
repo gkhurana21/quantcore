@@ -1,23 +1,21 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
+const TITLE = 'QuantCore — Options Pricing & Risk Research Terminal';
+const DESCRIPTION =
+  'Build option strategies, compare Black-Scholes, binomial and Monte Carlo pricing, ' +
+  'simulate GBM paths, stress-test portfolios and measure VaR. Browser analytics plus a ' +
+  'local C++17 / Apple Metal pricing engine over WebSocket.';
+
 export const metadata: Metadata = {
-  title: 'QuantCore — Real-time Options Pricing Engine',
-  description:
-    'Interactive Black-Scholes / Monte Carlo options pricing with live Greeks, ' +
-    'P&L surface, and scenario analysis. C++ core, Apple Metal GPU, sub-5ms WebSocket streaming.',
+  title: TITLE,
+  description: DESCRIPTION,
   authors: [{ name: 'Gaurang Khurana', url: 'https://gaurangkhurana.ca' }],
-  openGraph: {
-    title: 'QuantCore — Real-time Options Pricing Engine',
-    description:
-      'Interactive options pricing with live Greeks and a P&L surface. ' +
-      'C++ core · Apple Metal GPU (up to 69× vs NumPy) · sub-5ms streaming.',
-    type: 'website',
-  },
+  openGraph: { title: TITLE, description: DESCRIPTION, type: 'website' },
 };
 
 export const viewport: Viewport = {
-  themeColor: '#060606',
+  themeColor: '#0a0b0d',
   width: 'device-width',
   initialScale: 1,
 };

@@ -1,0 +1,42 @@
+.drop {
+  display: grid; justify-items: center; gap: 4px; padding: 14px 12px; cursor: pointer; text-align: center;
+  border: 1px dashed var(--line-3); border-radius: 8px; background: var(--bg-raise);
+  transition: border-color .15s, background .15s;
+}
+.drop:hover, .dropActive { border-color: var(--amber-line); background: var(--amber-soft); }
+.dropIcon { color: var(--ink-3); }
+.drop:hover .dropIcon, .dropActive .dropIcon { color: var(--amber-2); }
+.dropText { font-size: 12.5px; color: var(--ink-2); }
+.dropText b { color: var(--ink); font-weight: 600; }
+.dropHint { font-family: var(--mono); font-size: 11px; color: var(--ink-4); }
+
+.privacy { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11.5px; color: var(--green); }
+.samples { display: flex; flex-wrap: wrap; gap: 2px; margin: 6px -8px 0; }
+.error { margin-top: 8px; font-size: 12px; color: var(--red); line-height: 1.45; }
+.warning { margin-top: 6px; font-size: 12px; color: var(--amber-2); line-height: 1.45; }
+
+.preview {
+  margin-top: 10px; padding: 10px; border-radius: 6px;
+  border: 1px solid var(--line-2); background: var(--bg-raise);
+  animation: qc-fade .25s var(--ease);
+}
+.previewHead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.fileName { font-family: var(--mono); font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.mapping { font-size: 11.5px; color: var(--ink-3); }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px; margin-top: 8px; }
+.summary div { display: grid; gap: 1px; }
+.summary dt { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-4); }
+.summary dd { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+.rowsWrap { margin-top: 8px; max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+.rows { font-size: 11.5px; }
+.rows th, .rows td { padding: 5px 7px; }
+.ok { color: var(--green); max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.rowError { color: var(--red); white-space: normal; min-width: 180px; }
+.actions { display: flex; gap: 6px; margin-top: 10px; }
+
+.docs { margin-top: 10px; }
+.docs summary { cursor: pointer; font-size: 12px; color: var(--ink-3); }
+.docs summary:hover { color: var(--ink); }
+.docsTable { margin: 8px 0; font-size: 11.5px; }
+.docsTable td { white-space: normal; vertical-align: top; }
+.aliases { color: var(--ink-3); }

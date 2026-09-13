@@ -1,0 +1,80 @@
+/* ── summary tiles ─────────────────────────────────────────────────── */
+.tiles {
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+}
+.tile { padding: 11px 14px 12px; min-width: 0; border-right: 1px solid var(--line); }
+.tile:last-child { border-right: 0; }
+.tileLabel {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3);
+  white-space: nowrap;
+}
+.tileValue {
+  margin-top: 4px; font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-size: 19px; font-weight: 620; color: var(--ink); letter-spacing: -.01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* tooltips on the right-hand tiles open leftwards so they stay inside the viewport */
+.tile:nth-child(n+4) [role='note'] > span { left: auto; right: -6px; transform: none; }
+.tileSub { margin-top: 2px; font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.facts { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 10px 14px; align-items: baseline; }
+.fact { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.factLabel { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+.factValue { font-family: var(--mono); font-size: 12.5px; color: var(--ink); white-space: nowrap; }
+
+.source { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.sourceName { color: var(--ink-2); font-weight: 560; }
+
+@media (max-width: 1320px) {
+  .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .tile:nth-child(3n) { border-right: 0; }
+  .tile:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
+}
+@media (max-width: 520px) {
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile:nth-child(3n) { border-right: 1px solid var(--line); }
+  .tile:nth-child(2n) { border-right: 0; }
+  .tile:nth-child(-n+4) { border-bottom: 1px solid var(--line); }
+  .tileValue { font-size: 17px; }
+}
+
+/* ── strategy chart ────────────────────────────────────────────────── */
+.chartWrap { position: relative; width: 100%; min-width: 0; }
+.chartSvg { display: block; width: 100%; touch-action: pan-y; cursor: crosshair; border-radius: 4px; }
+.chartSvg:focus-visible { outline: 2px solid var(--amber-2); outline-offset: 2px; }
+.axisText { font-family: var(--mono); font-size: 10.5px; fill: var(--ink-4); }
+.axisUnit { font-family: var(--sans); font-size: 10.5px; fill: var(--ink-3); font-weight: 600; letter-spacing: .04em; }
+.markerText { font-family: var(--mono); font-size: 10.5px; }
+.tooltip {
+  position: absolute; top: 8px; z-index: 5; pointer-events: none;
+  min-width: 150px; padding: 8px 10px; border-radius: 6px;
+  background: rgba(23, 26, 31, 0.96); border: 1px solid var(--line-2);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .5);
+  font-size: 12px; line-height: 1.55;
+}
+.tooltipHead { font-family: var(--mono); color: var(--ink-2); font-size: 11.5px; margin-bottom: 2px; }
+.tooltipRow { display: flex; justify-content: space-between; gap: 14px; }
+.tooltipRow span:first-child { color: var(--ink-3); }
+.tooltipRow span:last-child { font-family: var(--mono); color: var(--ink); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; font-size: 11.5px; color: var(--ink-3); }
+.legendItem { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.swatchLine { width: 16px; height: 2px; border-radius: 2px; background: var(--amber); }
+.swatchDash { width: 16px; border-top: 2px dashed var(--ink-3); }
+.swatchDot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber-2); }
+.swatchBox { width: 10px; height: 10px; border-radius: 2px; }
+
+/* ── P&L surface ───────────────────────────────────────────────────── */
+.surfaceWrap { overflow-x: auto; }
+.surface { width: 100%; min-width: 420px; border-collapse: separate; border-spacing: 3px; font-size: 12.5px; }
+.surface th { font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--ink-3); padding: 5px 6px; text-align: center; white-space: nowrap; }
+.surface th[scope='row'] { text-align: right; }
+.surface td {
+  font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right;
+  padding: 8px 8px; border-radius: 4px; white-space: nowrap; color: var(--ink);
+  transition: background-color .2s var(--ease);
+}
+.surfaceCenter { box-shadow: inset 0 0 0 1.5px var(--amber-2); }
+.surfaceFoot { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 11.5px; color: var(--ink-3); flex-wrap: wrap; }
+.surfaceScale { width: 140px; height: 6px; border-radius: 999px; background: linear-gradient(90deg, rgba(240,106,110,.8), rgba(255,255,255,.06), rgba(76,203,141,.8)); }

@@ -1,0 +1,48 @@
+.head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.url { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+.reason { font-size: 12.5px; color: var(--ink-2); line-height: 1.5; margin-top: 8px; max-width: 900px; }
+
+.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.stat { min-width: 0; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-raise); }
+.stat dt { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+.stat dd { margin-top: 2px; font-family: var(--mono); font-size: 14px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.diagramWrap { margin-top: 14px; padding: 8px; overflow-x: auto; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-raise); }
+.diagram { display: block; width: 100%; min-width: 700px; height: auto; }
+.node { fill: var(--surface-2); stroke: var(--line-2); stroke-width: 1; }
+.nodeActive { stroke: var(--amber); stroke-width: 1.5; }
+.nodeTitle { font: 600 12.5px var(--sans); fill: var(--ink); }
+.nodeSub { font: 11px var(--mono); fill: var(--ink-3); }
+.groupLabel { font: 700 10.5px var(--sans); letter-spacing: .1em; fill: var(--ink-3); }
+.edge { fill: none; stroke: var(--ink-4); stroke-width: 1.4; stroke-dasharray: 3 4; }
+.edgeLive { stroke: var(--amber); stroke-dasharray: 6 6; animation: flow 1s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -12; } }
+.edgeLabel { font: 11px var(--mono); fill: var(--ink-3); }
+
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; margin-top: 14px; }
+.box { min-width: 0; padding: 10px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-raise); }
+.boxHead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.boxHead span:last-child { font-weight: 400; font-size: 11.5px; color: var(--ink-3); }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.result { margin-top: 10px; font-family: var(--mono); font-size: 12.5px; line-height: 1.65; color: var(--ink-2); }
+
+.cmd {
+  margin-top: 8px; padding: 10px 12px; overflow-x: auto; white-space: pre;
+  border-radius: 6px; border: 1px solid var(--line); background: #07080a;
+  font-family: var(--mono); font-size: 12px; line-height: 1.65; color: var(--ink-2);
+}
+
+.sectionTitle { margin: 18px 0 8px; font-size: 11px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+.bench { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+.benchCard { padding: 10px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-raise); }
+.benchValue { font-family: var(--mono); font-size: 20px; font-weight: 650; color: var(--amber-2); }
+.benchLabel { margin-top: 2px; font-size: 12px; font-weight: 600; color: var(--ink); }
+.benchDetail { margin-top: 3px; font-size: 11.5px; line-height: 1.45; color: var(--ink-3); }
+
+@media (max-width: 1100px) {
+  .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

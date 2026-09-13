@@ -1,0 +1,69 @@
+.stack { display: grid; gap: 12px; }
+
+/* ── instrument & market ───────────────────────────────────────────── */
+.instMeta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--ink-3); min-width: 0; }
+.instName { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search { display: flex; gap: 6px; margin-top: 8px; }
+.searchInput {
+  flex: 1; min-width: 0; padding: 4px 8px; border-radius: 5px;
+  background: var(--bg-raise); border: 1px solid var(--line-2);
+  font-family: var(--mono); font-size: 12.5px; text-transform: uppercase;
+}
+.searchInput::placeholder { text-transform: none; color: var(--ink-4); }
+.searchInput:focus { outline: none; border-color: var(--amber-line); box-shadow: 0 0 0 3px var(--amber-soft); }
+.searchMsg { margin-top: 4px; font-size: 11.5px; color: var(--red); }
+.sliders { display: grid; gap: 10px; margin-top: 12px; }
+.marketFoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+
+/* ── presets ───────────────────────────────────────────────────────── */
+.presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.preset {
+  display: grid; gap: 3px; justify-items: start; min-width: 0;
+  padding: 6px 8px 7px; border-radius: 6px; text-align: left;
+  border: 1px solid var(--line); background: var(--bg-raise);
+  font-size: 11.5px; font-weight: 560; color: var(--ink-2);
+  transition: border-color .15s, background .15s, color .15s;
+}
+.preset:hover { border-color: var(--line-3); background: var(--surface-2); color: var(--ink); }
+.preset[aria-pressed='true'] { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber-2); }
+.presetName { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.glyph { display: block; width: 100%; height: 16px; }
+
+.sectionLabel {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin: 14px 0 6px; font-size: 10.5px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3);
+}
+.sectionLabel span:last-child { letter-spacing: 0; text-transform: none; font-weight: 500; color: var(--ink-3); font-size: 11.5px; }
+
+.expiry { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--ink-3); flex-wrap: wrap; }
+.select {
+  background: var(--bg-raise); border: 1px solid var(--line-2); border-radius: 4px;
+  padding: 3px 6px; font-family: var(--mono); font-size: 12px; color: var(--ink); min-width: 0;
+}
+
+/* ── legs ──────────────────────────────────────────────────────────── */
+.legs { display: grid; gap: 6px; }
+.leg {
+  display: grid; gap: 7px; padding: 7px 8px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg-raise);
+  animation: qc-fade .25s var(--ease);
+}
+.legTop { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.legIdx { font-family: var(--mono); font-size: 11px; color: var(--ink-4); width: 14px; flex: none; }
+.legMark { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.legFields { display: grid; grid-template-columns: 1.3fr .8fr .8fr 1fr; gap: 6px; }
+.cell { display: grid; gap: 2px; min-width: 0; }
+.cellLabel { font-size: 9.5px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-4); }
+.cellInput {
+  width: 100%; min-width: 0; padding: 3px 6px; border-radius: 4px;
+  background: var(--surface); border: 1px solid var(--line-2);
+  font-family: var(--mono); font-size: 12.5px; text-align: right;
+}
+.cellInput:focus { outline: none; border-color: var(--amber-line); box-shadow: 0 0 0 2px var(--amber-soft); }
+.cellInvalid, .cellInvalid:focus { border-color: var(--red); box-shadow: 0 0 0 2px var(--red-soft); }
+.remove { width: 22px; height: 22px; flex: none; border-radius: 4px; color: var(--ink-4); display: grid; place-items: center; font-size: 16px; line-height: 1; }
+.remove:hover:not(:disabled) { color: var(--red); background: var(--red-soft); }
+.remove:disabled { opacity: .3; }
+.legActions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.subtle { font-size: 11.5px; color: var(--ink-3); }
+.sourceTag { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
