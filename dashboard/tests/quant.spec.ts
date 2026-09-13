@@ -328,6 +328,20 @@ test.describe('payoff analytics', () => {
     expect(short.breakevens).toEqual([105]);
   });
 
+  test('zero-cost structures: break-evens at the edge of a flat zero-P&L region', () => {
+    // short put 90 + long call 110 for zero net premium: loss below 90, flat 0 between, profit above 110
+    const reversal = payoffAnalytics([leg(false, 'sell', 90, T, 1, 3), leg(true, 'buy', 110, T, 1, 3)], m);
+    expect(reversal.breakevens).toEqual([90]);
+    // mirror image: profit below 90, flat 0, loss above 110
+    const mirror = payoffAnalytics([leg(false, 'buy', 90, T, 1, 3), leg(true, 'sell', 110, T, 1, 3)], m);
+    expect(mirror.breakevens).toEqual([110]);
+    // free put 90, two short calls 100, long call 110: profit below 90, flat 0 on 90–100, losses above 100
+    const tail = payoffAnalytics([leg(false, 'buy', 90, T, 1, 0), leg(true, 'sell', 100, T, 2, 0), leg(true, 'buy', 110, T, 1, 0)], m);
+    expect(tail.breakevens).toEqual([100]);
+    // a free long call never loses: no break-even
+    expect(payoffAnalytics([leg(true, 'buy', 100, T, 1, 0)], m).breakevens).toEqual([]);
+  });
+
   test('long put profit is bounded at S = 0; straddle has two break-evens', () => {
     const put = payoffAnalytics([leg(false, 'buy', 100, T, 1, 4)], m);
     expect(put.maxProfitUnbounded).toBe(false);

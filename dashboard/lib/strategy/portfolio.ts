@@ -98,18 +98,34 @@ function exactPayoff(legs: Leg[], horizonT: number): PayoffAnalytics {
   const push = (x: number) => {
     if (x >= 0 && !breakevens.some(b => Math.abs(b - x) < 1e-6)) breakevens.push(x);
   };
+  const sign = (v: number) => (v > zero ? 1 : v < -zero ? -1 : 0);
+
+  // Walk the kinks left to right. A sign change inside a segment is interpolated.
+  // P&L can also sit exactly at zero across one or more kinks (zero-cost collars,
+  // risk reversals, free legs); when it leaves that zero run with the opposite sign
+  // to the one it entered with, the break-even is the edge of the run next to the
+  // loss region.
+  let runStart: number | null = null;   // first kink of the current zero run
+  let entrySign = 0;                     // P&L sign just before the zero run
   for (let i = 1; i < xs.length; i++) {
-    const v0 = vals[i - 1], v1 = vals[i];
-    if ((v0 < -zero && v1 > zero) || (v0 > zero && v1 < -zero)) {
-      push(xs[i - 1] + (xs[i] - xs[i - 1]) * (-v0 / (v1 - v0)));
-    } else if (Math.abs(v1) <= zero && Math.abs(v0) > zero) {
-      // touches zero at a kink — a break-even only if the sign flips afterwards
-      const after = i + 1 < xs.length ? vals[i + 1] : v1 + slope;
-      if (after * v0 < 0) push(xs[i]);
+    const s0 = sign(vals[i - 1]), s1 = sign(vals[i]);
+    if (s0 !== 0 && s1 !== 0 && s0 !== s1) {
+      push(xs[i - 1] + (xs[i] - xs[i - 1]) * (-vals[i - 1] / (vals[i] - vals[i - 1])));
+    } else if (s0 !== 0 && s1 === 0) {
+      runStart = xs[i];
+      entrySign = s0;
+    } else if (s0 === 0 && s1 !== 0) {
+      if (runStart != null && entrySign === -s1) push(entrySign < 0 ? runStart : xs[i - 1]);
+      runStart = null;
+      entrySign = 0;
     }
   }
   const last = vals[vals.length - 1], xL = xs[xs.length - 1];
-  if ((last < -zero && slope > tol) || (last > zero && slope < -tol)) push(xL - last / slope);
+  const tailSign = slope > tol ? 1 : slope < -tol ? -1 : 0;
+  if (sign(last) !== 0 && tailSign === -sign(last)) push(xL - last / slope);
+  else if (sign(last) === 0 && runStart != null && tailSign !== 0 && entrySign === -tailSign) {
+    push(entrySign < 0 ? runStart : xL);
+  }
   breakevens.sort((a, b) => a - b);
 
   return {

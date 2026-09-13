@@ -32,7 +32,8 @@ export const ConvergenceChart = memo(function ConvergenceChart({ checkpoints, re
     lo = Math.min(lo, c.price - Z95 * c.se);
     hi = Math.max(hi, c.price + Z95 * c.se);
   }
-  const span = hi - lo || Math.abs(reference) * 0.01 || 1;
+  // a near-deterministic payoff has almost no spread: keep a readable minimum range
+  const span = Math.max(hi - lo, Math.abs(reference) * 1e-4, 1e-6);
   lo -= span * 0.08; hi += span * 0.08;
   const Y = linear(lo, hi, height - pad.b, pad.t);
   const ticks = niceTicks(lo, hi, 4);

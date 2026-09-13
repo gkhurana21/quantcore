@@ -12,7 +12,7 @@ over WebSocket when it runs locally.
 
 | | What it does |
 |---|---|
-| **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA. Spot, volatility, rate and dividend-yield inputs. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
+| **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA, or any ticker — type a symbol and its price (with the optional data proxy running, any US ticker loads with a live quote, listed expirations and chain strikes). Spot, volatility, rate and dividend-yield inputs. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
 | **Greeks & payoff** | Price, Δ, Γ, Θ, ν and P&L tiles; exact max profit / max loss and break-evens; an interactive payoff chart with P&L · Δ · Γ · Vega · Θ modes (hover or keyboard crosshair); a full-revaluation spot × vol P&L surface. |
 | **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice. |
 | **Monte Carlo** | Animated risk-neutral GBM paths with spot, strike, expiry and in-the-money markers; a 50,000-sample terminal distribution against its analytic lognormal density; simulated P(ITM) vs N(d₂). |
@@ -25,7 +25,8 @@ over WebSocket when it runs locally.
 implementations of the same models (heavy simulations run in a Web Worker), and the engine badge reads *Offline*.
 Run the engine locally and the badge turns *Connected*: the Greeks tiles are then priced by the C++ core — the
 default SPY contract as a stream, any other portfolio as one batch call — and the C++ Engine tab can run the native
-Monte Carlo kernel. Snapshot prices are indicative, not live quotes.
+Monte Carlo kernel. Snapshot prices are indicative, not live quotes; a ticker you add is priced from the price you
+enter and is labelled *Manual price*.
 
 ## Architecture
 
@@ -138,6 +139,16 @@ cd dashboard && npm install && npm run dev
 
 The terminal also runs without the engine: everything is then computed in the browser and the badge reads *Offline*.
 
+Optional live market data for any US ticker (free Alpaca paper account; keys stay in the gitignored `proxy/.env.local`):
+
+```bash
+cp proxy/.env.local.example proxy/.env.local   # add your Alpaca key ID and secret
+./proxy/dev.sh                                  # proxy on http://localhost:8080
+cd dashboard && NEXT_PUBLIC_PROXY_URL=http://localhost:8080 npm run dev
+```
+
+The proxy is opt-in: without `NEXT_PUBLIC_PROXY_URL` the terminal makes no market-data requests.
+
 ## Testing
 
 ```bash
@@ -153,8 +164,15 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
   the C++ `bs_full`, CRR convergence and early exercise, implied-vol round trips, Monte Carlo within 3 SE and seed
   determinism, antithetic variance reduction, one- and two-factor VaR, payoff analytics for spreads/condors/unbounded
   legs, and CSV/XLSX/XLS parsing.
-- `tests/terminal.spec.ts` — preset, instrument switch, Pricing Lab, Monte Carlo view, chart modes, CSV upload,
-  XLSX and XLS upload, Stress Lab, Risk / VaR.
+- `tests/properties.spec.ts` — seeded property-based tests over thousands of random markets and portfolios:
+  no-arbitrage bounds and parity at extreme inputs, portfolio Greeks vs finite differences, American ≥ European ≥
+  intrinsic, implied-vol round trips, payoff analytics vs a dense scan (every sign change is a break-even), stress and
+  VaR invariants, CSV round trips, import fuzzing and chart-axis ticks for degenerate ranges.
+- `tests/terminal.spec.ts` — preset, instrument switch, any-ticker entry, Pricing Lab, Monte Carlo view, chart modes,
+  CSV upload, XLSX and XLS upload, Stress Lab, Risk / VaR.
+- `tests/robustness.spec.ts` — seeded random walks through the whole UI (desktop and 375 px mobile) with invalid and
+  extreme inputs, failing on any console error, NaN/undefined/Infinity on screen or horizontal overflow; malformed
+  uploads; stacked stress scenarios; the engine crashing mid-session and recovering; an engine that never answers.
 - `tests/engine.spec.ts` and `tests/dashboard.spec.ts` — the live C++ path: streamed prices matching the bindings
   (including with a dividend yield), stream and batch source switching, engine/browser agreement and native Monte
   Carlo convergence.
@@ -202,7 +220,8 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
 - American early exercise is priced only by the CRR lattice in the Pricing Models Lab; Greeks, charts, stress and VaR treat options as European.
 - The native Monte Carlo kernel prices one European contract per run.
 - The engine is a local service: the hosted terminal always computes in the browser.
-- Instrument prices are indicative snapshots unless the optional data proxy is configured.
+- Instrument prices are indicative snapshots or prices you enter, unless the optional data proxy is running; added
+  tickers start at 30% volatility until you set it.
 - Stress scenarios are illustrative instantaneous shocks, not calibrated historical replays.
 - VaR is a single-underlying research model: the two-factor row adds implied-vol risk with illustrative, uncalibrated parameters, and rates stay fixed — educational, not a regulatory or trading risk measure.
 

@@ -4,7 +4,7 @@ import { defineConfig } from '@playwright/test';
 // the Playwright test runner (Node) and need no browser or dev server.
 export default defineConfig({
   testDir: './tests',
-  testMatch: /quant\.spec\.ts$/,
+  testMatch: /(quant|properties)\.spec\.ts$/,
   timeout: 60_000,
   retries: 0,
   reporter: [['list']],

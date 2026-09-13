@@ -8,12 +8,23 @@ export function niceStep(span: number, count: number): number {
   return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * p;
 }
 
+/**
+ * Round-numbered axis ticks covering [lo, hi]. Always sorted, unique and bounded.
+ * Ticks are integer multiples of the step (no floating-point accumulation), and a
+ * range narrower than ~1e-9 of its magnitude — e.g. a Monte Carlo estimate with
+ * essentially zero spread — gets one centre tick instead of values that collapse
+ * to duplicates once rounded.
+ */
 export function niceTicks(lo: number, hi: number, count = 5): number[] {
-  if (!(hi > lo)) return [lo];
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [];
+  if (hi < lo) [lo, hi] = [hi, lo];
+  const mag = Math.max(Math.abs(lo), Math.abs(hi));
+  if (!(hi - lo > mag * 1e-9)) return [+((lo + hi) / 2).toPrecision(12)];
   const step = niceStep(hi - lo, count);
   const out: number[] = [];
-  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) {
-    out.push(Math.abs(v) < step * 1e-9 ? 0 : +v.toPrecision(12));
+  for (let k = Math.ceil(lo / step - 1e-9); k * step <= hi + step * 1e-9 && out.length <= 4 * count; k++) {
+    const v = k === 0 ? 0 : +(k * step).toPrecision(12);
+    if (!out.length || v > out[out.length - 1]) out.push(v);
   }
   return out;
 }
