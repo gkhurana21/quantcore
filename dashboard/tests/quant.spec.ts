@@ -9,11 +9,13 @@
 
 import { test, expect } from '@playwright/test';
 import { execSync } from 'child_process';
+import { existsSync } from 'fs';
 import path from 'path';
 import * as XLSX from 'xlsx';
 
 import { bsGreeks, bsPrice, probItm } from '../lib/quant/blackScholes';
-import { crrPrice } from '../lib/quant/binomial';
+import { crrAmericanPrice, crrPrice } from '../lib/quant/binomial';
+import { impliedVol } from '../lib/quant/impliedVol';
 import { mcPortfolio, terminalDistribution } from '../lib/quant/monteCarlo';
 import { normCdf, normInv } from '../lib/quant/normal';
 import { mulberry32 } from '../lib/quant/rng';
@@ -36,18 +38,23 @@ const mkt = (S: number, sigma: number, r: number, q = 0): Market => ({ S, sigma,
 
 // ── C++ reference (python bindings) ─────────────────────────────────────────
 
-const PY = '/Library/Developer/CommandLineTools/usr/bin/python3';
+const MAC_PY = '/Library/Developer/CommandLineTools/usr/bin/python3';
+const PY = existsSync(MAC_PY) ? MAC_PY : 'python3';
 const PY_DIR = path.resolve(__dirname, '..', '..', 'python');
 
-function engineGreeks(call: boolean, S: number, K: number, r: number, sigma: number, T: number) {
+function engineGreeks(call: boolean, S: number, K: number, r: number, sigma: number, T: number, q = 0) {
   const script = `import sys, json; sys.path.insert(0, r"${PY_DIR}"); import quantcore; ` +
-    `print(json.dumps(quantcore.bs_full(${call ? 0 : 1}, ${S}, ${K}, ${r}, ${sigma}, ${T})))`;
-  return JSON.parse(execSync(`${PY} -c '${script}'`).toString().trim()) as
+    `print(json.dumps(quantcore.bs_full(${call ? 0 : 1}, ${S}, ${K}, ${r}, ${sigma}, ${T}, ${q})))`;
+  return JSON.parse(execSync(`${PY} -c '${script}'`, { stdio: ['pipe', 'pipe', 'ignore'] }).toString().trim()) as
     { price: number; delta: number; gamma: number; theta: number; vega: number };
 }
 
 function engineAvailable(): boolean {
   try { engineGreeks(true, 100, 100, 0.05, 0.2, 1); return true; } catch { return false; }
+}
+
+function pythonAvailable(): boolean {
+  try { execSync(`${PY} -c "import math"`, { stdio: 'ignore' }); return true; } catch { return false; }
 }
 
 // ── normal distribution ─────────────────────────────────────────────────────
@@ -63,7 +70,21 @@ test.describe('normal distribution', () => {
   });
 
   test('CDF symmetry is exact', () => {
-    for (const x of [-3, -1.2, -0.1, 0.4, 2.5]) expect(normCdf(x) + normCdf(-x)).toBe(1);
+    for (const x of [-3, -1.2, -0.1, 0.4, 2.5, 6, 8]) expect(normCdf(x) + normCdf(-x)).toBe(1);
+    expect(normCdf(0)).toBe(0.5);
+  });
+
+  test('CDF matches erfc to double precision on a grid from −38 to 38', () => {
+    test.skip(!pythonAvailable(), 'python3 not available for the erfc reference');
+    const xs: number[] = [];
+    for (let i = -3800; i <= 3800; i++) xs.push(i / 100);
+    const ref: number[] = JSON.parse(execSync(
+      `${PY} -c 'import json,math,sys; print(json.dumps([0.5*math.erfc(-x/math.sqrt(2)) for x in json.load(sys.stdin)]))'`,
+      { input: JSON.stringify(xs) }).toString());
+    let worst = 0;
+    xs.forEach((x, i) => { worst = Math.max(worst, Math.abs(normCdf(x) - ref[i])); });
+    // measured 2.2e-16 (one ulp) — the bound leaves a small margin for libm differences
+    expect(worst).toBeLessThan(1e-15);
   });
 });
 
@@ -75,25 +96,31 @@ test.describe('Black-Scholes-Merton', () => {
     expect(bsPrice(false, 42, 40, 0.5, 0.2, 0.1)).toBeCloseTo(0.8086, 4);
   });
 
-  test('matches the C++ core (bs_full) on price and all Greeks', () => {
+  test('matches the C++ core (bs_full) on price and all Greeks, with and without dividends', () => {
     test.skip(!engineAvailable(), 'quantcore python module not built');
-    const cases: [boolean, number, number, number, number, number][] = [
-      [true, 756.48, 755, 0.045, 0.138, 0.129],   // canonical engine contract
-      [false, 756.48, 755, 0.045, 0.138, 0.129],
-      [true, 42, 40, 0.1, 0.2, 0.5],
-      [false, 142.35, 150, 0.03, 0.38, 0.6],
+    const cases: [boolean, number, number, number, number, number, number][] = [
+      [true, 756.48, 755, 0.045, 0.138, 0.129, 0],    // canonical engine contract
+      [false, 756.48, 755, 0.045, 0.138, 0.129, 0],
+      [true, 42, 40, 0.1, 0.2, 0.5, 0],
+      [false, 142.35, 150, 0.03, 0.38, 0.6, 0],
+      [true, 930, 900, 0.08, 0.2, 2 / 12, 0.03],      // Hull index option with dividend yield
+      [false, 930, 900, 0.08, 0.2, 2 / 12, 0.03],
+      [true, 100, 120, 0.02, 0.6, 2, 0.05],
+      [false, 251.8, 200, 0.045, 0.45, 0.05, 0.01],
     ];
-    for (const [call, S, K, r, sigma, T] of cases) {
-      const ref = engineGreeks(call, S, K, r, sigma, T);
-      const g = bsGreeks(call, S, K, T, sigma, r, 0);
-      // Tolerances follow the A&S normal-CDF error bound (7.5e-8) scaled by S and K.
-      const nTol = 7.5e-8 * 2;
-      expect(Math.abs(g.price - ref.price)).toBeLessThan((S + K) * nTol);
-      expect(Math.abs(g.delta - ref.delta)).toBeLessThan(nTol);
-      expect(Math.abs(g.gamma - ref.gamma)).toBeLessThan(1e-9);
-      expect(Math.abs(g.theta - ref.theta)).toBeLessThan((S * sigma + r * K) * nTol + 1e-9);
-      expect(Math.abs(g.vega - ref.vega)).toBeLessThan(1e-7 * Math.max(1, ref.vega));
+    for (const [call, S, K, r, sigma, T, q] of cases) {
+      const ref = engineGreeks(call, S, K, r, sigma, T, q);
+      const g = bsGreeks(call, S, K, T, sigma, r, q);
+      // Both sides use double-precision N(x) (Hart/West in TS, erfc in C++): measured
+      // worst differences are ~1e-13, so a 1e-12 relative bound is a real equality check.
+      for (const k of ['price', 'delta', 'gamma', 'theta', 'vega'] as const) {
+        expect(Math.abs(g[k] - ref[k])).toBeLessThan(1e-12 * Math.max(1, Math.abs(ref[k])));
+      }
     }
+  });
+
+  test('Hull index option with a dividend yield: S=930 K=900 r=8% q=3% σ=20% T=2/12', () => {
+    expect(bsPrice(true, 930, 900, 2 / 12, 0.2, 0.08, 0.03)).toBeCloseTo(51.83, 2);
   });
 
   test('put-call parity holds with a dividend yield', () => {
@@ -148,6 +175,58 @@ test.describe('CRR binomial (512 steps)', () => {
     const err = (n: number) => Math.abs(crrPrice(true, 100, 100, 0.5, 0.2, 0.05, 0, n) - bs);
     expect(err(512)).toBeLessThan(err(64));
     expect(err(64)).toBeLessThan(err(8));
+  });
+});
+
+test.describe('American exercise (CRR with early exercise)', () => {
+  test('Hull American put: S=50 K=50 r=10% σ=40% T=5/12 → 4.49 with 5 steps, ≈4.28 with 500', () => {
+    expect(crrAmericanPrice(false, 50, 50, 5 / 12, 0.4, 0.1, 0, 5)).toBeCloseTo(4.49, 2);
+    expect(crrAmericanPrice(false, 50, 50, 5 / 12, 0.4, 0.1, 0, 500)).toBeCloseTo(4.283, 2);
+  });
+
+  test('no early exercise premium for a call without dividends; a put always has one', () => {
+    for (const [S, K, T, sigma, r] of [[100, 100, 1, 0.25, 0.05], [756.48, 755, 0.129, 0.138, 0.045], [42, 50, 2, 0.4, 0.03]]) {
+      expect(crrAmericanPrice(true, S, K, T, sigma, r, 0, 512)).toBeCloseTo(crrPrice(true, S, K, T, sigma, r, 0, 512), 9);
+      expect(crrAmericanPrice(false, S, K, T, sigma, r, 0, 512)).toBeGreaterThan(crrPrice(false, S, K, T, sigma, r, 0, 512));
+    }
+  });
+
+  test('a high dividend yield makes early exercise of a deep ITM call valuable', () => {
+    const eu = crrPrice(true, 120, 100, 1, 0.2, 0.03, 0.08, 512);
+    const am = crrAmericanPrice(true, 120, 100, 1, 0.2, 0.03, 0.08, 512);
+    expect(am).toBeGreaterThan(eu + 0.05);
+    expect(am).toBeGreaterThanOrEqual(20);                             // never below intrinsic
+  });
+});
+
+test.describe('implied volatility', () => {
+  test('recovers the input volatility across strikes, maturities, vols and dividends', () => {
+    let worst = 0, cases = 0;
+    for (const call of [true, false]) {
+      for (const K of [70, 90, 100, 110, 130]) {
+        for (const T of [0.02, 0.25, 1, 3]) {
+          for (const sigma of [0.05, 0.2, 0.6, 1.5]) {
+            for (const q of [0, 0.03]) {
+              const g = bsGreeks(call, 100, K, T, sigma, 0.04, q);
+              if (g.vega < 1e-3) continue;                                // price insensitive to vol: IV ill-posed
+              const iv = impliedVol(call, g.price, 100, K, T, 0.04, q);
+              expect(iv).not.toBeNull();
+              worst = Math.max(worst, Math.abs(iv!.sigma - sigma));
+              cases++;
+            }
+          }
+        }
+      }
+    }
+    expect(cases).toBeGreaterThan(100);
+    expect(worst).toBeLessThan(1e-7);
+  });
+
+  test('prices outside the no-arbitrage bounds have no implied volatility', () => {
+    expect(impliedVol(true, 4.9, 105, 100, 0.5, 0.05)).toBeNull();     // below intrinsic of the forward
+    expect(impliedVol(true, 105, 105, 100, 0.5, 0.05)).toBeNull();     // ≥ spot
+    expect(impliedVol(false, 0, 100, 100, 0.5, 0.05)).toBeNull();
+    expect(impliedVol(true, 18.006294972555665, 756.48, 755, 0.129, 0.045)!.sigma).toBeCloseTo(0.138, 9);
   });
 });
 
@@ -322,6 +401,19 @@ test.describe('VaR', () => {
     const dg = deltaGammaVaR(legs, m, 0.95, 1);
     expect(Math.abs(a.var - dg) / dg).toBeLessThan(0.15);
     expect(mcVaR(legs, m, 0.99, 1, 20_000, 42).var).toBeGreaterThan(a.var);
+  });
+
+  test('two-factor MC VaR: zero vol-of-vol reproduces one-factor exactly; vol risk raises a short straddle VaR', () => {
+    const one = mcVaR(legs, m, 0.95, 1, 20_000, 42);
+    const zeroNu = mcVaR(legs, m, 0.95, 1, 20_000, 42, { volOfVol: 0, rho: -0.7 });
+    expect(zeroNu.var).toBe(one.var);
+    expect(zeroNu.es).toBe(one.es);
+
+    const shortStraddle = [leg(true, 'sell', 755, 0.129, 10), leg(false, 'sell', 755, 0.129, 10)];
+    const spotOnly = mcVaR(shortStraddle, m, 0.95, 5, 20_000, 7);
+    const spotVol = mcVaR(shortStraddle, m, 0.95, 5, 20_000, 7, { volOfVol: 1.0, rho: 0 });
+    expect(spotVol.var).toBeGreaterThan(spotOnly.var);
+    expect(spotVol.es).toBeGreaterThanOrEqual(spotVol.var);
   });
 });
 

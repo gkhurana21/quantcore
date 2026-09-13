@@ -65,24 +65,45 @@ export interface McVarResult {
 }
 
 /**
+ * Implied-volatility risk factor for two-factor Monte Carlo VaR: the implied vol
+ * follows a driftless lognormal process with annualised vol-of-vol ν, and its
+ * shocks are correlated with the spot's by ρ (typically negative for equities).
+ */
+export interface VolFactor { volOfVol: number; rho: number; }
+
+/**
  * Monte Carlo full-revaluation VaR and Expected Shortfall. Simulates the horizon
  * move under zero-drift lognormal dynamics, reprices every leg with its time to
  * expiry reduced by the horizon (so theta is included), and reads the loss
  * quantile off the sorted P&L distribution.
+ *
+ * With `volFactor`, each scenario also shocks implied volatility:
+ * σ' = σ·exp(−½ν²h + ν√h·Z₂), Z₂ = ρ·Z₁ + √(1−ρ²)·ε. Spot and vol draws come
+ * from separate seeded streams, so ν = 0 reproduces the one-factor result exactly.
  */
 export function mcVaR(legs: Leg[], m: Market, conf: number, hDays: number,
-                      nScen: number, seed: number): McVarResult {
+                      nScen: number, seed: number, volFactor?: VolFactor): McVarResult {
   const t0 = now();
   const h = hDays / TRADING_DAYS;
   const base = portfolioValue(legs, m.S, m.sigma, m.r, m.q);
   const next = normalSampler(seed);
+  const nextVol = volFactor ? normalSampler((seed ^ 0x2545f491) >>> 0) : null;
+  const nu = volFactor?.volOfVol ?? 0;
+  const rho = Math.max(-1, Math.min(1, volFactor?.rho ?? 0));
+  const rhoC = Math.sqrt(1 - rho * rho);
   const vol = m.sigma * Math.sqrt(h), drift = -0.5 * m.sigma * m.sigma * h;
   const pnl = new Float64Array(nScen);
   let sum = 0;
   for (let i = 0; i < nScen; i++) {
-    const S = m.S * Math.exp(drift + vol * next());
+    const z1 = next();
+    const S = m.S * Math.exp(drift + vol * z1);
+    let sigma = m.sigma;
+    if (nextVol) {
+      const z2 = rho * z1 + rhoC * nextVol();
+      sigma = m.sigma * Math.exp(-0.5 * nu * nu * h + nu * Math.sqrt(h) * z2);
+    }
     let v = 0;
-    for (const l of legs) v += signedQty(l) * M * bsPrice(l.call, S, l.K, l.T - h, m.sigma, m.r, m.q);
+    for (const l of legs) v += signedQty(l) * M * bsPrice(l.call, S, l.K, l.T - h, sigma, m.r, m.q);
     pnl[i] = v - base;
     sum += pnl[i];
   }

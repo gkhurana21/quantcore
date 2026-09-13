@@ -88,15 +88,17 @@ export default function Dashboard() {
 
   // ── C++ engine: streaming canonical contract ──────────────────────────────
   const { sendUpdate, pricePortfolio } = engine;
+  // An engine that predates protocol v3 ignores q, so it is authoritative only at q = 0.
+  const engineHandlesQ = market.q === 0 || engine.info?.dividends === true;
   useEffect(() => {
-    if (engine.status === 'connected' && canonical) sendUpdate(market);
-  }, [engine.status, canonical, market, sendUpdate]);
+    if (engine.status === 'connected' && canonical && engineHandlesQ) sendUpdate(market);
+  }, [engine.status, canonical, engineHandlesQ, market, sendUpdate]);
 
-  // ── C++ engine: batch pricing for any other q = 0 portfolio ──────────────
+  // ── C++ engine: batch pricing for any other portfolio ─────────────────────
   const [batch, setBatch] = useState<{ legsKey: string; res: EnginePortfolioResult } | null>(null);
   const batchSeq = useRef(0);
   const batchAccepted = useRef(0);
-  const batchEligible = engine.status === 'connected' && !canonical && market.q === 0;
+  const batchEligible = engine.status === 'connected' && !canonical && engineHandlesQ;
   useEffect(() => {
     if (!batchEligible) return;
     const seq = ++batchSeq.current;
@@ -114,7 +116,7 @@ export default function Dashboard() {
 
   // ── which numbers the tiles show, and why ────────────────────────────────
   let quote: TileQuote;
-  if (engine.status === 'connected' && canonical && engine.quote) {
+  if (engine.status === 'connected' && canonical && engineHandlesQ && engine.quote) {
     quote = { greeks: engine.quote, pnl: engine.quote.pnl, calcUs: engine.quote.calcUs, perShare: true,
               source: { kind: 'engine-stream', label: 'C++ engine', reason: 'bs_full over the WebSocket stream' } };
   } else if (batchEligible && batch && batch.legsKey === legsKey && batch.res.legs.length === legs.length) {
@@ -124,7 +126,7 @@ export default function Dashboard() {
     const reason: string = engine.reason === 'hosted' ? 'hosted demo — the C++ engine runs locally'
       : engine.status === 'connecting' ? 'connecting to engine…'
       : engine.status === 'offline' ? 'engine offline'
-      : market.q !== 0 ? 'q ≠ 0 — the C++ core has no dividend yield'
+      : !engineHandlesQ ? 'q ≠ 0 — this engine build predates dividend support'
       : 'awaiting engine response';
     const source: CalcSource = { kind: 'browser', label: 'Browser · TypeScript', reason };
     quote = { ...browser, calcUs: browserUs, source };

@@ -2,14 +2,23 @@
  * QuantCore terminal — C++ engine integration (flow 10).
  *
  * Requires the local WebSocket server (Playwright starts server/ws_server.py).
- *  - canonical contract streams through subscribe/update
- *  - any other q = 0 portfolio is priced by batch_bs_full, and agrees with the browser
- *  - q ≠ 0 falls back to the browser and says why
+ *  - canonical contract streams through subscribe/update, including a dividend yield
+ *  - any other portfolio is priced by batch_bs_full, and agrees with the browser
  *  - the native Monte Carlo kernel converges to Black-Scholes
  */
 
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { execSync } from 'child_process';
+import path from 'path';
+
+/** Call price straight from the C++ bindings (protocol v3 engine supports q). */
+function engineCall(S: number, K: number, r: number, sigma: number, T: number, q: number): number {
+  const py = '/Library/Developer/CommandLineTools/usr/bin/python3';
+  const dir = path.resolve(__dirname, '..', '..', 'python');
+  const script = `import sys; sys.path.insert(0, r"${dir}"); import quantcore; print(repr(quantcore.bs_full(0, ${S}, ${K}, ${r}, ${sigma}, ${T}, ${q})["price"]))`;
+  return Number(execSync(`${py} -c '${script}'`).toString().trim());
+}
 
 async function open(page: Page) {
   await page.goto('/');
@@ -26,31 +35,33 @@ async function setRange(page: Page, testid: string, v: number) {
 }
 
 test.describe('C++ engine integration', () => {
-  test('10a. calculation source follows the portfolio: stream → batch → browser', async ({ page }) => {
+  test('10a. calculation source follows the portfolio, including a dividend yield', async ({ page }) => {
     await open(page);
     await expect(page.getByTestId('calc-source')).toHaveAttribute('data-kind', 'engine-stream', { timeout: 10_000 });
 
+    // a dividend yield on the canonical contract stays on the C++ stream and matches bs_full(q)
+    await setRange(page, 'q-input', 0.02);
+    const ref = engineCall(756.48, 755, 0.045, 0.138, 0.129, 0.02);
+    await expect.poll(async () => Number(await page.getByTestId('price').getAttribute('data-value')),
+                      { timeout: 10_000 }).toBe(ref);
+    await expect(page.getByTestId('calc-source')).toHaveAttribute('data-kind', 'engine-stream');
+
     await page.getByTestId('preset-iron-condor').click();
     await expect(page.getByTestId('calc-source')).toHaveAttribute('data-kind', 'engine-batch', { timeout: 10_000 });
-
-    await setRange(page, 'q-input', 0.02);
-    await expect(page.getByTestId('calc-source')).toHaveAttribute('data-kind', 'browser');
-    await expect(page.getByTestId('calc-source').locator('..')).toContainText('no dividend yield');
-
-    await setRange(page, 'q-input', 0);
-    await expect(page.getByTestId('calc-source')).toHaveAttribute('data-kind', 'engine-batch', { timeout: 10_000 });
+    console.log(`  stream with q = 2%: tile ${ref.toFixed(6)} == bs_full(q)`);
   });
 
   test('10b. engine portfolio pricing agrees with the browser models', async ({ page }) => {
     await open(page);
+    await setRange(page, 'q-input', 0.015);
     await page.getByTestId('preset-iron-condor').click();
     await page.getByTestId('tab-engine').click();
     await page.getByTestId('engine-price-portfolio').click();
     const agreement = page.getByTestId('engine-agreement');
     await expect(agreement).toBeVisible({ timeout: 10_000 });
     const maxDiff = Number(await agreement.getAttribute('data-value'));
-    // A&S normal CDF error bound 7.5e-8, scaled by spot and strike (~1e-4 in price)
-    expect(maxDiff).toBeLessThan(2e-4);
+    // both sides use double-precision N(x); measured differences are ~1e-13
+    expect(maxDiff).toBeLessThan(1e-9);
     await expect(page.getByTestId('engine-diagram')).toHaveAttribute('data-connected', 'true');
     console.log(`  max |engine − browser| across 4 legs × 5 Greeks: ${maxDiff.toExponential(2)}`);
   });

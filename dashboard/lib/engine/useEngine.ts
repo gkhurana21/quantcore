@@ -26,12 +26,15 @@ export interface EngineQuote extends Greeks {
   key: string;           // market the quote was computed for
 }
 
-export interface EngineInfo { protocol: number; metal: boolean; device: string; cpuThreads: number; }
+export interface EngineInfo {
+  protocol: number; metal: boolean; device: string; cpuThreads: number;
+  dividends: boolean;   // protocol ≥ 3: every pricing message accepts q
+}
 
 export interface EnginePortfolioResult { legs: Greeks[]; calcUs: number; rttMs: number; }
 
 export interface EngineMcRequest {
-  call: boolean; S: number; K: number; r: number; sigma: number; T: number; paths: number; seed: number;
+  call: boolean; S: number; K: number; r: number; sigma: number; T: number; paths: number; seed: number; q: number;
 }
 
 export interface EngineMcResult {
@@ -46,7 +49,7 @@ export interface EngineStats {
   rtt: number[];          // recent round-trip times, ms
 }
 
-export const marketKey = (S: number, sigma: number, r: number): string => `${S}|${sigma}|${r}`;
+export const marketKey = (S: number, sigma: number, r: number, q = 0): string => `${S}|${sigma}|${r}|${q}`;
 export const CANONICAL_KEY = marketKey(ENGINE_SUBSCRIPTION.S, ENGINE_SUBSCRIPTION.sigma, ENGINE_SUBSCRIPTION.r);
 
 interface Pending {
@@ -65,7 +68,7 @@ export interface Engine {
   quote: EngineQuote | null;
   info: EngineInfo | null;
   stats: EngineStats;
-  sendUpdate: (m: Pick<Market, 'S' | 'sigma' | 'r'>) => boolean;
+  sendUpdate: (m: Pick<Market, 'S' | 'sigma' | 'r' | 'q'>) => boolean;
   pricePortfolio: (legs: Leg[], m: Market) => Promise<EnginePortfolioResult>;
   runMc: (req: EngineMcRequest) => Promise<EngineMcResult>;
   reconnect: () => void;
@@ -161,7 +164,7 @@ export function useEngine(): Engine {
           break;
         case 'info':
           setInfo({ protocol: n('protocol'), metal: !!msg.metal, device: String(msg.device ?? ''),
-                    cpuThreads: n('cpu_threads') || 0 });
+                    cpuThreads: n('cpu_threads') || 0, dividends: msg.dividends === true });
           break;
         case 'portfolio_result':
         case 'mc_result':
@@ -247,11 +250,11 @@ export function useEngine(): Engine {
     };
   }, [publishStats, rawSend]);
 
-  const sendUpdate = useCallback((m: Pick<Market, 'S' | 'sigma' | 'r'>): boolean => {
+  const sendUpdate = useCallback((m: Pick<Market, 'S' | 'sigma' | 'r' | 'q'>): boolean => {
     const t_ns = stamp();
-    if (!rawSend({ type: 'update', S: m.S, sigma: m.sigma, r: m.r, t_ns })) return false;
+    if (!rawSend({ type: 'update', S: m.S, sigma: m.sigma, r: m.r, q: m.q, t_ns })) return false;
     const keys = updateKeysRef.current;
-    keys.set(t_ns, marketKey(m.S, m.sigma, m.r));
+    keys.set(t_ns, marketKey(m.S, m.sigma, m.r, m.q));
     if (keys.size > 256) keys.delete(keys.keys().next().value as number);
     return true;
   }, [rawSend]);
@@ -269,7 +272,7 @@ export function useEngine(): Engine {
 
   const pricePortfolio = useCallback((legs: Leg[], m: Market) =>
     request<EnginePortfolioResult>({
-      type: 'portfolio', S: m.S, sigma: m.sigma, r: m.r,
+      type: 'portfolio', S: m.S, sigma: m.sigma, r: m.r, q: m.q,
       legs: legs.map(l => ({ call: l.call, K: l.K, T: l.T })),
     }, 5000), [request]);
 

@@ -3,13 +3,13 @@
 // and fall back to the main thread when workers are unavailable. Every task is
 // seeded, so the same request always produces the same numbers.
 
-import { crrPrice, CRR_STEPS } from '../quant/binomial';
+import { crrAmericanPrice, crrPrice, CRR_STEPS } from '../quant/binomial';
 import { probItm } from '../quant/blackScholes';
 import type { McResult, TerminalDistribution } from '../quant/monteCarlo';
 import { lognormalPdf, mcPortfolio, samplePaths, terminalDistribution } from '../quant/monteCarlo';
 import type { Leg, Market } from '../quant/types';
 import { CONTRACT_MULT as M, signedQty } from '../quant/types';
-import type { McVarResult } from '../risk/var';
+import type { McVarResult, VolFactor } from '../risk/var';
 import { mcVaR } from '../risk/var';
 import { firstExpiry, netPremium, pnlAtFirstExpiry, portfolioValue } from '../strategy/portfolio';
 
@@ -38,11 +38,12 @@ export interface LabRequest { legs: Leg[]; market: Market; seed: number; antithe
 
 export interface LabMcRun extends McResult { seed: number; }
 
-export interface LabLegRow { bs: number; crr: number; mc: number; mcSe: number; }
+export interface LabLegRow { bs: number; crr: number; american: number; mc: number; mcSe: number; }
 
 export interface LabResult {
   bs: { value: number; ms: number; runs: number };
   crr: { value: number; ms: number; runs: number; steps: number };
+  american: { value: number; ms: number; runs: number };   // same lattice with early exercise
   mc: LabMcRun[];                               // one run per LAB_PATHS entry (seeds s, s+1, s+2)
   crrCurve: { steps: number; error: number }[]; // portfolio CRR − BS by lattice size
   perLeg: LabLegRow[];                          // per-share prices, one row per leg
@@ -58,9 +59,16 @@ function crrValue(legs: Leg[], m: Market, steps: number): number {
   return v;
 }
 
+function americanValue(legs: Leg[], m: Market, steps: number): number {
+  let v = 0;
+  for (const l of legs) v += signedQty(l) * M * crrAmericanPrice(l.call, m.S, l.K, l.T, m.sigma, m.r, m.q, steps);
+  return v;
+}
+
 export function runLab({ legs, market: m, seed, antithetic }: LabRequest): LabResult {
   const bs = timeIt(() => portfolioValue(legs, m.S, m.sigma, m.r, m.q), 3);
   const crr = timeIt(() => crrValue(legs, m, CRR_STEPS), 8);
+  const american = timeIt(() => americanValue(legs, m, CRR_STEPS), 8);
 
   const mc = LAB_PATHS.map((paths, i) => ({
     ...mcPortfolio(legs, m, paths, seed + i, antithetic, i === LAB_PATHS.length - 1 ? CONVERGENCE_CHECKPOINTS : []),
@@ -78,6 +86,7 @@ export function runLab({ legs, market: m, seed, antithetic }: LabRequest): LabRe
     return {
       bs: legBs(l, m),
       crr: crrPrice(l.call, m.S, l.K, l.T, m.sigma, m.r, m.q, CRR_STEPS),
+      american: crrAmericanPrice(l.call, m.S, l.K, l.T, m.sigma, m.r, m.q, CRR_STEPS),
       mc: r.price / M, mcSe: r.se / M,
     };
   });
@@ -85,6 +94,7 @@ export function runLab({ legs, market: m, seed, antithetic }: LabRequest): LabRe
   const gross = legs.reduce((a, l, i) => a + Math.abs(l.qty * M * perLeg[i].bs), 0);
   return { bs: { value: bs.value, ms: bs.ms, runs: bs.runs },
            crr: { value: crr.value, ms: crr.ms, runs: crr.runs, steps: CRR_STEPS },
+           american: { value: american.value, ms: american.ms, runs: american.runs },
            mc, crrCurve, perLeg, gross, legMcPaths: LEG_MC_PATHS };
 }
 
@@ -157,9 +167,13 @@ function expiryPnl(legs: Leg[], s: number, cost: number): number {
 
 // ── Monte Carlo VaR ─────────────────────────────────────────────────────────
 
-export interface McVarRequest { legs: Leg[]; market: Market; conf: number; hDays: number; nScen: number; seed: number; }
+export interface McVarRequest {
+  legs: Leg[]; market: Market; conf: number; hDays: number; nScen: number; seed: number;
+  volFactor?: VolFactor;   // present → two-factor (spot + implied vol) scenarios
+}
 
-export const runMcVar = (r: McVarRequest): McVarResult => mcVaR(r.legs, r.market, r.conf, r.hDays, r.nScen, r.seed);
+export const runMcVar = (r: McVarRequest): McVarResult =>
+  mcVaR(r.legs, r.market, r.conf, r.hDays, r.nScen, r.seed, r.volFactor);
 
 // ── dispatch ────────────────────────────────────────────────────────────────
 

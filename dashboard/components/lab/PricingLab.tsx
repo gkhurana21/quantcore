@@ -68,7 +68,7 @@ export function PricingLab({ legs, market, engine, active }: {
       ? 'The C++ engine runs on a local machine — this hosted build prices everything in your browser.'
       : 'Engine offline — start server/ws_server.py to compare against the native Metal / CPU kernel.')
     : legs.length !== 1 ? 'The native Monte Carlo kernel prices one contract — choose a single-leg strategy to compare.'
-    : market.q !== 0 ? 'The C++ core has no dividend yield — set q to 0% to run it.'
+    : market.q !== 0 && !engine.info?.dividends ? 'This engine build predates dividend support — set q to 0% or rebuild the engine.'
     : null;
 
   const runEngine = async () => {
@@ -76,7 +76,7 @@ export function PricingLab({ legs, market, engine, active }: {
     setEng({ key: engKey, busy: true });
     try {
       const res = await engine.runMc({ call: single.call, S: market.S, K: single.K, r: market.r,
-                                       sigma: market.sigma, T: single.T, paths: ENGINE_PATHS, seed });
+                                       sigma: market.sigma, T: single.T, paths: ENGINE_PATHS, seed, q: market.q });
       setEng({ key: engKey, busy: false, res });
     } catch (err) {
       setEng({ key: engKey, busy: false, error: err instanceof Error ? err.message : String(err) });
@@ -197,6 +197,30 @@ export function PricingLab({ legs, market, engine, active }: {
             </div>
           </div>
 
+          <div className={l.card} style={{ marginTop: 14 }} data-testid="lab-american">
+            <div className={l.cardHead}>
+              <span className={l.cardTitle}>Early exercise · American options (CRR {r.crr.steps} steps)</span>
+              <span className={l.cardMeta}>{fmtMs(r.american.ms)}</span>
+            </div>
+            <div className={l.headline} style={{ marginBottom: 0 }}>
+              <span>American value{' '}
+                <b className="mono" data-testid="lab-american-value" data-value={r.american.value}>{usd(r.american.value, 2)}</b>
+              </span>
+              <span>European lattice <b className="mono">{usd(r.crr.value, 2)}</b></span>
+              <span>Early-exercise premium{' '}
+                <b className="mono" data-testid="lab-eep" data-value={r.american.value - r.crr.value}>
+                  {usdSigned(r.american.value - r.crr.value, 2)}
+                </b>
+              </span>
+            </div>
+            <p className={ui.note} style={{ marginTop: 6 }}>
+              Listed single-stock and ETF options are American. The same lattice with an exercise check at every node,
+              minus the European lattice, isolates the value of early exercise: zero for calls without dividends,
+              positive for in-the-money puts, and for calls when the dividend yield is high. Black-Scholes, Monte Carlo
+              and the Greeks elsewhere in the terminal are European.
+            </p>
+          </div>
+
           <div className={l.card} style={{ marginTop: 14 }}>
             <div className={l.cardHead}>
               <span className={l.cardTitle}>Per-leg prices (per share)</span>
@@ -209,6 +233,7 @@ export function PricingLab({ legs, market, engine, active }: {
                     <th>Leg</th><th className={ui.num}>Black-Scholes</th><th className={ui.num}>CRR 512</th>
                     <th className={ui.num}>CRR − BS</th><th className={ui.num}>Monte Carlo</th>
                     <th className={ui.num}>± SE</th><th className={ui.num}>|z|</th>
+                    <th className={ui.num}>American</th><th className={ui.num}>Early-ex.</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -225,6 +250,8 @@ export function PricingLab({ legs, market, engine, active }: {
                         <td className={ui.num}>{p.mc.toFixed(4)}</td>
                         <td className={ui.num}>{p.mcSe.toFixed(4)}</td>
                         <td className={ui.num}>{z.toFixed(2)}</td>
+                        <td className={ui.num}>{p.american.toFixed(4)}</td>
+                        <td className={ui.num}>{signed(p.american - p.crr, 4)}</td>
                       </tr>
                     );
                   })}

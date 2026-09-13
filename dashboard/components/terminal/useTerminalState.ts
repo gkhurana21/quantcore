@@ -174,7 +174,7 @@ export function useTerminalState() {
 
 /** The exact state in which the C++ engine's streaming subscription is authoritative. */
 export function isCanonicalPosition(st: Pick<TerminalState, 'instrument' | 'legs' | 'market'>): boolean {
-  if (st.instrument.sym !== CANONICAL.sym || st.market.q !== 0 || st.legs.length !== 1) return false;
+  if (st.instrument.sym !== CANONICAL.sym || st.legs.length !== 1) return false;
   const l = st.legs[0], c = canonicalLeg();
   return l.call && l.side === 'buy' && l.K === c.K && Math.abs(l.T - c.T) < 1e-12 &&
          l.qty === c.qty && Math.abs(l.premium - c.premium) < 1e-9;

@@ -74,7 +74,7 @@ export function EnginePanel({ engine, legs, market, source }: {
 }) {
   const connected = engine.status === 'connected';
   const rtt = engine.stats.rtt;
-  const aKey = `${legsKeyOf(legs)}|${market.S}|${market.sigma}|${market.r}`;
+  const aKey = `${legsKeyOf(legs)}|${market.S}|${market.sigma}|${market.r}|${market.q}`;
 
   const [agree, setAgree] = useState<{ key: string; busy: boolean; res?: EnginePortfolioResult; error?: string } | null>(null);
   const runAgree = async () => {
@@ -84,7 +84,7 @@ export function EnginePanel({ engine, legs, market, source }: {
   };
   const agreeRows = agree?.res && agree.key === aKey && agree.res.legs.length === legs.length
     ? legs.map((l, i) => {
-      const b = bsGreeks(l.call, market.S, l.K, l.T, market.sigma, market.r, 0);
+      const b = bsGreeks(l.call, market.S, l.K, l.T, market.sigma, market.r, market.q);
       const g = agree.res!.legs[i];
       return { l, g, b, diff: Math.max(...GREEKS.map(k => Math.abs(g[k] - b[k]))) };
     }) : null;
@@ -100,18 +100,19 @@ export function EnginePanel({ engine, legs, market, source }: {
     setMc({ key: mKey, busy: true });
     try {
       setMc({ key: mKey, busy: false, res: await engine.runMc({ call: l.call, S: market.S, K: l.K, r: market.r,
-                                                                 sigma: market.sigma, T: l.T, paths, seed: 42 }) });
+                                                                 sigma: market.sigma, T: l.T, paths, seed: 42,
+                                                                 q: market.q }) });
     } catch (err) {
       setMc({ key: mKey, busy: false, error: err instanceof Error ? err.message : String(err) });
     }
   };
   const mcLeg = legs[idx];
-  const mcRef = mcLeg ? bsGreeks(mcLeg.call, market.S, mcLeg.K, mcLeg.T, market.sigma, market.r, 0).price : 0;
+  const mcRef = mcLeg ? bsGreeks(mcLeg.call, market.S, mcLeg.K, mcLeg.T, market.sigma, market.r, market.q).price : 0;
   const mcShown = mc?.res && mc.key === mKey ? mc.res : null;
 
   const blocker = !connected
     ? (engine.reason === 'hosted' ? 'Runs on a local machine only — not available on the hosted site.' : 'Engine offline.')
-    : market.q !== 0 ? 'The C++ core has no dividend yield — set q to 0% to use it.' : null;
+    : market.q !== 0 && !engine.info?.dividends ? 'This engine build predates dividend support — set q to 0% or rebuild the engine.' : null;
 
   return (
     <div>
@@ -131,7 +132,7 @@ export function EnginePanel({ engine, legs, market, source }: {
       </div>
       <p className={e.reason}>
         {connected
-          ? 'The Greeks tiles are priced by the native C++17 core: the default SPY contract streams through subscribe/update, and any other q = 0 portfolio is sent as one batch_bs_full request. Charts, stress and VaR are computed in the browser.'
+          ? 'The Greeks tiles are priced by the native C++17 core: the default SPY contract streams through subscribe/update, and any other portfolio (including a dividend yield) is sent as one batch_bs_full request. Charts, stress and VaR are computed in the browser.'
           : engine.reason === 'hosted'
             ? 'This hosted build has no server: every number on the page comes from the TypeScript models in your browser (the same Black-Scholes formulas the C++ core implements, cross-checked in the unit tests). Run the engine locally to see the native path light up.'
             : 'No engine answered at ws://localhost:8765, so all pricing runs in the browser. Start it with the commands below; the status badge turns Connected by itself within a few seconds, or press Reconnect.'}

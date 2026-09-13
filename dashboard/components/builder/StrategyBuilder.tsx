@@ -3,6 +3,7 @@
 import { memo, useEffect, useState } from 'react';
 import type { Dispatch } from 'react';
 import { bsPrice } from '@/lib/quant/blackScholes';
+import { impliedVol } from '@/lib/quant/impliedVol';
 import type { Leg } from '@/lib/quant/types';
 import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
 import type { Instrument } from '@/lib/market/instruments';
@@ -84,6 +85,8 @@ const LegRow = memo(function LegRow({ leg, index, state, dispatch, live, canRemo
   const update = (patch: Partial<Omit<Leg, 'id'>>) => dispatch({ type: 'updateLeg', id: leg.id, patch });
   const mark = bsPrice(leg.call, m.S, leg.K, leg.T, m.sigma, m.r, m.q);
   const pnl = signedQty(leg) * M * (mark - leg.premium);
+  const iv = impliedVol(leg.call, leg.premium, m.S, leg.K, leg.T, m.r, m.q);
+  const ivText = iv ? `${(iv.sigma * 100).toFixed(1)}%` : '—';
   const dte = Math.round(leg.T * 365);
   const chainStrikes = live.chain
     .filter(o => o.type === (leg.call ? 'call' : 'put'))
@@ -101,8 +104,10 @@ const LegRow = memo(function LegRow({ leg, index, state, dispatch, live, canRemo
         <Segmented size="sm" label={`Leg ${index + 1} side`} testid={`leg-${index}-side`} value={leg.side}
                    options={[{ value: 'buy', label: 'Buy' }, { value: 'sell', label: 'Sell' }]}
                    onChange={side => update({ side })} />
-        <span className={b.legMark} title="Model price per share and leg P&L at the current market">
-          {mark.toFixed(2)} · <span className={pnl > 0.5 ? 'pos' : pnl < -0.5 ? 'neg' : undefined}>{usdSigned(pnl)}</span>
+        <span className={b.legMark}
+              title={`Implied volatility of the entry premium: ${iv ? ivText : 'none (premium outside no-arbitrage bounds)'} · model price ${mark.toFixed(2)} · leg P&L at the current market`}>
+          <span data-testid={`leg-${index}-iv`} data-value={iv?.sigma ?? ''}>IV {ivText}</span>
+          {' · '}<span className={pnl > 0.5 ? 'pos' : pnl < -0.5 ? 'neg' : undefined}>{usdSigned(pnl)}</span>
         </span>
         <button type="button" className={b.remove} disabled={!canRemove} onClick={() => dispatch({ type: 'removeLeg', id: leg.id })}
                 aria-label={`Remove leg ${index + 1}`} data-testid={`leg-${index}-remove`}>×</button>

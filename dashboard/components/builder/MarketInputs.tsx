@@ -82,7 +82,7 @@ export function MarketInputs({ state, dispatch, live }: {
                      format={v => `${(v * 100).toFixed(2)}%`} onChange={q => set({ q })}
                      testid="q-input" displayTestid="q-display" inputScale={100} inputDecimals={2}
                      delta={m.q !== base.q ? bps(m.q - base.q) : null}
-                     tip="Continuous dividend yield (Merton). The C++ core prices without dividends, so q ≠ 0 moves all pricing to the browser." />
+                     tip="Continuous dividend yield (Black-Scholes-Merton). Used by the browser models and, when connected, by the C++ engine." />
       </div>
 
       <div className={b.marketFoot}>

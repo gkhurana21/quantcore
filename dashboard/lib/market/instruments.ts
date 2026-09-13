@@ -1,8 +1,8 @@
 // Underlyings and the canonical engine contract.
 //
 // Snapshot prices are indicative (labelled as such in the UI). Dividend yield
-// defaults to 0 because the C++ core prices without dividends — keeping q = 0
-// is what lets the native engine stay authoritative for the default position.
+// defaults to 0 so the default SPY contract matches the engine's canonical
+// subscription and the original Playwright reference values.
 
 export interface Instrument {
   sym: string;

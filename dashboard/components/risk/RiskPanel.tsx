@@ -17,6 +17,8 @@ import r from './risk.module.css';
 
 const MC_SCENARIOS = 20_000;
 const MC_SEED = 11;
+// Illustrative equity-index values: implied vol moves ~100%/yr and falls when spot rises.
+const VOL_FACTOR = { volOfVol: 1.0, rho: -0.7 };
 
 const PnlHistogram = memo(function PnlHistogram({ res }: { res: McVarResult }) {
   const wrap = useRef<HTMLDivElement | null>(null);
@@ -69,6 +71,10 @@ export function RiskPanel({ legs, market, conf, horizon, onConf, onHorizon, acti
   const mc = useWorkerTask('mcvar', active
     ? { legs, market, conf, hDays: horizon, nScen: MC_SCENARIOS, seed: MC_SEED } : null, key, 150);
   const res = mc.result;
+  const mc2 = useWorkerTask('mcvar', active
+    ? { legs, market, conf, hDays: horizon, nScen: MC_SCENARIOS, seed: MC_SEED, volFactor: VOL_FACTOR } : null,
+    `${key}|2f`, 150);
+  const res2 = mc2.result;
   const label = `${horizon}-day ${Math.round(conf * 100)}%`;
 
   return (
@@ -128,6 +134,15 @@ export function RiskPanel({ legs, market, conf, horizon, onConf, onHorizon, acti
                   <td className={ui.num} data-testid="var-mc" data-value={res?.var ?? ''}>{res ? usd(res.var) : '…'}</td>
                   <td className={ui.num} data-testid="es-mc" data-value={res?.es ?? ''}>{res ? usd(res.es) : '…'}</td>
                 </tr>
+                <tr>
+                  <td><span className={r.method}>Monte Carlo, spot + implied vol</span>
+                    <span className={r.methodNote}>
+                      Same spot scenarios plus a correlated lognormal implied-vol shock (vol-of-vol {VOL_FACTOR.volOfVol * 100}%/yr,
+                      ρ = {VOL_FACTOR.rho} with spot — illustrative equity-index values), so vega risk enters VaR.
+                    </span></td>
+                  <td className={ui.num} data-testid="var-mc-2f" data-value={res2?.var ?? ''}>{res2 ? usd(res2.var) : '…'}</td>
+                  <td className={ui.num} data-testid="es-mc-2f" data-value={res2?.es ?? ''}>{res2 ? usd(res2.es) : '…'}</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -143,12 +158,12 @@ export function RiskPanel({ legs, market, conf, horizon, onConf, onHorizon, acti
       </div>
 
       <dl className={r.exposures}>
-        <div className={r.exp}><dt>Position value</dt><dd>{usd(ex.value)}</dd><small>mark to model</small></div>
-        <div className={r.exp}><dt>Delta</dt><dd>{signed(ex.deltaShares, 0)} sh</dd><small>$Δ {usdSigned(ex.dollarDelta)}</small></div>
-        <div className={r.exp}><dt>Gamma, 1% move</dt><dd>{usdSigned(ex.gammaPerPct)}</dd><small>½Γ(0.01·S)²</small></div>
-        <div className={r.exp}><dt>Vega</dt><dd>{usdSigned(ex.vegaPerPt)}</dd><small>per +1 vol point</small></div>
-        <div className={r.exp}><dt>Theta</dt><dd>{usdSigned(ex.thetaPerDay)}</dd><small>per calendar day</small></div>
-        <div className={r.exp}><dt>1σ daily move</dt><dd>±{usd(market.S * horizonVol(market.sigma, 1), 2)}</dd><small>S·σ/√252</small></div>
+        <div className={r.exp}><dt>Position value</dt><dd>{usd(ex.value)}</dd><dd className={r.expSub}>mark to model</dd></div>
+        <div className={r.exp}><dt>Delta</dt><dd>{signed(ex.deltaShares, 0)} sh</dd><dd className={r.expSub}>$Δ {usdSigned(ex.dollarDelta)}</dd></div>
+        <div className={r.exp}><dt>Gamma, 1% move</dt><dd>{usdSigned(ex.gammaPerPct)}</dd><dd className={r.expSub}>½Γ(0.01·S)²</dd></div>
+        <div className={r.exp}><dt>Vega</dt><dd>{usdSigned(ex.vegaPerPt)}</dd><dd className={r.expSub}>per +1 vol point</dd></div>
+        <div className={r.exp}><dt>Theta</dt><dd>{usdSigned(ex.thetaPerDay)}</dd><dd className={r.expSub}>per calendar day</dd></div>
+        <div className={r.exp}><dt>1σ daily move</dt><dd>±{usd(market.S * horizonVol(market.sigma, 1), 2)}</dd><dd className={r.expSub}>S·σ/√252</dd></div>
       </dl>
 
       <div className={r.bottom}>
@@ -156,7 +171,7 @@ export function RiskPanel({ legs, market, conf, horizon, onConf, onHorizon, acti
           <div className={r.boxHead}><span>Assumptions</span><span>read before relying on a number</span></div>
           <ul className={r.list}>
             <li>One risk factor: the underlying follows a zero-drift lognormal process over the horizon.</li>
-            <li>Volatility and rates are held fixed, so VaR excludes vega and rho risk.</li>
+            <li>Rates are held fixed. Volatility is fixed in the parametric and one-factor rows; the two-factor row adds implied-vol risk with illustrative parameters, not a calibrated vol model.</li>
             <li>Flat implied volatility across strikes and expiries (no skew or smile); European exercise.</li>
             <li>σ√(h/252) scaling assumes independent daily returns (square-root-of-time).</li>
             <li>Parametric methods use today&rsquo;s Greeks; delta-normal is exact only for linear positions.</li>

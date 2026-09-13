@@ -26,6 +26,36 @@ export function crrPrice(call: boolean, S: number, K: number, T: number,
   return v[0];
 }
 
+/**
+ * Cox-Ross-Rubinstein price with early exercise (American option): at every node
+ * the value is the larger of continuation and immediate exercise. Node prices are
+ * precomputed per lattice level, S·u^k for k = −N…N.
+ */
+export function crrAmericanPrice(call: boolean, S: number, K: number, T: number,
+                                 sigma: number, r: number, q = 0, steps = CRR_STEPS): number {
+  if (!(S > 0) || !(K > 0)) return 0;
+  if (T <= 0) return intrinsic(call, S, K);
+  const n = Math.max(1, Math.floor(steps));
+  const dt = T / n;
+  const lnu = Math.max(sigma, 1e-6) * Math.sqrt(dt);
+  const u = Math.exp(lnu), d = 1 / u;
+  const p = Math.min(1, Math.max(0, (Math.exp((r - q) * dt) - d) / (u - d)));
+  const disc = Math.exp(-r * dt);
+  const pu = disc * p, pd = disc * (1 - p);
+  const level = new Float64Array(2 * n + 1);
+  for (let k = -n; k <= n; k++) level[k + n] = S * Math.exp(k * lnu);
+  const v = new Float64Array(n + 1);
+  for (let i = 0; i <= n; i++) v[i] = intrinsic(call, level[n - 2 * i + n], K);
+  for (let s = n - 1; s >= 0; s--) {
+    for (let i = 0; i <= s; i++) {
+      const cont = pu * v[i] + pd * v[i + 1];
+      const exercise = intrinsic(call, level[s - 2 * i + n], K);
+      v[i] = exercise > cont ? exercise : cont;
+    }
+  }
+  return v[0];
+}
+
 /** Lattice price at several step counts — shows the classic odd/even convergence to BS. */
 export function crrConvergence(call: boolean, S: number, K: number, T: number,
                                sigma: number, r: number, q: number,

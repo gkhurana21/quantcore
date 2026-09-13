@@ -7,16 +7,44 @@ export function normPdf(x: number): number {
 }
 
 /**
- * Standard normal CDF, Abramowitz & Stegun 26.2.17 (|error| < 7.5e-8).
- * Evaluated on |x| and reflected, so N(x) + N(−x) = 1 exactly — put-call
- * parity therefore holds to floating-point rounding.
+ * Standard normal CDF in double precision: Hart's (1966) rational approximation
+ * as given by West (2005), "Better approximations to cumulative normal
+ * functions". The tail probability is evaluated on |x| and reflected. This
+ * replaces Abramowitz & Stegun 26.2.17 (error up to 7.5e-8) so browser prices
+ * track the C++ core's erfc-based N(x).
  */
 export function normCdf(x: number): number {
-  const t = 1 / (1 + 0.2316419 * Math.abs(x));
-  const poly = t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 +
-               t * (-1.821255978 + t * 1.330274429))));
-  const tail = normPdf(x) * poly;
-  return x >= 0 ? 1 - tail : tail;
+  const z = Math.abs(x);
+  let tail: number;
+  if (z > 37) {
+    tail = 0;
+  } else {
+    const e = Math.exp(-0.5 * z * z);
+    if (z < 7.07106781186547) {
+      let n = 3.52624965998911e-2 * z + 0.700383064443688;
+      n = n * z + 6.37396220353165;
+      n = n * z + 33.912866078383;
+      n = n * z + 112.079291497871;
+      n = n * z + 221.213596169931;
+      n = n * z + 220.206867912376;
+      let d = 8.83883476483184e-2 * z + 1.75566716318264;
+      d = d * z + 16.064177579207;
+      d = d * z + 86.7807322029461;
+      d = d * z + 296.564248779674;
+      d = d * z + 637.333633378831;
+      d = d * z + 793.826512519948;
+      d = d * z + 440.413735824752;
+      tail = (e * n) / d;
+    } else {
+      let d = z + 0.65;
+      d = z + 4 / d;
+      d = z + 3 / d;
+      d = z + 2 / d;
+      d = z + 1 / d;
+      tail = e / d / 2.506628274631;
+    }
+  }
+  return x > 0 ? 1 - tail : tail;
 }
 
 /** Inverse standard normal CDF (Acklam's rational approximation, rel. error ~1e-9). */
