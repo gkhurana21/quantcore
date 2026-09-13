@@ -8,6 +8,8 @@ over WebSocket when it runs locally.
 
 **Build → Price → Simulate → Stress → Risk**
 
+![QuantCore terminal: an iron condor with Greeks, payoff chart, P&L surface and the Pricing Models Lab, running locally with the C++ engine connected](docs/terminal.png)
+
 | | What it does |
 |---|---|
 | **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA. Spot, volatility, rate and dividend-yield inputs. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
