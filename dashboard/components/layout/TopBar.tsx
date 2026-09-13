@@ -27,6 +27,13 @@ export function TopBar({ instrument, market, horizonDays, pnl, dataMode, engineS
   engineStatus: EngineStatus; engineReason: OfflineReason; activeTab: TabId;
   onStep: (id: StepId) => void; quick: QuickAction[];
 }) {
+  const data = instrument.custom
+    ? { text: 'Manual price', tone: s.info, title: `${instrument.sym} is priced from the price you entered — no data feed` }
+    : dataMode === 'live'
+      ? { text: 'Live data · IEX', tone: s.good, title: 'Live quotes via the data proxy (Alpaca IEX / indicative options) — not for execution' }
+      : dataMode === 'checking'
+        ? { text: 'Data…', tone: s.muted, title: 'Checking the data proxy' }
+        : { text: 'Snapshot · indicative', tone: s.muted, title: 'Indicative snapshot prices — no live data feed on this build' };
   const engineText = engineStatus === 'connected' ? 'Connected' : engineStatus === 'connecting' ? 'Connecting…' : 'Offline';
   const engineTone = engineStatus === 'connected' ? s.good : engineStatus === 'connecting' ? s.warn : s.muted;
   const engineTitle = engineStatus === 'connected'
@@ -58,13 +65,9 @@ export function TopBar({ instrument, market, horizonDays, pnl, dataMode, engineS
         </dl>
 
         <div className={s.right}>
-          <span className={s.pill} title={dataMode === 'live'
-            ? 'Live quotes via the data proxy (Alpaca IEX / indicative options) — not for execution'
-            : 'Indicative snapshot prices — no live data feed on this build'}>
-            <span className={cx(s.dot, dataMode === 'live' ? s.good : s.muted)} aria-hidden="true" />
-            <span data-testid="data-status" role="status">
-              {dataMode === 'live' ? 'Live data · IEX' : dataMode === 'checking' ? 'Data…' : 'Snapshot · indicative'}
-            </span>
+          <span className={s.pill} title={data.title}>
+            <span className={cx(s.dot, data.tone)} aria-hidden="true" />
+            <span data-testid="data-status" role="status">{data.text}</span>
           </span>
           <span className={s.pill} title={engineTitle}>
             <span className={s.pillLabel}>ENGINE</span>

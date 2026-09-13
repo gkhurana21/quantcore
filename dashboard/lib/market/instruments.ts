@@ -12,7 +12,8 @@ export interface Instrument {
   q: number;
   step: number;   // spot slider step
   kstep: number;  // listed strike spacing used by presets
-  live?: boolean;
+  live?: boolean;   // price from the live data proxy
+  custom?: boolean; // any ticker with a price entered by the user
 }
 
 export const INSTRUMENTS: Instrument[] = [
@@ -35,6 +36,11 @@ export const ENGINE_SUBSCRIPTION = {
 
 export const findInstrument = (sym: string): Instrument | undefined =>
   INSTRUMENTS.find(i => i.sym === sym);
+
+/** Any ticker priced from a user-entered spot (no data feed); volatility starts at 30%. */
+export function mkCustomInstrument(sym: string, spot: number, vol = 0.3): Instrument {
+  return { ...mkLiveInstrument(sym, sym, spot, vol), name: `${sym} · manual price`, live: false, custom: true };
+}
 
 /** Instrument for a live-quoted ticker: strike spacing and slider step follow price magnitude. */
 export function mkLiveInstrument(sym: string, name: string, spot: number, vol: number): Instrument {

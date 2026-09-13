@@ -195,6 +195,35 @@ test.describe('QuantCore terminal flows', () => {
     await expect(page.getByTestId('spot-display')).toHaveText(spot.toFixed(2));
   });
 
+  test('10. Any ticker can be priced from a manually entered price', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('ticker-input').fill('amd');
+    await page.getByTestId('ticker-price').fill('$162.40');
+    await page.getByTestId('ticker-submit').click();
+    await expect(page.getByTestId('instrument-name')).toHaveText('AMD · manual price');
+    await expect(page.getByTestId('data-status')).toHaveText('Manual price');   // never labelled as a snapshot or live
+    await expect(page.getByTestId('inst-AMD')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByTestId('spot-display')).toHaveText('162.40');
+    await expect(page.getByTestId('vol-display')).toHaveText('30.0%');
+    await expect(page.getByTestId('leg-0-strike')).toHaveValue('162.5');   // ATM on the 2.5 strike grid
+    await page.getByTestId('preset-iron-condor').click();
+    await expect(page.getByTestId('leg-row')).toHaveCount(4);
+    await expect(page.getByTestId('breakevens')).toHaveAttribute('data-count', '2');
+
+    // invalid prices are reported and not applied
+    await page.getByTestId('ticker-input').fill('TSLA');
+    await page.getByTestId('ticker-price').fill('-5');
+    await page.getByTestId('ticker-submit').click();
+    await expect(page.getByTestId('ticker-msg')).toContainText('positive number');
+    await expect(page.getByTestId('instrument-name')).toHaveText('AMD · manual price');
+
+    // switching away and back keeps the custom ticker available
+    await page.getByTestId('inst-SPY').click();
+    await expect(page.getByTestId('data-status')).toHaveText('Snapshot · indicative');
+    await page.getByTestId('inst-AMD').click();
+    await expect(page.getByTestId('spot-display')).toHaveText('162.40');
+  });
+
   test('9. Risk / VaR: headline, confidence and horizon scaling, Monte Carlo VaR', async ({ page }) => {
     await open(page);
     await page.keyboard.press('4');                                // keyboard shortcut → Risk tab

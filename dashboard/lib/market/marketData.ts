@@ -1,10 +1,10 @@
 // Client for the QuantCore data proxy (proxy/ — Go service fronting Alpaca).
 // All data is indicative / IEX — for education and analysis, never execution.
 //
-// The proxy is only contacted when it can actually be reached: an explicit
-// NEXT_PUBLIC_PROXY_URL, or a page served from localhost (where the dev proxy
-// runs). A hosted https build without a configured proxy makes no requests,
-// so it never probes a visitor's localhost or triggers mixed-content errors.
+// The proxy is opt-in: it is contacted only when NEXT_PUBLIC_PROXY_URL is set
+// (e.g. http://localhost:8080 in dashboard/.env.local while `proxy/` runs). Without
+// it the terminal makes no market-data requests at all — no probe of a proxy that
+// isn't running, no console errors, no mixed-content requests from hosted builds.
 
 export interface LiveQuote {
   symbol: string; last: number; bid: number; ask: number;
@@ -19,14 +19,10 @@ export interface LiveChainOption {
 
 export interface LiveChain { symbol: string; expiration: string; feed: string; options: LiveChainOption[]; }
 
-const LOCAL_HOST = /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[?::1\]?)$/;
-
 export function proxyUrl(): string | null {
   const env = process.env.NEXT_PUBLIC_PROXY_URL;
-  if (env === 'disabled' || env === 'off') return null;
-  if (env) return env.replace(/\/$/, '');
-  if (typeof window !== 'undefined' && LOCAL_HOST.test(window.location.hostname)) return 'http://localhost:8080';
-  return null;
+  if (!env || env === 'disabled' || env === 'off') return null;
+  return env.replace(/\/$/, '');
 }
 
 async function get<T>(path: string, timeoutMs = 6000): Promise<T> {

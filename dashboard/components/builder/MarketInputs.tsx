@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { Dispatch } from 'react';
-import { INSTRUMENTS } from '@/lib/market/instruments';
+import { INSTRUMENTS, mkCustomInstrument } from '@/lib/market/instruments';
 import type { Market } from '@/lib/quant/types';
 import { signedPct } from '@/lib/format';
 import { Badge, Button, Segmented, SliderField } from '@/components/ui/primitives';
@@ -17,6 +17,8 @@ export function spotBounds(base: number, step: number): [number, number] {
   return [snap(Math.max(step, Math.floor((base * 0.5) / step) * step)), snap(Math.ceil((base * 1.5) / step) * step)];
 }
 
+const TICKER_RE = /^[A-Z][A-Z0-9.-]{0,9}$/;
+
 const volPts = (d: number) => `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d * 100).toFixed(1)} pts`;
 const bps = (d: number) => `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d * 1e4).toFixed(0)} bp`;
 
@@ -25,6 +27,7 @@ export function MarketInputs({ state, dispatch, live }: {
 }) {
   const { instrument: inst, market: m, base } = state;
   const [query, setQuery] = useState('');
+  const [price, setPrice] = useState('');
   const [searchMsg, setSearchMsg] = useState('');
   const [searching, setSearching] = useState(false);
   const [lo, hi] = spotBounds(base.S, inst.step);
@@ -44,24 +47,47 @@ export function MarketInputs({ state, dispatch, live }: {
         <span className={b.instName} data-testid="instrument-name">{inst.name}</span>
         {live.mode === 'live' && inst.live
           ? <Badge tone="good" title="Live quote via the data proxy (Alpaca IEX) — indicative, not for execution">Live · IEX</Badge>
-          : <Badge tone="muted" title="Indicative snapshot price — not a live quote">Snapshot</Badge>}
+          : inst.custom
+            ? <Badge tone="info" title="Price entered by you — no data feed">Manual price</Badge>
+            : <Badge tone="muted" title="Indicative snapshot price — not a live quote">Snapshot</Badge>}
       </div>
 
-      {live.mode === 'live' && (
-        <form className={b.search} onSubmit={async e => {
-          e.preventDefault();
+      <form className={b.search} data-testid="ticker-form" onSubmit={async e => {
+        e.preventDefault();
+        const sym = query.trim().toUpperCase();
+        if (live.mode === 'live') {
           setSearching(true);
-          const err = await live.search(query);
+          const err = await live.search(sym);
           setSearching(false);
           setSearchMsg(err ?? '');
           if (!err) setQuery('');
-        }}>
-          <input className={b.searchInput} value={query} maxLength={10} placeholder="Any US ticker, e.g. AMD"
-                 aria-label="Load any US-listed ticker" onChange={e => { setQuery(e.target.value); setSearchMsg(''); }} />
-          <Button size="sm" type="submit" disabled={searching || !query.trim()}>{searching ? 'Loading…' : 'Load'}</Button>
-        </form>
-      )}
-      {searchMsg && <p className={b.searchMsg} role="status">{searchMsg}</p>}
+          return;
+        }
+        if (!TICKER_RE.test(sym)) { setSearchMsg('Enter a ticker symbol, e.g. AMD'); return; }
+        const spot = parseFloat(price.replace(/[$,\s]/g, ''));
+        if (!(spot > 0 && spot < 1_000_000)) { setSearchMsg(`Enter ${sym}’s current price (a positive number)`); return; }
+        dispatch({ type: 'instrument', instrument: mkCustomInstrument(sym, spot) });
+        setSearchMsg(''); setQuery(''); setPrice('');
+      }}>
+        <input className={b.searchInput} value={query} maxLength={10} data-testid="ticker-input"
+               placeholder={live.mode === 'live' ? 'Any US ticker, e.g. AMD' : 'Any ticker, e.g. AMD'}
+               aria-label="Ticker symbol" onChange={e => { setQuery(e.target.value); setSearchMsg(''); }} />
+        {live.mode !== 'live' && (
+          <input className={b.priceInput} value={price} inputMode="decimal" data-testid="ticker-price"
+                 placeholder="Price" aria-label="Current price of the ticker"
+                 onChange={e => { setPrice(e.target.value); setSearchMsg(''); }} />
+        )}
+        <Button size="sm" type="submit" data-testid="ticker-submit"
+                disabled={searching || !query.trim() || (live.mode !== 'live' && !price.trim())}>
+          {searching ? 'Loading…' : live.mode === 'live' ? 'Load' : 'Add'}
+        </Button>
+      </form>
+      {searchMsg
+        ? <p className={b.searchMsg} role="status" data-testid="ticker-msg">{searchMsg}</p>
+        : <p className={b.searchHint}>
+            {live.mode === 'live' ? 'Live quotes for any US ticker via the data proxy.'
+              : 'Any ticker: enter its price — volatility starts at 30%, adjust below.'}
+          </p>}
 
       <div className={b.sliders}>
         <SliderField label="Spot" symbol="S" value={m.S} min={lo} max={hi} step={inst.step}

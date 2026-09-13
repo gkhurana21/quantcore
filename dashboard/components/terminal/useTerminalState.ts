@@ -84,7 +84,7 @@ export function initialTerminalState(): TerminalState {
 function selectInstrument(st: TerminalState, inst: Instrument): TerminalState {
   const market: Market = { S: inst.spot, sigma: inst.vol, r: st.market.r, q: inst.q };
   const preset: PresetName = st.preset === 'Custom' ? 'Long Call' : st.preset;
-  const searched = inst.live && !INSTRUMENTS.some(i => i.sym === inst.sym)
+  const searched = (inst.live || inst.custom) && !INSTRUMENTS.some(i => i.sym === inst.sym)
     ? [...st.searched.filter(i => i.sym !== inst.sym), inst] : st.searched;
   return {
     ...st, instrument: inst, searched, base: market, market,
