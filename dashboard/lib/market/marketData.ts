@@ -39,14 +39,18 @@ async function get<T>(path: string, timeoutMs = 6000): Promise<T> {
   }
 }
 
-/** One cheap health probe gates every other request. */
-export async function probeProxy(): Promise<boolean> {
-  if (!proxyUrl()) return false;
+/** One cheap health probe gates every other request. /healthz answers plain text, so only the status counts. */
+export async function probeProxy(timeoutMs = 1500): Promise<boolean> {
+  const base = proxyUrl();
+  if (!base) return false;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    await get<unknown>('/healthz', 1500);
-    return true;
+    return (await fetch(`${base}/healthz`, { signal: ctrl.signal })).ok;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
