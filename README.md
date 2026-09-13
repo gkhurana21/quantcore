@@ -30,7 +30,7 @@ Monte Carlo kernel. Snapshot prices are indicative, not live quotes.
 ## Architecture
 
 ```
-┌───────────────────────── Browser (Next.js 14, static export) ─────────────────────────┐
+┌───────────────────────── Browser (Next.js 15, static export) ─────────────────────────┐
 │  Terminal UI ── lib/quant  BSM · CRR · Monte Carlo       lib/risk  VaR · stress · surface │
 │             ── lib/strategy presets · payoff analytics  lib/io    CSV / XLSX import     │
 │             ── workers/compute.worker.ts (lab, MC paths, MC VaR — off the main thread)  │
