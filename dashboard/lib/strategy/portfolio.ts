@@ -1,0 +1,149 @@
+import { bsGreeks, bsPrice, intrinsic } from '../quant/blackScholes';
+import type { Greeks, Leg, Market } from '../quant/types';
+import { CONTRACT_MULT as M, signedQty } from '../quant/types';
+
+const EPS_T = 1e-9;
+
+/** Advance every leg's clock by dtYears (expired legs sit at T = 0). */
+export function shiftLegs(legs: Leg[], dtYears: number): Leg[] {
+  if (!dtYears) return legs;
+  return legs.map(l => ({ ...l, T: Math.max(0, l.T - dtYears) }));
+}
+
+/** $ mark-to-model value of the positions (excluding premium paid/received). */
+export function portfolioValue(legs: Leg[], S: number, sigma: number, r: number, q: number): number {
+  let v = 0;
+  for (const l of legs) v += signedQty(l) * M * bsPrice(l.call, S, l.K, l.T, sigma, r, q);
+  return v;
+}
+
+/**
+ * Aggregated position Greeks: price = $ value, delta = share-equivalents,
+ * gamma = shares per $1, vega = $ per 1.00 vol, theta = $ per year.
+ */
+export function portfolioGreeks(legs: Leg[], m: Market): Greeks {
+  const out: Greeks = { price: 0, delta: 0, gamma: 0, theta: 0, vega: 0 };
+  for (const l of legs) {
+    const g = bsGreeks(l.call, m.S, l.K, l.T, m.sigma, m.r, m.q);
+    const w = signedQty(l) * M;
+    out.price += w * g.price;
+    out.delta += w * g.delta;
+    out.gamma += w * g.gamma;
+    out.theta += w * g.theta;
+    out.vega += w * g.vega;
+  }
+  return out;
+}
+
+/** Net premium in $: positive = net debit paid, negative = net credit received. */
+export const netPremium = (legs: Leg[]): number =>
+  legs.reduce((a, l) => a + signedQty(l) * M * l.premium, 0);
+
+export const grossPremium = (legs: Leg[]): number =>
+  legs.reduce((a, l) => a + l.qty * M * Math.abs(l.premium), 0);
+
+export const pnlNow = (legs: Leg[], S: number, sigma: number, r: number, q: number): number =>
+  portfolioValue(legs, S, sigma, r, q) - netPremium(legs);
+
+export const firstExpiry = (legs: Leg[]): number =>
+  legs.length ? Math.min(...legs.map(l => Math.max(0, l.T))) : 0;
+
+/**
+ * P&L at the first expiry: legs expiring then pay intrinsic value, later legs
+ * are still worth their Black-Scholes value with the remaining time.
+ */
+export function pnlAtFirstExpiry(legs: Leg[], S: number, sigma: number, r: number, q: number): number {
+  const t0 = firstExpiry(legs);
+  let v = 0;
+  for (const l of legs) {
+    const tau = l.T - t0;
+    const px = tau <= EPS_T ? intrinsic(l.call, S, l.K) : bsPrice(l.call, S, l.K, tau, sigma, r, q);
+    v += signedQty(l) * M * (px - l.premium);
+  }
+  return v;
+}
+
+export interface PayoffAnalytics {
+  maxProfit: number;             // +Infinity when unbounded
+  maxLoss: number;               // −Infinity when unbounded (reported as a negative P&L)
+  maxProfitUnbounded: boolean;
+  maxLossUnbounded: boolean;
+  breakevens: number[];
+  exact: boolean;                // true = closed form (single expiry); false = numerical scan
+  horizonT: number;              // the expiry the analytics refer to
+}
+
+export function payoffAnalytics(legs: Leg[], m: Market): PayoffAnalytics {
+  const horizonT = firstExpiry(legs);
+  if (!legs.length) {
+    return { maxProfit: 0, maxLoss: 0, maxProfitUnbounded: false, maxLossUnbounded: false,
+             breakevens: [], exact: true, horizonT };
+  }
+  const single = legs.every(l => Math.abs(l.T - legs[0].T) < EPS_T);
+  return single ? exactPayoff(legs, horizonT) : numericPayoff(legs, m, horizonT);
+}
+
+// Single expiry: the payoff is piecewise linear with kinks at the strikes, so the
+// extremes sit at S = 0, at a strike, or at infinity (decided by net call slope),
+// and break-evens are the exact zero crossings of each linear segment.
+function exactPayoff(legs: Leg[], horizonT: number): PayoffAnalytics {
+  const f = (x: number) =>
+    legs.reduce((a, l) => a + signedQty(l) * M * (intrinsic(l.call, x, l.K) - l.premium), 0);
+  const xs = [0, ...Array.from(new Set(legs.map(l => l.K))).filter(k => k > 0).sort((a, b) => a - b)];
+  const vals = xs.map(f);
+  const slope = legs.reduce((a, l) => a + (l.call ? signedQty(l) * M : 0), 0);
+  const tol = 1e-9, zero = 1e-7;
+
+  const breakevens: number[] = [];
+  const push = (x: number) => {
+    if (x >= 0 && !breakevens.some(b => Math.abs(b - x) < 1e-6)) breakevens.push(x);
+  };
+  for (let i = 1; i < xs.length; i++) {
+    const v0 = vals[i - 1], v1 = vals[i];
+    if ((v0 < -zero && v1 > zero) || (v0 > zero && v1 < -zero)) {
+      push(xs[i - 1] + (xs[i] - xs[i - 1]) * (-v0 / (v1 - v0)));
+    } else if (Math.abs(v1) <= zero && Math.abs(v0) > zero) {
+      // touches zero at a kink — a break-even only if the sign flips afterwards
+      const after = i + 1 < xs.length ? vals[i + 1] : v1 + slope;
+      if (after * v0 < 0) push(xs[i]);
+    }
+  }
+  const last = vals[vals.length - 1], xL = xs[xs.length - 1];
+  if ((last < -zero && slope > tol) || (last > zero && slope < -tol)) push(xL - last / slope);
+  breakevens.sort((a, b) => a - b);
+
+  return {
+    maxProfitUnbounded: slope > tol,
+    maxLossUnbounded: slope < -tol,
+    maxProfit: slope > tol ? Infinity : Math.max(...vals),
+    maxLoss: slope < -tol ? -Infinity : Math.min(...vals),
+    breakevens, exact: true, horizonT,
+  };
+}
+
+// Mixed expiries: scan the first-expiry P&L numerically over [0, 4·max(S, K)].
+function numericPayoff(legs: Leg[], m: Market, horizonT: number): PayoffAnalytics {
+  const hi = 4 * Math.max(m.S, ...legs.map(l => l.K));
+  const N = 2400;
+  const xs = new Float64Array(N + 1), vs = new Float64Array(N + 1);
+  for (let i = 0; i <= N; i++) {
+    xs[i] = (hi * i) / N;
+    vs[i] = pnlAtFirstExpiry(legs, xs[i], m.sigma, m.r, m.q);
+  }
+  const breakevens: number[] = [];
+  for (let i = 1; i <= N; i++) {
+    if ((vs[i - 1] < 0 && vs[i] > 0) || (vs[i - 1] > 0 && vs[i] < 0)) {
+      breakevens.push(xs[i - 1] + (xs[i] - xs[i - 1]) * (-vs[i - 1] / (vs[i] - vs[i - 1])));
+    }
+  }
+  const tailSlope = (vs[N] - vs[N - 1]) / (xs[N] - xs[N - 1]);
+  let max = -Infinity, min = Infinity;
+  for (let i = 0; i <= N; i++) { if (vs[i] > max) max = vs[i]; if (vs[i] < min) min = vs[i]; }
+  return {
+    maxProfitUnbounded: tailSlope > 0.5,
+    maxLossUnbounded: tailSlope < -0.5,
+    maxProfit: tailSlope > 0.5 ? Infinity : max,
+    maxLoss: tailSlope < -0.5 ? -Infinity : min,
+    breakevens, exact: false, horizonT,
+  };
+}
