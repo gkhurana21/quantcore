@@ -27,13 +27,18 @@ batch_bs_price_impl(bool is_call,
                     py::array_t<double, py::array::c_style | py::array::forcecast> sigma,
                     py::array_t<double, py::array::c_style | py::array::forcecast> T) {
     auto n = S.size();
+    // The output array is a Python object: allocate it with the GIL held, then
+    // release the GIL only around the pure C++ loop over raw memory.
     auto out = py::array_t<double>(n);
     auto s_ = S.unchecked<1>(), k_ = K.unchecked<1>(),
          r_ = r.unchecked<1>(), sg_ = sigma.unchecked<1>(), t_ = T.unchecked<1>();
     auto o_ = out.mutable_unchecked<1>();
     OptionType type = is_call ? OptionType::Call : OptionType::Put;
-    for (py::ssize_t i = 0; i < n; ++i)
-        o_(i) = bsm_price(type, s_(i), k_(i), r_(i), sg_(i), t_(i));
+    {
+        py::gil_scoped_release release;
+        for (py::ssize_t i = 0; i < n; ++i)
+            o_(i) = bsm_price(type, s_(i), k_(i), r_(i), sg_(i), t_(i));
+    }
     return out;
 }
 
@@ -51,13 +56,16 @@ batch_bs_full_impl(bool is_call,
          r_ = r.unchecked<1>(), sg_ = sigma.unchecked<1>(), t_ = T.unchecked<1>();
     auto o_ = out.mutable_unchecked<2>();
     OptionType type = is_call ? OptionType::Call : OptionType::Put;
-    for (py::ssize_t i = 0; i < n; ++i) {
-        BSMResult res = bsm_full(type, s_(i), k_(i), r_(i), sg_(i), t_(i));
-        o_(i, 0) = res.price;
-        o_(i, 1) = res.greeks.delta;
-        o_(i, 2) = res.greeks.gamma;
-        o_(i, 3) = res.greeks.theta;
-        o_(i, 4) = res.greeks.vega;
+    {
+        py::gil_scoped_release release;   // see batch_bs_price_impl
+        for (py::ssize_t i = 0; i < n; ++i) {
+            BSMResult res = bsm_full(type, s_(i), k_(i), r_(i), sg_(i), t_(i));
+            o_(i, 0) = res.price;
+            o_(i, 1) = res.greeks.delta;
+            o_(i, 2) = res.greeks.gamma;
+            o_(i, 3) = res.greeks.theta;
+            o_(i, 4) = res.greeks.vega;
+        }
     }
     return out;
 }
@@ -125,19 +133,19 @@ PYBIND11_MODULE(quantcore, m) {
           "GBM Monte Carlo price for a European option. GIL released during sim.");
 
     // ── batch API (one Python→C++ crossing per batch) ─────────────────────────
-    // Batch functions: GIL released for full duration via call_guard — the
-    // lambda bodies operate on raw numpy memory and do not touch Python objects.
+    // Batch functions: the GIL is released inside the impls around the compute
+    // loop only. (A call_guard released it for the whole call, including the
+    // NumPy output allocation, which segfaulted.)
     m.def("batch_bs_price", &batch_bs_price_impl,
           py::arg("is_call"), py::arg("S"), py::arg("K"),
           py::arg("r"), py::arg("sigma"), py::arg("T"),
-          "Batch BS price. Returns 1-D array of length N.",
-          py::call_guard<py::gil_scoped_release>());
+          "Batch BS price. Returns 1-D array of length N. GIL released during compute.");
 
     m.def("batch_bs_full", &batch_bs_full_impl,
           py::arg("is_call"), py::arg("S"), py::arg("K"),
           py::arg("r"), py::arg("sigma"), py::arg("T"),
-          "Batch BS price+Greeks. Returns shape (N,5): [price,delta,gamma,theta,vega].",
-          py::call_guard<py::gil_scoped_release>());
+          "Batch BS price+Greeks. Returns shape (N,5): [price,delta,gamma,theta,vega]. "
+          "GIL released during compute.");
 
     // ── Phase 2b: Accelerate-SIMD batch BS ───────────────────────────────────
     m.def("batch_bs_full_accel",
