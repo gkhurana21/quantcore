@@ -19,13 +19,15 @@ over WebSocket when it runs locally.
 | **Stress Lab** | 2008-style credit crisis, COVID-style crash, volatility spike, rate shock, melt-up / vol crush, or a custom shock. Shows Spot → Vol → Greeks → P&L → VaR, P&L by leg, a P&L-vs-spot ladder and all scenarios side by side; apply a shock to the whole terminal and reset. |
 | **Risk / VaR** | 1-day 95% parametric VaR, plus delta-normal, delta-gamma and Monte Carlo full-revaluation VaR — spot only, and spot with correlated implied-vol shocks — with expected shortfall at 90 / 95 / 99% over 1 / 5 / 10 days, exposures and stated assumptions. |
 | **Portfolio Upload** | CSV, XLSX or XLS, parsed entirely in the browser. Tolerant column names (`option_type`, `cp`, `action`, `strike_price`, `dte`, `expiration`, `contracts`, `fill_price`, …), ISO / US / Excel dates, accounting negatives, a row-by-row preview with errors and warnings, and downloadable samples. |
-| **C++ Engine** | Live engine status, which engine produced each number and why, measured round-trip latency, engine-vs-browser agreement, and 100k–10M-path Monte Carlo on the native kernel. |
+| **C++ Engine** | The C++ core compiled to WebAssembly runs in every browser: build facts, agreement with the TypeScript models and Monte Carlo in a worker. The native engine adds live status, measured round-trip latency, engine-vs-browser agreement and 100k–10M-path Monte Carlo on Metal. Every tile says which engine produced the number and why. |
 
-**How the hosted demo computes.** The public site has no server. Every figure there comes from TypeScript
-implementations of the same models (heavy simulations run in a Web Worker), and the engine badge reads *Offline*.
-Run the engine locally and the badge turns *Connected*: the Greeks tiles are then priced by the C++ core — the
-default SPY contract as a stream, any other portfolio as one batch call — and the C++ Engine tab can run the native
-Monte Carlo kernel. Snapshot prices are indicative, not live quotes; a ticker you add is priced from the price you
+**How the hosted demo computes.** The public site has no server, so it runs the C++ pricing core itself:
+`core/src/black_scholes.cpp` and `monte_carlo.cpp` compiled with Emscripten into a 10 KB WebAssembly module. The
+Greeks tiles are priced by it (labelled *C++ · WebAssembly*), and its Monte Carlo runs in a Web Worker. Charts,
+stress, VaR and the Pricing Lab use TypeScript implementations of the same models, which the unit tests hold to
+1e-12 of the C++ results. Run the native engine locally and its badge turns *Connected*: the tiles are then priced
+by the native C++ build — the default SPY contract as a stream, any other portfolio as one batch call — and the C++
+Engine tab can run the Metal Monte Carlo kernel. Snapshot prices are indicative, not live quotes; a ticker you add is priced from the price you
 enter and is labelled *Manual price*.
 
 ## Architecture
@@ -35,6 +37,7 @@ enter and is labelled *Manual price*.
 │  Terminal UI ── lib/quant  BSM · CRR · Monte Carlo       lib/risk  VaR · stress · surface │
 │             ── lib/strategy presets · payoff analytics  lib/io    CSV / XLSX import     │
 │             ── workers/compute.worker.ts (lab, MC paths, MC VaR — off the main thread)  │
+│             ── public/wasm/quantcore.wasm C++ core → WebAssembly (bsm_full, mc_price)   │
 └──────────────────────────────────────────┬─────────────────────────────────────────────┘
                                            │ WebSocket JSON (localhost only)
                         ┌──────────────────┴──────────────────┐
@@ -49,6 +52,11 @@ enter and is labelled *Manual price*.
         │  + multithreaded Monte Carlo      │  counter-based PRNG                │
         └───────────────────────────────────┴───────────────────────────────────┘
 ```
+
+The WebAssembly module is built by `scripts/build-wasm.sh` from the same C++ sources plus
+`bindings/quantcore_wasm.cpp` — standalone, with no imports and no JavaScript glue. The build is reproducible: a
+manifest records the Emscripten version, flags and SHA-256 of the module and every source; the unit tests fail if a
+source changes without a rebuild, and CI rebuilds it and requires a byte-identical result.
 
 The Python layer (`python/`) holds the benchmark harnesses, market-data validation and the VaR backtest. An optional
 Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configured.
@@ -168,6 +176,10 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
   no-arbitrage bounds and parity at extreme inputs, portfolio Greeks vs finite differences, American ≥ European ≥
   intrinsic, implied-vol round trips, payoff analytics vs a dense scan (every sign change is a break-even), stress and
   VaR invariants, CSV round trips, import fuzzing and chart-axis ticks for degenerate ranges.
+- `tests/wasm.spec.ts` — the committed WebAssembly module matches its manifest and the current C++ sources, loads with
+  no imports, and agrees with the native build to 1e-12 on 960 contracts (most values bit-identical) and with the
+  TypeScript models; same-seed Monte Carlo reproduces the native result to 1e-12.
+- `tests/marketData.spec.ts` — the data-proxy client with a stubbed fetch: opt-in gating, health probe, failures.
 - `tests/terminal.spec.ts` — preset, instrument switch, any-ticker entry, Pricing Lab, Monte Carlo view, chart modes,
   CSV upload, XLSX and XLS upload, Stress Lab, Risk / VaR.
 - `tests/robustness.spec.ts` — seeded random walks through the whole UI (desktop and 375 px mobile) with invalid and
@@ -179,12 +191,16 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
 - `tests/a11y.spec.ts` — axe-core WCAG 2.1 A/AA audit of the terminal and every research tab.
 
 Playwright starts the engine and the dev server itself. GitHub Actions (`.github/workflows/dashboard.yml`) runs lint,
-typecheck, the library unit tests and the production build on every push to `dashboard/`.
+typecheck, the library unit tests and the production build on every push to `dashboard/`; `wasm.yml` rebuilds the
+WebAssembly module with the Emscripten version pinned in its manifest and fails unless the result is byte-identical.
 
 ## Build & deploy
 
 ```bash
 cd dashboard && npm run build          # static export → dashboard/out
+
+# after changing the C++ pricing code: rebuild the WebAssembly module (Emscripten via emsdk)
+source ~/emsdk/emsdk_env.sh && ./scripts/build-wasm.sh
 ```
 
 `netlify.toml` builds `dashboard/` and publishes `out/` for Git-connected Netlify deploys; `dashboard/out` can also
@@ -196,7 +212,8 @@ time to enable live quotes through a deployed proxy; without it the hosted build
 ```
 core/          C++17 pricing library — Black-Scholes, Monte Carlo, Greeks;
                Metal GPU kernel in core/src/monte_carlo_gpu.mm
-bindings/      pybind11 bindings (GIL released around C++ compute)
+bindings/      pybind11 bindings (GIL released around C++ compute); quantcore_wasm.cpp WebAssembly entry points
+scripts/       build-wasm.sh — C++ core → dashboard/public/wasm (module + manifest)
 python/        Benchmarks, market-data validation, VaR backtest
 server/        FastAPI WebSocket engine, latency harness, protocol check
 proxy/         Optional Go market-data proxy (Alpaca)
@@ -219,7 +236,9 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
 - A flat volatility surface — no skew, smile or term structure.
 - American early exercise is priced only by the CRR lattice in the Pricing Models Lab; Greeks, charts, stress and VaR treat options as European.
 - The native Monte Carlo kernel prices one European contract per run.
-- The engine is a local service: the hosted terminal always computes in the browser.
+- The native engine (Metal GPU, Accelerate SIMD, multithreading) is a local service. In the browser the C++ core runs
+  as single-threaded WebAssembly and prices the Greeks tiles and single-contract Monte Carlo; charts, stress, VaR and
+  the Pricing Lab use the TypeScript models.
 - Instrument prices are indicative snapshots or prices you enter, unless the optional data proxy is running; added
   tickers start at 30% volatility until you set it.
 - Stress scenarios are illustrative instantaneous shocks, not calibrated historical replays.

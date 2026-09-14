@@ -4,9 +4,11 @@ import { useState } from 'react';
 import type { Leg, Market } from '@/lib/quant/types';
 import { bsGreeks } from '@/lib/quant/blackScholes';
 import type { Engine, EngineMcResult, EnginePortfolioResult } from '@/lib/engine/useEngine';
+import type { WasmEngine } from '@/lib/engine/useWasmEngine';
 import { BENCH_SOURCE, BENCHMARKS } from '@/lib/engine/benchmarks';
 import { legLabel, legsKeyOf } from '@/lib/strategy/labels';
-import type { CalcSource } from '@/components/analytics/SummaryTiles';
+import type { CalcSource, CalcSourceKind } from '@/components/analytics/SummaryTiles';
+import { WasmPanel } from './WasmPanel';
 import { Badge, Button, cx, Segmented, Sparkline, ui } from '@/components/ui/primitives';
 import { fmtMs, fmtPaths, Z95 } from '@/components/lab/labFormat';
 import e from './engine.module.css';
@@ -19,19 +21,29 @@ function quantile(xs: number[], q: number): number | null {
   return s[Math.min(s.length - 1, Math.round(q * (s.length - 1)))];
 }
 
-function Architecture({ connected, backend }: { connected: boolean; backend: string | null }) {
+function Architecture({ connected, backend, source }: { connected: boolean; backend: string | null; source: CalcSourceKind }) {
   const edge = connected ? cx(e.edge, e.edgeLive) : e.edge;
+  const wasmEdge = source === 'wasm' ? cx(e.edge, e.edgeLive) : e.edge;
   const node = (active: boolean) => cx(e.node, active && e.nodeActive);
   return (
     <div className={e.diagramWrap}>
-      <svg viewBox="0 0 880 236" className={e.diagram} role="img" data-testid="engine-diagram" data-connected={connected}
+      <svg viewBox="0 0 880 272" className={e.diagram} role="img" data-testid="engine-diagram" data-connected={connected}
+           data-source={source}
            aria-label={connected
-             ? 'Connected: browser sends JSON over WebSocket to FastAPI, which calls the C++17 core through pybind11.'
-             : 'Offline: all figures are computed by the TypeScript models in the browser.'}>
+             ? 'Connected: browser sends JSON over WebSocket to FastAPI, which calls the native C++17 core through pybind11.'
+             : source === 'wasm'
+               ? 'In the browser: the page calls the C++17 core compiled to WebAssembly; the native engine is not connected.'
+               : 'Offline: all figures are computed by the TypeScript models in the browser.'}>
         <rect x={10} y={82} width={170} height={74} rx={7} className={node(!connected)} />
         <text x={24} y={106} className={e.nodeTitle}>Browser</text>
         <text x={24} y={124} className={e.nodeSub}>Next.js · React</text>
-        <text x={24} y={141} className={e.nodeSub}>TS models · Worker</text>
+        <text x={24} y={141} className={e.nodeSub}>TS models · Workers</text>
+
+        <path d="M95 156 L95 196" className={wasmEdge} />
+        <rect x={10} y={196} width={250} height={66} rx={7} className={node(source === 'wasm')} />
+        <text x={24} y={220} className={e.nodeTitle}>C++17 core · WebAssembly</text>
+        <text x={24} y={238} className={e.nodeSub}>bsm_full · mc_price (same core/src)</text>
+        <text x={24} y={254} className={e.nodeSub}>Emscripten · standalone, no JS glue</text>
 
         <path d="M180 119 L290 119" className={edge} />
         <text x={235} y={108} textAnchor="middle" className={e.edgeLabel}>WS · JSON</text>
@@ -69,8 +81,8 @@ function Architecture({ connected, backend }: { connected: boolean; backend: str
   );
 }
 
-export function EnginePanel({ engine, legs, market, source }: {
-  engine: Engine; legs: Leg[]; market: Market; source: CalcSource;
+export function EnginePanel({ engine, wasm, legs, market, source }: {
+  engine: Engine; wasm: WasmEngine; legs: Leg[]; market: Market; source: CalcSource;
 }) {
   const connected = engine.status === 'connected';
   const rtt = engine.stats.rtt;
@@ -111,11 +123,15 @@ export function EnginePanel({ engine, legs, market, source }: {
   const mcShown = mc?.res && mc.key === mKey ? mc.res : null;
 
   const blocker = !connected
-    ? (engine.reason === 'hosted' ? 'Runs on a local machine only — not available on the hosted site.' : 'Engine offline.')
+    ? (engine.reason === 'hosted' ? 'Runs on a local machine only — not available on the hosted site.' : 'Native engine offline.')
     : market.q !== 0 && !engine.info?.dividends ? 'This engine build predates dividend support — set q to 0% or rebuild the engine.' : null;
 
   return (
     <div>
+      <div className={e.sectionTitle} style={{ marginTop: 0 }}>WebAssembly engine · in this browser</div>
+      <WasmPanel wasm={wasm} legs={legs} market={market} />
+
+      <div className={e.sectionTitle}>Native engine · WebSocket</div>
       <div className={e.head}>
         <Badge tone={connected ? 'good' : engine.status === 'connecting' ? 'warn' : 'muted'} pulse={connected} testid="engine-status">
           {connected ? 'Connected' : engine.status === 'connecting' ? 'Connecting…' : 'Offline'}
@@ -134,8 +150,8 @@ export function EnginePanel({ engine, legs, market, source }: {
         {connected
           ? 'The Greeks tiles are priced by the native C++17 core: the default SPY contract streams through subscribe/update, and any other portfolio (including a dividend yield) is sent as one batch_bs_full request. Charts, stress and VaR are computed in the browser.'
           : engine.reason === 'hosted'
-            ? 'This hosted build has no server: every number on the page comes from the TypeScript models in your browser (the same Black-Scholes formulas the C++ core implements, cross-checked in the unit tests). Run the engine locally to see the native path light up.'
-            : 'No engine answered at ws://localhost:8765, so all pricing runs in the browser. Start it with the commands below; the status badge turns Connected by itself within a few seconds, or press Reconnect.'}
+            ? 'The native engine — Metal GPU Monte Carlo, Accelerate SIMD batch pricing and multithreaded CPU paths — runs as a local service, so the hosted site cannot reach it. The WebAssembly build above runs the same C++ pricing code in your browser instead. Run the engine locally to see the native path light up.'
+            : 'No native engine answered at ws://localhost:8765, so the Greeks tiles are priced by the WebAssembly build above. Start the native engine with the commands below; its badge turns Connected by itself within a few seconds, or press Reconnect.'}
       </p>
 
       <dl className={e.stats}>
@@ -155,7 +171,7 @@ export function EnginePanel({ engine, legs, market, source }: {
         </div>
       )}
 
-      <Architecture connected={connected} backend={mcShown?.backend ?? null} />
+      <Architecture connected={connected} backend={mcShown?.backend ?? null} source={source.kind} />
 
       <div className={e.grid}>
         <div className={e.box}>

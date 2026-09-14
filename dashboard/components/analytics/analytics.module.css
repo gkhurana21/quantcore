@@ -5,6 +5,7 @@
 }
 .tile { padding: 11px 14px 12px; min-width: 0; border-right: 1px solid var(--line); }
 .tile:last-child { border-right: 0; }
+.tileSym { text-transform: none; letter-spacing: 0; }   /* keep ν from uppercasing to a Latin-looking Ν */
 .tileLabel {
   display: flex; align-items: center; gap: 6px;
   font-size: 10.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3);

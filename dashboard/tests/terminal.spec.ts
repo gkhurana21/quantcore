@@ -224,6 +224,27 @@ test.describe('QuantCore terminal flows', () => {
     await expect(page.getByTestId('spot-display')).toHaveText('162.40');
   });
 
+  test('11. The top bar never clips a market value, from 1200 to 1920 px wide', async ({ page }) => {
+    await open(page);
+    await expect(page.getByTestId('wasm-status')).toHaveText('Ready', { timeout: 15_000 });
+    for (const width of [1200, 1280, 1366, 1440, 1536, 1600, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      const tape = await page.evaluate(() => {
+        const el = document.querySelector('[aria-label="Current market"]') as HTMLElement;
+        const right = el.getBoundingClientRect().right;
+        const shown = [...el.children].filter(c => getComputedStyle(c).display !== 'none');
+        return {
+          overflow: el.scrollWidth - el.clientWidth,
+          clipped: shown.filter(c => c.getBoundingClientRect().right > right + 0.5).map(c => c.textContent),
+          shown: shown.map(c => c.textContent).join(' '),
+        };
+      });
+      expect(tape.overflow, `${width}px: ${tape.shown}`).toBeLessThanOrEqual(0);
+      expect(tape.clipped, `${width}px`).toEqual([]);
+      expect(tape.shown, `${width}px`).toMatch(/SPY.*S.*σ.*P&L/);   // spot, vol and P&L always stay
+    }
+  });
+
   test('9. Risk / VaR: headline, confidence and horizon scaling, Monte Carlo VaR', async ({ page }) => {
     await open(page);
     await page.keyboard.press('4');                                // keyboard shortcut → Risk tab

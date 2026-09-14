@@ -1,14 +1,15 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import type { Greeks, Leg } from '@/lib/quant/types';
 import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
 import type { PayoffAnalytics } from '@/lib/strategy/portfolio';
 import { grossPremium, netPremium } from '@/lib/strategy/portfolio';
-import { days, num, signed, usd, usdSigned } from '@/lib/format';
+import { days, fixed, num, signed, usd, usdSigned } from '@/lib/format';
 import { InfoTip } from '@/components/ui/primitives';
 import c from './analytics.module.css';
 
-export type CalcSourceKind = 'engine-stream' | 'engine-batch' | 'browser';
+export type CalcSourceKind = 'engine-stream' | 'engine-batch' | 'wasm' | 'browser';
 
 export interface CalcSource { kind: CalcSourceKind; label: string; reason: string; }
 
@@ -21,7 +22,7 @@ export interface TileQuote {
 }
 
 function Tile({ label, testid, value, sub, tone, tip, raw }: {
-  label: string; testid: string; value: string; sub?: string; tone?: 'pos' | 'neg'; tip?: string; raw: number;
+  label: ReactNode; testid: string; value: string; sub?: string; tone?: 'pos' | 'neg'; tip?: string; raw: number;
 }) {
   return (
     <div className={c.tile}>
@@ -37,28 +38,30 @@ function Tile({ label, testid, value, sub, tone, tip, raw }: {
 export function SummaryTiles({ quote, legs, spot }: { quote: TileQuote; legs: Leg[]; spot: number }) {
   const g = quote.greeks;
   const pnlTone = quote.pnl > 0.5 ? 'pos' : quote.pnl < -0.5 ? 'neg' : undefined;
+  // whole dollars; `|| 0` turns a rounded −0 (a hair below zero) into 0 so it never renders as "-0"
+  const pnlWhole = Math.round(quote.pnl) || 0;
 
   if (quote.perShare && legs.length === 1) {
     const l = legs[0], w = signedQty(l) * M;
     const pos = `${l.side === 'buy' ? 'long' : 'short'} ${l.qty}× `;
     return (
       <div className={c.tiles}>
-        <Tile label="Price" testid="price" value={g.price.toFixed(3)} raw={g.price}
+        <Tile label="Price" testid="price" value={fixed(g.price, 3)} raw={g.price}
               sub={`${pos}· ${usd(w * g.price)}`}
               tip="Black-Scholes value per share of the option. A contract is 100 shares." />
-        <Tile label="Delta Δ" testid="delta" value={g.delta.toFixed(4)} raw={g.delta}
+        <Tile label="Delta Δ" testid="delta" value={fixed(g.delta, 4)} raw={g.delta}
               sub={`position ${signed(w * g.delta, 0)} sh`}
               tip="Change in option price per $1 move in spot. Position delta is in share-equivalents." />
-        <Tile label="Gamma Γ" testid="gamma" value={g.gamma.toFixed(5)} raw={g.gamma}
+        <Tile label="Gamma Γ" testid="gamma" value={fixed(g.gamma, 5)} raw={g.gamma}
               sub={`position ${signed(w * g.gamma, 2)} / $1`}
               tip="Change in delta per $1 move in spot." />
-        <Tile label="Theta / day" testid="theta" value={(g.theta / 365).toFixed(4)} raw={g.theta / 365}
+        <Tile label="Theta / day" testid="theta" value={fixed(g.theta / 365, 4)} raw={g.theta / 365}
               sub={`position ${usdSigned((w * g.theta) / 365)}/d`}
               tip="Time decay per calendar day (annual theta ÷ 365)." />
-        <Tile label="Vega ν" testid="vega" value={g.vega.toFixed(3)} raw={g.vega}
+        <Tile label={<>Vega <span className={c.tileSym}>ν</span></>} testid="vega" value={fixed(g.vega, 3)} raw={g.vega}
               sub={`position ${usdSigned(w * g.vega * 0.01)} / vol pt`}
               tip="Change in price per 1.00 (100 vol points) change in volatility." />
-        <Tile label="P&L" testid="pnl" value={`${quote.pnl >= 0 ? '+' : ''}${quote.pnl.toFixed(0)}`} raw={quote.pnl}
+        <Tile label="P&L" testid="pnl" value={`${pnlWhole >= 0 ? '+' : ''}${pnlWhole}`} raw={quote.pnl}
               tone={pnlTone} sub={`entry ${l.premium.toFixed(2)} / sh`}
               tip="Mark-to-model value minus premium paid (or plus premium received), in dollars." />
       </div>

@@ -26,6 +26,7 @@
 .sourceDot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .sourceEngine { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .sourceBrowser { background: var(--blue); }
+.sourceWasm { background: var(--amber-2); box-shadow: 0 0 0 3px var(--amber-soft); }
 .sourceName { color: var(--ink-2); font-weight: 600; }
 
 .footer {

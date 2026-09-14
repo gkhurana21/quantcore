@@ -53,11 +53,12 @@ async function expectSane(page: Page, log: string[]) {
   const s = await page.evaluate(() => {
     const text = document.body.innerText;
     const m = /NaN|undefined|Infinity/.exec(text);
-    const empty = ['price', 'delta', 'gamma', 'theta', 'vega', 'pnl']
-      .filter(id => !(document.querySelector(`[data-testid="${id}"]`)?.textContent ?? '').trim());
+    const tiles = ['price', 'delta', 'gamma', 'theta', 'vega', 'pnl']
+      .map(id => [id, (document.querySelector(`[data-testid="${id}"]`)?.textContent ?? '').trim()]);
     return {
       bad: m ? text.slice(Math.max(0, m.index - 100), m.index + 40) : null,
-      empty,
+      empty: tiles.filter(([, v]) => !v).map(([id]) => id),
+      signedZero: tiles.filter(([, v]) => /^[−-]\$?0(\.0+)?( sh)?$/.test(v)).map(([id, v]) => `${id} ${v}`),
       overflow: document.documentElement.scrollWidth - window.innerWidth,
       legs: document.querySelectorAll('[data-testid="leg-row"]').length,
     };
@@ -65,6 +66,7 @@ async function expectSane(page: Page, log: string[]) {
   const ctx = `\nlast actions:\n  ${log.slice(-10).join('\n  ')}`;
   expect(s.bad, `rendered NaN/undefined/Infinity${ctx}`).toBeNull();
   expect(s.empty, `empty Greeks tile${ctx}`).toEqual([]);
+  expect(s.signedZero, `signed zero in a Greeks tile${ctx}`).toEqual([]);
   expect(s.overflow, `horizontal overflow${ctx}`).toBeLessThanOrEqual(1);
   expect(s.legs, `leg count${ctx}`).toBeGreaterThanOrEqual(1);
   expect(s.legs, `leg count${ctx}`).toBeLessThanOrEqual(8);
@@ -330,7 +332,7 @@ test.describe('robustness: edge cases', () => {
 });
 
 test.describe('robustness: engine resilience', () => {
-  test('an engine crash mid-session falls back to browser pricing and recovers', async ({ page }) => {
+  test('an engine crash mid-session falls back to the WebAssembly engine and recovers', async ({ page }) => {
     test.setTimeout(60_000);
     const errors = watchErrors(page);
     const sockets: WebSocketRoute[] = [];
@@ -340,7 +342,7 @@ test.describe('robustness: engine resilience', () => {
     await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'engine-stream', { timeout: 10_000 });
 
     for (const ws of sockets.splice(0)) await ws.close({ code: 1000, reason: 'simulated engine crash' });
-    await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'browser', { timeout: 5_000 });
+    await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'wasm', { timeout: 5_000 });
     await expect(page.locator(tid('ws-status'))).not.toHaveText('Connected');
     await setRange(page, 'spot-input', 771);
     await expect(page.locator(tid('price'))).toHaveText('27.370');
@@ -364,7 +366,8 @@ test.describe('robustness: engine resilience', () => {
     });
     await open(page);
     await expect(page.locator(tid('ws-status'))).toHaveText('Offline', { timeout: 20_000 });
-    await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'browser');
+    await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'wasm');
+    await expect(page.locator(tid('wasm-status'))).toHaveText('Ready');
     await page.waitForTimeout(8_000);                                   // both automatic retries are spent
     await expect(page.locator(tid('ws-status'))).toHaveText('Offline');
     await page.locator(tid('tab-engine')).click();
@@ -375,6 +378,31 @@ test.describe('robustness: engine resilience', () => {
     await page.locator(tid('engine-reconnect')).click();
     await expect(page.locator(tid('ws-status'))).toHaveText('Connected', { timeout: 10_000 });
     await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'engine-stream', { timeout: 10_000 });
+    expect(errors).toEqual([]);
+  });
+
+  test('with the native engine unreachable, the C++ WebAssembly build prices the terminal', async ({ page }) => {
+    test.setTimeout(60_000);
+    const errors = watchErrors(page);
+    await page.routeWebSocket('ws://localhost:8765/ws', ws => ws.close({ code: 1000, reason: 'no native engine' }));
+    await open(page);
+    await expect(page.locator(tid('wasm-status'))).toHaveText('Ready', { timeout: 15_000 });
+    await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'wasm', { timeout: 15_000 });
+    await expect(page.locator(tid('calc-source'))).toHaveText('C++ · WebAssembly');
+    const ref = engineCall(756.48, 755, 0.045, 0.138, 0.129);
+    const shown = Number(await page.locator(tid('price')).getAttribute('data-value'));
+    expect(Math.abs(shown - ref)).toBeLessThanOrEqual(1e-12 * ref);
+
+    await page.locator(tid('tab-engine')).click();
+    await expect(page.locator(tid('engine-wasm-status'))).toHaveText('Ready');
+    await expect(page.locator(tid('wasm-build'))).toContainText('Emscripten');
+    expect(Number(await page.locator(tid('wasm-agreement')).getAttribute('data-value'))).toBeLessThan(1e-12);
+    await page.locator(tid('wasm-paths-1000000')).click();
+    await page.locator(tid('wasm-run-mc')).click();
+    const result = page.locator(tid('wasm-mc-result'));
+    await expect(result).toBeVisible({ timeout: 30_000 });
+    expect(Number(await result.getAttribute('data-z'))).toBeLessThan(4);
+    await expectSane(page, ['native engine unreachable, WebAssembly engine']);
     expect(errors).toEqual([]);
   });
 

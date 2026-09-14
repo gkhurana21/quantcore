@@ -19,7 +19,7 @@ import { NO_SHOCK, SCENARIOS, stressReport } from '../lib/risk/stress';
 import { deltaNormalVaR, mcVaR } from '../lib/risk/var';
 import { pnlSurface } from '../lib/risk/surface';
 import { importPortfolio, parseCsvText } from '../lib/io/portfolioParser';
-import { num, pct, signed, usd, usdCompact, usdSigned } from '../lib/format';
+import { fixed, num, pct, signed, usd, usdCompact, usdSigned } from '../lib/format';
 import { niceTicks, strikeTick } from '../components/charts/scale';
 
 function rng(seed: number) {
@@ -346,8 +346,11 @@ test.describe('property: import and formatting', () => {
     const bad: string[] = [];
     for (let i = 0; i < 5000; i++) {
       const v = g.pick([0, -0, 1e-12, -1e-12, 0.4999, -0.5, 1e15, -1e15]) * (g.u() < 0.5 ? 1 : 0) + g.range(-1e7, 1e7) * g.pick([0, 1e-9, 1]);
-      for (const s of [usd(v), usd(v, 2), usdSigned(v), usdSigned(v, 2), usdCompact(v), num(v, 3), signed(v, 2), pct(v, 2)]) {
+      for (const s of [usd(v), usd(v, 2), usdSigned(v), usdSigned(v, 2), usdCompact(v), num(v, 3), signed(v, 2), pct(v, 2),
+                       fixed(v, 0), fixed(v, 4)]) {
         if (/NaN|undefined/.test(s)) bad.push(`${v} → ${s}`);
+        // a value that rounds to zero must not keep its minus sign ("−0", "−$0.00", "-0.0000")
+        if (/^[−-]\$?0(\.0+)?[%kM]?$/.test(s)) bad.push(`${v} → signed zero ${s}`);
       }
     }
     expect(bad.slice(0, 5)).toEqual([]);

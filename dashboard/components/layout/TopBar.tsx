@@ -4,6 +4,7 @@ import { Fragment } from 'react';
 import type { Instrument } from '@/lib/market/instruments';
 import type { Market } from '@/lib/quant/types';
 import type { EngineStatus, OfflineReason } from '@/lib/engine/useEngine';
+import type { WasmStatus } from '@/lib/engine/useWasmEngine';
 import { num, pct, usdSigned } from '@/lib/format';
 import type { DataMode } from '@/components/terminal/useLiveData';
 import type { TabId } from '@/components/terminal/useTerminalState';
@@ -22,9 +23,9 @@ const STEPS: { id: StepId; label: string }[] = [
 
 export interface QuickAction { id: string; label: string; run: () => void; }
 
-export function TopBar({ instrument, market, horizonDays, pnl, dataMode, engineStatus, engineReason, activeTab, onStep, quick }: {
+export function TopBar({ instrument, market, horizonDays, pnl, dataMode, engineStatus, engineReason, wasmStatus, activeTab, onStep, quick }: {
   instrument: Instrument; market: Market; horizonDays: number; pnl: number; dataMode: DataMode;
-  engineStatus: EngineStatus; engineReason: OfflineReason; activeTab: TabId;
+  engineStatus: EngineStatus; engineReason: OfflineReason; wasmStatus: WasmStatus; activeTab: TabId;
   onStep: (id: StepId) => void; quick: QuickAction[];
 }) {
   const data = instrument.custom
@@ -37,10 +38,16 @@ export function TopBar({ instrument, market, horizonDays, pnl, dataMode, engineS
   const engineText = engineStatus === 'connected' ? 'Connected' : engineStatus === 'connecting' ? 'Connecting…' : 'Offline';
   const engineTone = engineStatus === 'connected' ? s.good : engineStatus === 'connecting' ? s.warn : s.muted;
   const engineTitle = engineStatus === 'connected'
-    ? 'Local C++ engine connected over WebSocket (ws://localhost:8765)'
+    ? 'Native C++ engine connected over WebSocket (ws://localhost:8765): Metal GPU and SIMD CPU Monte Carlo'
     : engineReason === 'hosted'
-      ? 'The C++ engine runs on a local machine; this hosted build computes everything in the browser.'
-      : 'No engine answering at ws://localhost:8765 — pricing runs in the browser.';
+      ? 'The native engine (Metal GPU, SIMD) runs as a local service, so it is not reachable from the hosted site.'
+      : 'No native engine answering at ws://localhost:8765.';
+  const wasmText = wasmStatus === 'ready' ? 'Ready' : wasmStatus === 'loading' ? 'Loading…' : 'Unavailable';
+  const wasmTone = wasmStatus === 'ready' ? s.good : wasmStatus === 'loading' ? s.warn : s.muted;
+  const wasmTitle = wasmStatus === 'ready'
+    ? 'The C++ pricing core compiled to WebAssembly, running in this tab'
+    : wasmStatus === 'loading' ? 'Loading the C++ core compiled to WebAssembly'
+    : 'WebAssembly engine unavailable — pricing falls back to the TypeScript models';
 
   return (
     <header className={s.bar}>
@@ -57,9 +64,9 @@ export function TopBar({ instrument, market, horizonDays, pnl, dataMode, engineS
           <div className={s.tapeItem}><dt className="sr-only">Underlying</dt><dd className={s.tapeSym}>{instrument.sym}</dd></div>
           <div className={s.tapeItem}><dt className={s.tapeLabel}>S</dt><dd className={s.tapeValue}>{num(market.S, 2)}</dd></div>
           <div className={s.tapeItem}><dt className={s.tapeLabel}>σ</dt><dd className={s.tapeValue}>{pct(market.sigma, 1)}</dd></div>
-          <div className={s.tapeItem}><dt className={s.tapeLabel}>r</dt><dd className={s.tapeValue}>{pct(market.r, 2)}</dd></div>
-          <div className={s.tapeItem}><dt className={s.tapeLabel}>q</dt><dd className={s.tapeValue}>{pct(market.q, 2)}</dd></div>
-          <div className={s.tapeItem}><dt className={s.tapeLabel}>T₁</dt><dd className={s.tapeValue}>{horizonDays}d</dd></div>
+          <div className={cx(s.tapeItem, s.p2)}><dt className={s.tapeLabel}>r</dt><dd className={s.tapeValue}>{pct(market.r, 2)}</dd></div>
+          <div className={cx(s.tapeItem, s.p3)}><dt className={s.tapeLabel}>q</dt><dd className={s.tapeValue}>{pct(market.q, 2)}</dd></div>
+          <div className={cx(s.tapeItem, s.p3)}><dt className={s.tapeLabel}>T₁</dt><dd className={s.tapeValue}>{horizonDays}d</dd></div>
           <div className={s.tapeItem}><dt className={s.tapeLabel}>P&amp;L</dt>
             <dd className={cx(s.tapeValue, pnl > 0.5 ? 'pos' : pnl < -0.5 ? 'neg' : undefined)}>{usdSigned(pnl)}</dd></div>
         </dl>
@@ -69,11 +76,19 @@ export function TopBar({ instrument, market, horizonDays, pnl, dataMode, engineS
             <span className={cx(s.dot, data.tone)} aria-hidden="true" />
             <span data-testid="data-status" role="status">{data.text}</span>
           </span>
-          <span className={s.pill} title={engineTitle}>
-            <span className={s.pillLabel}>ENGINE</span>
-            <span>C++ / WebSocket</span>
-            <span className={cx(s.dot, engineTone)} aria-hidden="true" />
-            <span data-testid="ws-status" role="status" className={cx(s.statusText, engineTone)}>{engineText}</span>
+          <span className={cx(s.pill, s.engine)}>
+            <span className={s.pillLabel}>C++ ENGINE</span>
+            <span className={s.seg} title={wasmTitle}>
+              <span>WebAssembly</span>
+              <span className={cx(s.dot, wasmTone)} aria-hidden="true" />
+              <span data-testid="wasm-status" role="status" className={cx(s.statusText, wasmTone)}>{wasmText}</span>
+            </span>
+            <span className={s.sep} aria-hidden="true" />
+            <span className={s.seg} title={engineTitle}>
+              <span>Native</span>
+              <span className={cx(s.dot, engineTone)} aria-hidden="true" />
+              <span data-testid="ws-status" role="status" className={cx(s.statusText, engineTone)}>{engineText}</span>
+            </span>
           </span>
           <a className={s.link} href="https://github.com/gkhurana21/quantcore" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
         </div>

@@ -39,6 +39,8 @@
 .muted { color: var(--ink-3); }
 .info { color: var(--blue); }
 .statusText { font-weight: 650; }
+.seg { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sep { width: 1px; height: 14px; background: var(--line-2); }
 .link { font-size: 12.5px; color: var(--ink-3); white-space: nowrap; }
 .link:hover { color: var(--ink); }
 
@@ -64,6 +66,16 @@
 }
 .quickBtn:hover { border-color: var(--amber-line); color: var(--amber-2); background: var(--amber-soft); }
 
+/* Narrower bars drop the least important tape items rather than clipping values mid-number. */
+@media (max-width: 1599px) {
+  .subtitle { display: none; }
+}
+@media (max-width: 1439px) {
+  .p3 { display: none; }
+}
+@media (max-width: 1299px) {
+  .p2, .link { display: none; }
+}
 @media (max-width: 1199px) {
   .tape { display: none; }
 }
@@ -75,6 +87,9 @@
   .bar { position: static; }
   .top { height: auto; flex-wrap: wrap; padding-top: 10px; padding-bottom: 10px; gap: 10px; }
   .right { margin-left: 0; width: 100%; flex-wrap: wrap; }
+  /* the engine pill is wider than a phone: let its two segments wrap onto two lines */
+  .engine { flex-wrap: wrap; height: auto; min-height: 26px; padding: 4px 10px; row-gap: 2px; white-space: normal; }
+  .engine .sep { display: none; }
   .link { display: none; }
   .quick { margin-left: 12px; }
 }

@@ -13,6 +13,8 @@ import { legsKeyOf } from '@/lib/strategy/labels';
 import { findInstrument } from '@/lib/market/instruments';
 import type { EnginePortfolioResult } from '@/lib/engine/useEngine';
 import { useEngine } from '@/lib/engine/useEngine';
+import { useWasmEngine } from '@/lib/engine/useWasmEngine';
+import { wasmLegGreeks } from '@/lib/engine/wasm';
 import { days, usdSigned } from '@/lib/format';
 import { cx, Panel, prefersReducedMotion, Segmented, tabId, tabPanelId, Tabs } from './ui/primitives';
 import type { QuickAction, StepId } from './layout/TopBar';
@@ -51,7 +53,8 @@ function aggregate(legs: Leg[], perShare: Greeks[]): { greeks: Greeks; pnl: numb
 function SourceMeta({ quote }: { quote: TileQuote }) {
   return (
     <span className={t.source} title={quote.source.reason}>
-      <span className={cx(t.sourceDot, quote.source.kind === 'browser' ? t.sourceBrowser : t.sourceEngine)} aria-hidden="true" />
+      <span className={cx(t.sourceDot, quote.source.kind === 'browser' ? t.sourceBrowser
+        : quote.source.kind === 'wasm' ? t.sourceWasm : t.sourceEngine)} aria-hidden="true" />
       <span className={t.sourceName} data-testid="calc-source" data-kind={quote.source.kind}>{quote.source.label}</span>
       <span>· {quote.source.reason} ·</span>
       <span><span data-testid="calc-us" className="mono">{quote.calcUs == null ? '—' : quote.calcUs.toFixed(1)}</span> µs</span>
@@ -62,6 +65,7 @@ function SourceMeta({ quote }: { quote: TileQuote }) {
 export default function Dashboard() {
   const [state, dispatch] = useTerminalState();
   const engine = useEngine();
+  const wasm = useWasmEngine();
   const live = useLiveData(state.instrument.sym, state.market.S, dispatch);
   const { market, legs } = state;
   const canonical = isCanonicalPosition(state);
@@ -85,6 +89,18 @@ export default function Dashboard() {
     do { run(); n++; } while (performance.now() - t0 < 0.6 && n < 20_000);
     setBrowserUs(((performance.now() - t0) / n) * 1000);
   }, [legs, market]);
+
+  // ── C++ core compiled to WebAssembly (in this tab) ────────────────────────
+  const wasmPer = useMemo(() => (wasm.module ? wasmLegGreeks(wasm.module, legs, market) : null), [wasm.module, legs, market]);
+  const [wasmUs, setWasmUs] = useState<number | null>(null);
+  useEffect(() => {
+    const w = wasm.module;
+    if (!w) return;
+    const t0 = performance.now();
+    let n = 0;
+    do { wasmLegGreeks(w, legs, market); n++; } while (performance.now() - t0 < 0.6 && n < 20_000);
+    setWasmUs(((performance.now() - t0) / n) * 1000);
+  }, [wasm.module, legs, market]);
 
   // ── C++ engine: streaming canonical contract ──────────────────────────────
   const { sendUpdate, pricePortfolio } = engine;
@@ -122,12 +138,18 @@ export default function Dashboard() {
   } else if (batchEligible && batch && batch.legsKey === legsKey && batch.res.legs.length === legs.length) {
     quote = { ...aggregate(legs, batch.res.legs), calcUs: batch.res.calcUs,
               source: { kind: 'engine-batch', label: 'C++ engine', reason: 'batch_bs_full over WebSocket' } };
+  } else if (wasmPer) {
+    const why: string = engine.reason === 'hosted' ? 'native engine runs locally'
+      : engine.status === 'connecting' ? 'connecting to the native engine…'
+      : engine.status === 'offline' ? 'native engine offline'
+      : !engineHandlesQ ? 'q ≠ 0 — the native build predates dividend support'
+      : 'awaiting the native engine';
+    quote = { ...aggregate(legs, wasmPer), calcUs: wasmUs,
+              source: { kind: 'wasm', label: 'C++ · WebAssembly', reason: `bsm_full in this tab · ${why}` } };
   } else {
-    const reason: string = engine.reason === 'hosted' ? 'hosted demo — the C++ engine runs locally'
-      : engine.status === 'connecting' ? 'connecting to engine…'
-      : engine.status === 'offline' ? 'engine offline'
-      : !engineHandlesQ ? 'q ≠ 0 — this engine build predates dividend support'
-      : 'awaiting engine response';
+    const reason: string = wasm.status === 'loading' ? 'loading the C++ WebAssembly engine…'
+      : wasm.status === 'unavailable' ? 'WebAssembly engine unavailable'
+      : 'a leg is outside the C++ model’s domain';
     const source: CalcSource = { kind: 'browser', label: 'Browser · TypeScript', reason };
     quote = { ...browser, calcUs: browserUs, source };
   }
@@ -226,7 +248,7 @@ export default function Dashboard() {
       <a className={t.skip} href="#workspace">Skip to workspace</a>
 
       <TopBar instrument={state.instrument} market={market} horizonDays={days(firstExpiry(legs))} pnl={quote.pnl}
-              dataMode={live.mode} engineStatus={engine.status} engineReason={engine.reason}
+              dataMode={live.mode} engineStatus={engine.status} engineReason={engine.reason} wasmStatus={wasm.status}
               activeTab={state.tab} onStep={onStep} quick={quick} />
 
       <div className={t.body}>
@@ -263,7 +285,7 @@ export default function Dashboard() {
 
           <section ref={deckRef} className={t.deck} aria-label="Research tools">
             <Tabs prefix="deck" label="Research tools" showKeys active={state.tab} onChange={setTab}
-                  tabs={TABS.map(x => ({ id: x.id, label: x.label, badge: x.id === 'engine' && engine.status === 'connected' }))} />
+                  tabs={TABS.map(x => ({ id: x.id, label: x.label, badge: x.id === 'engine' && (engine.status === 'connected' || wasm.status === 'ready') }))} />
             {TABS.map(x => state.visited.includes(x.id) && (
               <div key={x.id} role="tabpanel" id={tabPanelId('deck', x.id)} aria-labelledby={tabId('deck', x.id)}
                    hidden={state.tab !== x.id} className={t.deckPanel} data-testid={`panel-${x.id}`}>
@@ -278,7 +300,7 @@ export default function Dashboard() {
                   <RiskPanel legs={legs} market={market} conf={varConf} horizon={varHorizon}
                              onConf={setVarConf} onHorizon={setVarHorizon} active={state.tab === 'risk'} />
                 )}
-                {x.id === 'engine' && <EnginePanel engine={engine} legs={legs} market={market} source={quote.source} />}
+                {x.id === 'engine' && <EnginePanel engine={engine} wasm={wasm} legs={legs} market={market} source={quote.source} />}
               </div>
             ))}
           </section>
@@ -291,7 +313,7 @@ export default function Dashboard() {
           are indicative.
         </span>
         <span>
-          C++17 · pybind11 · Apple Metal · FastAPI · Next.js ·{' '}
+          C++17 · WebAssembly · pybind11 · Apple Metal · FastAPI · Next.js ·{' '}
           <a href="https://github.com/gkhurana21/quantcore" target="_blank" rel="noopener noreferrer">Source</a> ·{' '}
           <a href="https://gaurangkhurana.ca" target="_blank" rel="noopener noreferrer">Gaurang Khurana</a>
         </span>
