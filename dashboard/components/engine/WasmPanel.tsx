@@ -5,7 +5,8 @@ import type { Leg, Market } from '@/lib/quant/types';
 import { bsGreeks } from '@/lib/quant/blackScholes';
 import type { WasmEngine, WasmMcRun } from '@/lib/engine/useWasmEngine';
 import { wasmLegGreeks } from '@/lib/engine/wasm';
-import { legLabel, legsKeyOf } from '@/lib/strategy/labels';
+import { legLabel, legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
+import { legSigma } from '@/lib/quant/volSurface';
 import { Badge, Button, Segmented, ui } from '@/components/ui/primitives';
 import { fmtMs, fmtPaths, Z95 } from '@/components/lab/labFormat';
 import e from './engine.module.css';
@@ -23,7 +24,7 @@ export function WasmPanel({ wasm, legs, market }: { wasm: WasmEngine; legs: Leg[
     if (!per) return null;
     let worst = 0;
     legs.forEach((l, i) => {
-      const b = bsGreeks(l.call, market.S, l.K, l.T, market.sigma, market.r, market.q);
+      const b = bsGreeks(l.call, market.S, l.K, l.T, legSigma(market, l.K, l.T), market.r, market.q);
       for (const k of GREEKS) worst = Math.max(worst, Math.abs(per[i][k] - b[k]));
     });
     return worst;
@@ -32,13 +33,13 @@ export function WasmPanel({ wasm, legs, market }: { wasm: WasmEngine; legs: Leg[
   const [legIdx, setLegIdx] = useState(0);
   const [paths, setPaths] = useState(1_000_000);
   const idx = Math.min(legIdx, legs.length - 1);
-  const key = `${legsKeyOf(legs)}|${market.S}|${market.sigma}|${market.r}|${market.q}|${idx}|${paths}`;
+  const key = `${legsKeyOf(legs)}|${marketKeyOf(market)}|${idx}|${paths}`;
   const [mc, setMc] = useState<{ key: string; busy: boolean; res?: WasmMcRun; error?: string } | null>(null);
   const run = async () => {
     const l = legs[idx];
     setMc({ key, busy: true });
     try {
-      const res = await wasm.runMc({ call: l.call, S: market.S, K: l.K, r: market.r, sigma: market.sigma, T: l.T,
+      const res = await wasm.runMc({ call: l.call, S: market.S, K: l.K, r: market.r, sigma: legSigma(market, l.K, l.T), T: l.T,
                                      paths, seed: 42, q: market.q });
       setMc({ key, busy: false, res });
     } catch (err) {
@@ -46,7 +47,7 @@ export function WasmPanel({ wasm, legs, market }: { wasm: WasmEngine; legs: Leg[
     }
   };
   const leg = legs[idx];
-  const ref = leg ? bsGreeks(leg.call, market.S, leg.K, leg.T, market.sigma, market.r, market.q).price : 0;
+  const ref = leg ? bsGreeks(leg.call, market.S, leg.K, leg.T, legSigma(market, leg.K, leg.T), market.r, market.q).price : 0;
   const shown = mc?.res && mc.key === key ? mc.res : null;
   const z = shown && shown.stdError > 0 ? Math.abs(shown.price - ref) / shown.stdError : null;
 

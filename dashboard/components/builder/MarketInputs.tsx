@@ -3,9 +3,12 @@
 import { useState } from 'react';
 import type { Dispatch } from 'react';
 import { INSTRUMENTS, mkCustomInstrument } from '@/lib/market/instruments';
-import type { Market } from '@/lib/quant/types';
+import type { Market, Smile } from '@/lib/quant/types';
+import type { SmilePreset } from '@/lib/quant/volSurface';
+import { clampSmile, SMILE_PRESETS } from '@/lib/quant/volSurface';
 import { signedPct } from '@/lib/format';
-import { Badge, Button, Segmented, SliderField } from '@/components/ui/primitives';
+import { Badge, Button, InfoTip, Segmented, SliderField } from '@/components/ui/primitives';
+import { SmileChart } from './SmileChart';
 import type { TerminalAction, TerminalState } from '@/components/terminal/useTerminalState';
 import type { LiveData } from '@/components/terminal/useLiveData';
 import b from './builder.module.css';
@@ -22,6 +25,18 @@ const TICKER_RE = /^[A-Z][A-Z0-9.-]{0,9}$/;
 const volPts = (d: number) => `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d * 100).toFixed(1)} pts`;
 const bps = (d: number) => `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d * 1e4).toFixed(0)} bp`;
 
+const SMILE_CHOICES = ['Flat', 'Equity index', 'Single stock', 'Custom'] as const;
+type SmileChoice = typeof SMILE_CHOICES[number];
+
+/** Largest curvature on the slider grid that stays arbitrage-free for this skew: η ≤ 2 / (1 + |ρ|). */
+const etaCap = (rho: number) => +(Math.floor(2 / (1 + Math.abs(rho)) / 0.05 + 1e-9) * 0.05).toFixed(2);
+
+/** Slider-aligned smile parameters inside the arbitrage-free region. */
+function snapSmile(s: Smile): Smile {
+  const c = clampSmile({ rho: +s.rho.toFixed(2), eta: +s.eta.toFixed(2), gamma: s.gamma });
+  return { ...c, eta: Math.min(c.eta, etaCap(c.rho)) };
+}
+
 export function MarketInputs({ state, dispatch, live }: {
   state: TerminalState; dispatch: Dispatch<TerminalAction>; live: LiveData;
 }) {
@@ -34,6 +49,21 @@ export function MarketInputs({ state, dispatch, live }: {
   const set = (patch: Partial<Market>) => dispatch({ type: 'market', patch });
   const changed = m.S !== base.S || m.sigma !== base.sigma || m.r !== base.r || m.q !== base.q;
   const all = [...INSTRUMENTS, ...state.searched];
+
+  const [customSmile, setCustomSmile] = useState(false);
+  const smile = m.smile;
+  const presetName = smile
+    ? (Object.keys(SMILE_PRESETS) as SmilePreset[]).find(k =>
+        SMILE_PRESETS[k].rho === smile.rho && SMILE_PRESETS[k].eta === smile.eta && SMILE_PRESETS[k].gamma === smile.gamma)
+    : undefined;
+  const smileChoice: SmileChoice = !smile ? 'Flat' : customSmile || !presetName ? 'Custom' : presetName;
+  const setSmile = (s: Smile | null) => set({ smile: s ? snapSmile(s) : null });
+  const chooseSmile = (c: SmileChoice) => {
+    setCustomSmile(c === 'Custom');
+    if (c === 'Flat') setSmile(null);
+    else if (c === 'Custom') setSmile(smile ?? { rho: -0.5, eta: 1, gamma: 0.45 });
+    else setSmile(SMILE_PRESETS[c]);
+  };
 
   return (
     <div>
@@ -99,7 +129,7 @@ export function MarketInputs({ state, dispatch, live }: {
                      format={v => `${(v * 100).toFixed(1)}%`} onChange={sigma => set({ sigma })}
                      testid="vol-input" displayTestid="vol-display" inputScale={100} inputDecimals={1}
                      delta={m.sigma !== base.sigma ? volPts(m.sigma - base.sigma) : null}
-                     tip="Annualised implied volatility, flat across strikes and expiries (no skew)." />
+                     tip="Annualised implied volatility, flat across expiries. With a smile set below, this is the at-the-money volatility." />
         <SliderField label="Risk-free rate" symbol="r" value={m.r} min={0} max={0.15} step={0.0005}
                      format={v => `${(v * 100).toFixed(2)}%`} onChange={r => set({ r })}
                      testid="rate-input" displayTestid="rate-display" inputScale={100} inputDecimals={2}
@@ -109,6 +139,28 @@ export function MarketInputs({ state, dispatch, live }: {
                      testid="q-input" displayTestid="q-display" inputScale={100} inputDecimals={2}
                      delta={m.q !== base.q ? bps(m.q - base.q) : null}
                      tip="Continuous dividend yield (Black-Scholes-Merton). Used by the browser models and, when connected, by the C++ engine." />
+      </div>
+
+      <div className={b.smile} data-testid="smile-panel">
+        <span className={b.smileTitle}>
+          Volatility smile
+          <InfoTip align="start" text="SSVI (Gatheral–Jacquier): every strike gets its own implied volatility, with parameters kept in the arbitrage-free region. σ above is the at-the-money volatility. Scenarios keep each strike's volatility when spot moves (sticky strike)." />
+        </span>
+        <Segmented size="sm" full label="Volatility smile" testid="smile" value={smileChoice}
+                   options={SMILE_CHOICES.map(v => ({ value: v, label: v }))} onChange={chooseSmile} />
+        {smile && (
+          <div className={b.sliders} style={{ marginTop: 0 }}>
+            <SliderField label="Skew" symbol="ρ" value={smile.rho} min={-0.95} max={0.95} step={0.05}
+                         format={v => v.toFixed(2)} testid="smile-rho" displayTestid="smile-rho-display"
+                         onChange={rho => { setCustomSmile(true); setSmile({ ...smile, rho }); }}
+                         tip="Negative skew makes downside strikes richer than upside strikes, as in equity markets." />
+            <SliderField label="Curvature" symbol="η" value={smile.eta} min={0.05} max={etaCap(smile.rho)} step={0.05}
+                         format={v => v.toFixed(2)} testid="smile-eta" displayTestid="smile-eta-display"
+                         onChange={eta => { setCustomSmile(true); setSmile({ ...smile, eta }); }}
+                         tip="How fast volatility rises away from the money. Capped at 2 / (1 + |ρ|), the arbitrage-free limit." />
+          </div>
+        )}
+        <SmileChart market={m} legs={state.legs} />
       </div>
 
       <div className={b.marketFoot}>

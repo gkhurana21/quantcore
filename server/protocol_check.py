@@ -54,7 +54,8 @@ async def main():
         pong = await rpc(ws, {"type": "ping", "t_ns": 987654321}, "pong")
         check("ping → pong echo", pong.get("t_ns") == 987654321)
         info = await rpc(ws, {"type": "info"}, "info")
-        check("info (protocol 3, dividends)", info.get("protocol") == 3 and info.get("dividends") is True,
+        check("info (protocol 4, dividends, per-leg sigma)",
+              info.get("protocol") == 4 and info.get("dividends") is True and info.get("leg_sigma") is True,
               json.dumps(info))
 
         # v2 portfolio (mixed calls/puts, one expired leg)
@@ -111,6 +112,25 @@ async def main():
                   f"{mcq['price']:.4f} ± {mcq['std_error']:.4f}, |z| {zq:.2f}, {mcq['backend']}")
         else:
             check("mc with q", False, mcq.get("msg", ""))
+
+        # v4 per-leg volatility (a smile): legs with "sigma" use it, legs without use the message sigma
+        smile_legs = [{"call": False, "K": 700.0, "T": 0.129, "sigma": 0.19},
+                      {"call": True, "K": 800.0, "T": 0.129, "sigma": 0.11},
+                      {"call": True, "K": 760.0, "T": 0.5}]
+        prs = await rpc(ws, {"type": "portfolio", "id": 13, "S": 756.48, "sigma": 0.138, "r": 0.045, "q": 0.01,
+                             "legs": smile_legs}, "portfolio_result")
+        if prs["type"] == "portfolio_result":
+            worst_s = 0.0
+            for l, got in zip(smile_legs, prs["legs"]):
+                want = quantcore.bs_full(0 if l["call"] else 1, 756.48, l["K"], 0.045, l.get("sigma", 0.138), l["T"], 0.01)
+                worst_s = max(worst_s, max(abs(got[k] - want[k]) for k in ("price", "delta", "gamma", "theta", "vega")))
+            check("portfolio per-leg sigma == bs_full(leg sigma)", worst_s < 1e-9, f"max |diff| {worst_s:.2e}")
+        else:
+            check("portfolio per-leg sigma", False, prs.get("msg", ""))
+        bad_sigma = await rpc(ws, {"type": "portfolio", "id": 14, "S": 100.0, "sigma": 0.2, "r": 0.01,
+                                   "legs": [{"call": True, "K": 100.0, "T": 1.0, "sigma": -0.3}]}, "portfolio_result")
+        check("invalid per-leg sigma → error with id", bad_sigma["type"] == "error" and bad_sigma.get("id") == 14,
+              bad_sigma.get("msg", ""))
 
         # errors keep the connection open
         err = await rpc(ws, {"type": "portfolio", "id": 9, "S": -1, "sigma": 0.2, "r": 0.04, "legs": legs}, "portfolio_result")

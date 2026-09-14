@@ -12,7 +12,7 @@ over WebSocket when it runs locally.
 
 | | What it does |
 |---|---|
-| **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA, or any ticker — type a symbol and its price (with the optional data proxy running, any US ticker loads with a live quote, listed expirations and chain strikes). Spot, volatility, rate and dividend-yield inputs. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
+| **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA, or any ticker — type a symbol and its price (with the optional data proxy running, any US ticker loads with a live quote, listed expirations and chain strikes). Spot, volatility, rate and dividend-yield inputs, and an arbitrage-free SSVI volatility smile (flat, equity index, single stock, or custom skew and curvature) drawn by strike. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
 | **Greeks & payoff** | Price, Δ, Γ, Θ, ν and P&L tiles; exact max profit / max loss and break-evens; an interactive payoff chart with P&L · Δ · Γ · Vega · Θ modes (hover or keyboard crosshair); a full-revaluation spot × vol P&L surface. |
 | **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice. |
 | **Monte Carlo** | Animated risk-neutral GBM paths with spot, strike, expiry and in-the-money markers; a 50,000-sample terminal distribution against its analytic lognormal density; simulated P(ITM) vs N(d₂). |
@@ -67,12 +67,19 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   The C++ core (`core/src/black_scholes.cpp`) and the TypeScript models implement the same formulas with
   double-precision N(x) — erfc in C++, Hart/West in TypeScript — and the unit tests require them to agree to
   1e-12 on price and every Greek, with and without dividends.
+- **Volatility smile (SSVI, Gatheral & Jacquier)**: total variance w(k) = θ/2·(1 + ρφk + √((φk + ρ)² + 1 − ρ²))
+  in log-forward moneyness k, with power-law φ(θ) = η/(θ^γ(1+θ)^(1−γ)) and θ = σ_ATM²·T. Parameters stay in the
+  arbitrage-free region η(1+|ρ|) ≤ 2, γ ≤ ½; the tests check Durrleman's density condition, butterfly prices and
+  calendar monotonicity numerically. Each leg is priced at its strike's volatility. Scenarios — payoff chart, stress,
+  VaR, P&L surface — are sticky-strike, and vol shocks move the ATM level. Flat is the default and prices exactly as
+  a single σ.
 - **Cox-Ross-Rubinstein** lattice: u = e^(σ√Δt), p = (e^((r−q)Δt) − d)/(u − d), backward induction; the American
   variant takes the larger of continuation and exercise value at every node.
 - **Implied volatility**: Newton-Raphson on vega inside a shrinking bisection bracket; no solution is reported for
   prices outside the no-arbitrage bounds.
 - **Monte Carlo**: seeded mulberry32 + Box-Muller; one Brownian path observed at every distinct leg expiry so
-  mixed maturities stay correlated; standard error from the per-path portfolio value; optional antithetic variates.
+  mixed maturities stay correlated (with a smile, each leg is lognormal at its own volatility on that shared path);
+  standard error from the per-path portfolio value; optional antithetic variates.
 - **Payoff analytics**: exact piecewise-linear max P/L and break-evens for single-expiry portfolios; a numerical scan
   of first-expiry P&L (later legs at model value) for mixed expiries.
 - **VaR**: delta-normal z·|Δ·S|·σ√(h/252); delta-gamma at dS = ±z·S·σ√h; Monte Carlo full revaluation with the
@@ -85,7 +92,8 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
 
 `server/ws_server.py`. Version 1 messages are unchanged; version 2 adds request/response messages matched by `id`;
 version 3 adds an optional continuous dividend yield `q` to every pricing message and reports `dividends: true` in
-`info`.
+`info`; version 4 adds an optional `sigma` per portfolio leg, so a volatility smile prices each strike at its own
+volatility, and reports `leg_sigma: true`.
 
 | Client → server | Server → client | Notes |
 |---|---|---|
@@ -93,7 +101,7 @@ version 3 adds an optional continuous dividend yield `q` to every pricing messag
 | `update {S, sigma, r, t_ns}` | `result {…, pnl, t_ns, calc_us}` | v1 — `t_ns` echoed for latency |
 | `ping {t_ns}` | `pong {t_ns}` | v2 |
 | `info` | `info {protocol, metal, device, cpu_threads}` | v2 |
-| `portfolio {id, S, sigma, r, legs[{call, K, T}]}` | `portfolio_result {id, legs[…], calc_us}` | v2 — calls and puts priced with one `batch_bs_full` each |
+| `portfolio {id, S, sigma, r, legs[{call, K, T, sigma?}]}` | `portfolio_result {id, legs[…], calc_us}` | v2 — calls and puts priced with one `batch_bs_full` each; v4 per-leg `sigma` |
 | `mc {id, call, S, K, r, sigma, T, paths ≤ 10M, seed}` | `mc_result {id, price, std_error, paths, ms, backend, device}` | v2 — Metal GPU, falling back to multithreaded CPU; runs off the event loop |
 
 Errors on v2 messages return `error {id, msg}` and keep the connection open.
@@ -176,6 +184,11 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
   no-arbitrage bounds and parity at extreme inputs, portfolio Greeks vs finite differences, American ≥ European ≥
   intrinsic, implied-vol round trips, payoff analytics vs a dense scan (every sign change is a break-even), stress and
   VaR invariants, CSV round trips, import fuzzing and chart-axis ticks for degenerate ranges.
+- `tests/volSurface.spec.ts` — the SSVI smile: flat markets unchanged, ATM volatility equals σ, the arbitrage-free
+  region (Durrleman's condition, butterfly prices and calendar spreads on dense grids, plus parameters outside the
+  region that do fail), analytic derivatives, skew direction and sticky-strike scenarios.
+- `tests/smile.spec.ts` — with a smile, the native engine (protocol v4) and the WebAssembly build agree with the
+  browser models leg by leg.
 - `tests/wasm.spec.ts` — the committed WebAssembly module matches its manifest and the current C++ sources, loads with
   no imports, and agrees with the native build to 1e-12 on 960 contracts (most values bit-identical) and with the
   TypeScript models; same-seed Monte Carlo reproduces the native result to 1e-12.
@@ -233,7 +246,9 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
 
 ## Limitations
 
-- A flat volatility surface — no skew, smile or term structure.
+- The volatility smile is parametric (one SSVI shape across maturities, flat at-the-money term structure) and is not
+  calibrated to market quotes. The Monte Carlo view simulates GBM, so with a smile its paths use one volatility — the
+  leg's own for a single leg, at-the-money for a portfolio.
 - American early exercise is priced only by the CRR lattice in the Pricing Models Lab; Greeks, charts, stress and VaR treat options as European.
 - The native Monte Carlo kernel prices one European contract per run.
 - The native engine (Metal GPU, Accelerate SIMD, multithreading) is a local service. In the browser the C++ core runs

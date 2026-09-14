@@ -6,6 +6,7 @@
 
 import { useReducer } from 'react';
 import { bsPrice } from '@/lib/quant/blackScholes';
+import { legSigma } from '@/lib/quant/volSurface';
 import type { Leg, Market } from '@/lib/quant/types';
 import type { Instrument } from '@/lib/market/instruments';
 import { CANONICAL, INSTRUMENTS } from '@/lib/market/instruments';
@@ -69,7 +70,7 @@ export type TerminalAction =
   | { type: 'stressRestore' };
 
 const reprice = (l: Leg, m: Market): Leg =>
-  ({ ...l, premium: bsPrice(l.call, m.S, l.K, l.T, m.sigma, m.r, m.q) });
+  ({ ...l, premium: bsPrice(l.call, m.S, l.K, l.T, legSigma(m, l.K, l.T), m.r, m.q) });
 
 export function initialTerminalState(): TerminalState {
   const spy = INSTRUMENTS[0];
@@ -82,7 +83,9 @@ export function initialTerminalState(): TerminalState {
 }
 
 function selectInstrument(st: TerminalState, inst: Instrument): TerminalState {
-  const market: Market = { S: inst.spot, sigma: inst.vol, r: st.market.r, q: inst.q };
+  // the smile is a model choice, so it carries over to the new underlying
+  const market: Market = { S: inst.spot, sigma: inst.vol, r: st.market.r, q: inst.q,
+                           ...(st.market.smile ? { smile: st.market.smile } : {}) };
   const preset: PresetName = st.preset === 'Custom' ? 'Long Call' : st.preset;
   const searched = (inst.live || inst.custom) && !INSTRUMENTS.some(i => i.sym === inst.sym)
     ? [...st.searched.filter(i => i.sym !== inst.sym), inst] : st.searched;
@@ -110,8 +113,9 @@ export function terminalReducer(st: TerminalState, a: TerminalAction): TerminalS
     case 'market':
       return { ...st, market: { ...st.market, ...a.patch } };
 
-    case 'resetMarket':
-      return { ...st, market: { ...st.base } };
+    case 'resetMarket':   // restores spot, vol and rates; keeps the chosen smile
+      return { ...st, market: { S: st.base.S, sigma: st.base.sigma, r: st.base.r, q: st.base.q,
+                                ...(st.market.smile ? { smile: st.market.smile } : {}) } };
 
     case 'preset':
       return { ...st, legs: buildPreset(a.name, st.instrument, st.market), preset: a.name,
@@ -174,7 +178,7 @@ export function useTerminalState() {
 
 /** The exact state in which the C++ engine's streaming subscription is authoritative. */
 export function isCanonicalPosition(st: Pick<TerminalState, 'instrument' | 'legs' | 'market'>): boolean {
-  if (st.instrument.sym !== CANONICAL.sym || st.legs.length !== 1) return false;
+  if (st.instrument.sym !== CANONICAL.sym || st.legs.length !== 1 || st.market.smile) return false;
   const l = st.legs[0], c = canonicalLeg();
   return l.call && l.side === 'buy' && l.K === c.K && Math.abs(l.T - c.T) < 1e-12 &&
          l.qty === c.qty && Math.abs(l.premium - c.premium) < 1e-9;

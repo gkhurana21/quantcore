@@ -6,7 +6,8 @@ import { bsGreeks } from '@/lib/quant/blackScholes';
 import type { Engine, EngineMcResult, EnginePortfolioResult } from '@/lib/engine/useEngine';
 import type { WasmEngine } from '@/lib/engine/useWasmEngine';
 import { BENCH_SOURCE, BENCHMARKS } from '@/lib/engine/benchmarks';
-import { legLabel, legsKeyOf } from '@/lib/strategy/labels';
+import { legLabel, legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
+import { legSigma } from '@/lib/quant/volSurface';
 import type { CalcSource, CalcSourceKind } from '@/components/analytics/SummaryTiles';
 import { WasmPanel } from './WasmPanel';
 import { Badge, Button, cx, Segmented, Sparkline, ui } from '@/components/ui/primitives';
@@ -86,7 +87,7 @@ export function EnginePanel({ engine, wasm, legs, market, source }: {
 }) {
   const connected = engine.status === 'connected';
   const rtt = engine.stats.rtt;
-  const aKey = `${legsKeyOf(legs)}|${market.S}|${market.sigma}|${market.r}|${market.q}`;
+  const aKey = `${legsKeyOf(legs)}|${marketKeyOf(market)}`;
 
   const [agree, setAgree] = useState<{ key: string; busy: boolean; res?: EnginePortfolioResult; error?: string } | null>(null);
   const runAgree = async () => {
@@ -96,7 +97,7 @@ export function EnginePanel({ engine, wasm, legs, market, source }: {
   };
   const agreeRows = agree?.res && agree.key === aKey && agree.res.legs.length === legs.length
     ? legs.map((l, i) => {
-      const b = bsGreeks(l.call, market.S, l.K, l.T, market.sigma, market.r, market.q);
+      const b = bsGreeks(l.call, market.S, l.K, l.T, legSigma(market, l.K, l.T), market.r, market.q);
       const g = agree.res!.legs[i];
       return { l, g, b, diff: Math.max(...GREEKS.map(k => Math.abs(g[k] - b[k]))) };
     }) : null;
@@ -112,19 +113,21 @@ export function EnginePanel({ engine, wasm, legs, market, source }: {
     setMc({ key: mKey, busy: true });
     try {
       setMc({ key: mKey, busy: false, res: await engine.runMc({ call: l.call, S: market.S, K: l.K, r: market.r,
-                                                                 sigma: market.sigma, T: l.T, paths, seed: 42,
+                                                                 sigma: legSigma(market, l.K, l.T), T: l.T, paths, seed: 42,
                                                                  q: market.q }) });
     } catch (err) {
       setMc({ key: mKey, busy: false, error: err instanceof Error ? err.message : String(err) });
     }
   };
   const mcLeg = legs[idx];
-  const mcRef = mcLeg ? bsGreeks(mcLeg.call, market.S, mcLeg.K, mcLeg.T, market.sigma, market.r, market.q).price : 0;
+  const mcRef = mcLeg ? bsGreeks(mcLeg.call, market.S, mcLeg.K, mcLeg.T, legSigma(market, mcLeg.K, mcLeg.T), market.r, market.q).price : 0;
   const mcShown = mc?.res && mc.key === mKey ? mc.res : null;
 
   const blocker = !connected
     ? (engine.reason === 'hosted' ? 'Runs on a local machine only — not available on the hosted site.' : 'Native engine offline.')
-    : market.q !== 0 && !engine.info?.dividends ? 'This engine build predates dividend support — set q to 0% or rebuild the engine.' : null;
+    : market.q !== 0 && !engine.info?.dividends ? 'This engine build predates dividend support — set q to 0% or rebuild the engine.'
+    : market.smile && (engine.info?.protocol ?? 0) < 4 ? 'This engine build prices every leg at one volatility — set the smile to Flat or restart the engine.'
+    : null;
 
   return (
     <div>

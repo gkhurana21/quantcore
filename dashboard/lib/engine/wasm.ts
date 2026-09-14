@@ -7,6 +7,7 @@
 // here: the C++ entry points assume positive S, K, sigma and T.
 
 import type { Greeks, Leg, Market } from '../quant/types';
+import { legSigma } from '../quant/volSurface';
 
 export const WASM_PATH = '/wasm/quantcore.wasm';
 export const WASM_MANIFEST_PATH = '/wasm/quantcore.json';
@@ -96,11 +97,11 @@ export async function loadQuantcore(url = WASM_PATH): Promise<QuantcoreWasm> {
   return instantiateQuantcore(await res.arrayBuffer());
 }
 
-/** Per-share Greeks for every leg, or null if any leg is outside the module's domain. */
+/** Per-share Greeks for every leg at its smile volatility, or null if any leg is outside the module's domain. */
 export function wasmLegGreeks(w: QuantcoreWasm, legs: Leg[], m: Market): Greeks[] | null {
   const out: Greeks[] = [];
   for (const l of legs) {
-    const g = w.bsFull(l.call, m.S, l.K, m.r, m.sigma, l.T, m.q);
+    const g = w.bsFull(l.call, m.S, l.K, m.r, legSigma(m, l.K, l.T), l.T, m.q);
     if (!g) return null;
     out.push(g);
   }

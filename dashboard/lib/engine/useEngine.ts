@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ENGINE_SUBSCRIPTION } from '../market/instruments';
 import type { Greeks, Leg, Market } from '../quant/types';
+import { legSigma } from '../quant/volSurface';
 
 export const ENGINE_URL = 'ws://localhost:8765/ws';
 const LOCAL_HOST = /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?)$/;
@@ -273,7 +274,8 @@ export function useEngine(): Engine {
   const pricePortfolio = useCallback((legs: Leg[], m: Market) =>
     request<EnginePortfolioResult>({
       type: 'portfolio', S: m.S, sigma: m.sigma, r: m.r, q: m.q,
-      legs: legs.map(l => ({ call: l.call, K: l.K, T: l.T })),
+      // protocol v4: with a smile each leg carries its own volatility; flat markets send the v3 message unchanged
+      legs: legs.map(l => ({ call: l.call, K: l.K, T: l.T, ...(m.smile ? { sigma: legSigma(m, l.K, l.T) } : {}) })),
     }, 5000), [request]);
 
   const runMc = useCallback((req: EngineMcRequest) =>

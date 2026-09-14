@@ -5,6 +5,7 @@ import { normalSampler } from '../quant/rng';
 import type { Leg, Market } from '../quant/types';
 import { CONTRACT_MULT as M, signedQty } from '../quant/types';
 import { portfolioGreeks, portfolioValue } from '../strategy/portfolio';
+import { atSpot, atVol, legSigma } from '../quant/volSurface';
 
 export const TRADING_DAYS = 252;
 
@@ -85,7 +86,7 @@ export function mcVaR(legs: Leg[], m: Market, conf: number, hDays: number,
                       nScen: number, seed: number, volFactor?: VolFactor): McVarResult {
   const t0 = now();
   const h = hDays / TRADING_DAYS;
-  const base = portfolioValue(legs, m.S, m.sigma, m.r, m.q);
+  const base = portfolioValue(legs, m);
   const next = normalSampler(seed);
   const nextVol = volFactor ? normalSampler((seed ^ 0x2545f491) >>> 0) : null;
   const nu = volFactor?.volOfVol ?? 0;
@@ -102,8 +103,13 @@ export function mcVaR(legs: Leg[], m: Market, conf: number, hDays: number,
       const z2 = rho * z1 + rhoC * nextVol();
       sigma = m.sigma * Math.exp(-0.5 * nu * nu * h + nu * Math.sqrt(h) * z2);
     }
+    // with a smile, revalue sticky-strike: each strike keeps its place on the smile at the shocked ATM level
+    const sm = m.smile ? atVol(atSpot(m, S), sigma) : null;
     let v = 0;
-    for (const l of legs) v += signedQty(l) * M * bsPrice(l.call, S, l.K, l.T - h, sigma, m.r, m.q);
+    for (const l of legs) {
+      const T = l.T - h;
+      v += signedQty(l) * M * bsPrice(l.call, S, l.K, T, sm ? legSigma(sm, l.K, T) : sigma, m.r, m.q);
+    }
     pnl[i] = v - base;
     sum += pnl[i];
   }

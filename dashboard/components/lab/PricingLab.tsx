@@ -7,7 +7,8 @@ import type { LabResult } from '@/lib/compute/tasks';
 import { LAB_PATHS } from '@/lib/compute/tasks';
 import { useWorkerTask } from '@/lib/compute/useWorkerTask';
 import type { Engine, EngineMcResult } from '@/lib/engine/useEngine';
-import { legLabel, legsKeyOf } from '@/lib/strategy/labels';
+import { legLabel, legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
+import { legSigma } from '@/lib/quant/volSurface';
 import { signed, usd, usdSigned } from '@/lib/format';
 import type { Tone } from '@/components/ui/primitives';
 import { Badge, Button, cx, InfoTip, Segmented, ui } from '@/components/ui/primitives';
@@ -52,7 +53,7 @@ export function PricingLab({ legs, market, engine, active }: {
   const [seed, setSeed] = useState(42);
   const [antithetic, setAntithetic] = useState(false);
   const legsKey = legsKeyOf(legs);
-  const key = `${legsKey}|${market.S}|${market.sigma}|${market.r}|${market.q}|${seed}|${antithetic ? 1 : 0}`;
+  const key = `${legsKey}|${marketKeyOf(market)}|${seed}|${antithetic ? 1 : 0}`;
   const task = useWorkerTask('lab', active ? { legs, market, seed, antithetic } : null, key, 120);
   const r = task.result;
   const rows = useMemo(() => (r ? buildRows(r) : []), [r]);
@@ -62,7 +63,7 @@ export function PricingLab({ legs, market, engine, active }: {
   const w = single ? signedQty(single) * M : 1;
 
   const [eng, setEng] = useState<{ key: string; busy: boolean; res?: EngineMcResult; error?: string } | null>(null);
-  const engKey = `${legsKey}|${market.S}|${market.sigma}|${market.r}|${market.q}|${seed}`;
+  const engKey = `${legsKey}|${marketKeyOf(market)}|${seed}`;
   const engineBlocker = engine.status !== 'connected'
     ? (engine.reason === 'hosted'
       ? 'The C++ engine runs on a local machine — this hosted build prices everything in your browser.'
@@ -76,7 +77,7 @@ export function PricingLab({ legs, market, engine, active }: {
     setEng({ key: engKey, busy: true });
     try {
       const res = await engine.runMc({ call: single.call, S: market.S, K: single.K, r: market.r,
-                                       sigma: market.sigma, T: single.T, paths: ENGINE_PATHS, seed, q: market.q });
+                                       sigma: legSigma(market, single.K, single.T), T: single.T, paths: ENGINE_PATHS, seed, q: market.q });
       setEng({ key: engKey, busy: false, res });
     } catch (err) {
       setEng({ key: engKey, busy: false, error: err instanceof Error ? err.message : String(err) });

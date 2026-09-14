@@ -1,4 +1,5 @@
 import { bsGreeks, bsPrice, intrinsic } from '../quant/blackScholes';
+import { atSpot, legSigma } from '../quant/volSurface';
 import type { Greeks, Leg, Market } from '../quant/types';
 import { CONTRACT_MULT as M, signedQty } from '../quant/types';
 
@@ -10,10 +11,10 @@ export function shiftLegs(legs: Leg[], dtYears: number): Leg[] {
   return legs.map(l => ({ ...l, T: Math.max(0, l.T - dtYears) }));
 }
 
-/** $ mark-to-model value of the positions (excluding premium paid/received). */
-export function portfolioValue(legs: Leg[], S: number, sigma: number, r: number, q: number): number {
+/** $ mark-to-model value of the positions (excluding premium paid/received), each leg at its smile volatility. */
+export function portfolioValue(legs: Leg[], m: Market): number {
   let v = 0;
-  for (const l of legs) v += signedQty(l) * M * bsPrice(l.call, S, l.K, l.T, sigma, r, q);
+  for (const l of legs) v += signedQty(l) * M * bsPrice(l.call, m.S, l.K, l.T, legSigma(m, l.K, l.T), m.r, m.q);
   return v;
 }
 
@@ -24,7 +25,7 @@ export function portfolioValue(legs: Leg[], S: number, sigma: number, r: number,
 export function portfolioGreeks(legs: Leg[], m: Market): Greeks {
   const out: Greeks = { price: 0, delta: 0, gamma: 0, theta: 0, vega: 0 };
   for (const l of legs) {
-    const g = bsGreeks(l.call, m.S, l.K, l.T, m.sigma, m.r, m.q);
+    const g = bsGreeks(l.call, m.S, l.K, l.T, legSigma(m, l.K, l.T), m.r, m.q);
     const w = signedQty(l) * M;
     out.price += w * g.price;
     out.delta += w * g.delta;
@@ -42,8 +43,8 @@ export const netPremium = (legs: Leg[]): number =>
 export const grossPremium = (legs: Leg[]): number =>
   legs.reduce((a, l) => a + l.qty * M * Math.abs(l.premium), 0);
 
-export const pnlNow = (legs: Leg[], S: number, sigma: number, r: number, q: number): number =>
-  portfolioValue(legs, S, sigma, r, q) - netPremium(legs);
+export const pnlNow = (legs: Leg[], m: Market): number =>
+  portfolioValue(legs, m) - netPremium(legs);
 
 export const firstExpiry = (legs: Leg[]): number =>
   legs.length ? Math.min(...legs.map(l => Math.max(0, l.T))) : 0;
@@ -52,12 +53,12 @@ export const firstExpiry = (legs: Leg[]): number =>
  * P&L at the first expiry: legs expiring then pay intrinsic value, later legs
  * are still worth their Black-Scholes value with the remaining time.
  */
-export function pnlAtFirstExpiry(legs: Leg[], S: number, sigma: number, r: number, q: number): number {
+export function pnlAtFirstExpiry(legs: Leg[], m: Market): number {
   const t0 = firstExpiry(legs);
   let v = 0;
   for (const l of legs) {
     const tau = l.T - t0;
-    const px = tau <= EPS_T ? intrinsic(l.call, S, l.K) : bsPrice(l.call, S, l.K, tau, sigma, r, q);
+    const px = tau <= EPS_T ? intrinsic(l.call, m.S, l.K) : bsPrice(l.call, m.S, l.K, tau, legSigma(m, l.K, tau), m.r, m.q);
     v += signedQty(l) * M * (px - l.premium);
   }
   return v;
@@ -144,7 +145,7 @@ function numericPayoff(legs: Leg[], m: Market, horizonT: number): PayoffAnalytic
   const xs = new Float64Array(N + 1), vs = new Float64Array(N + 1);
   for (let i = 0; i <= N; i++) {
     xs[i] = (hi * i) / N;
-    vs[i] = pnlAtFirstExpiry(legs, xs[i], m.sigma, m.r, m.q);
+    vs[i] = pnlAtFirstExpiry(legs, atSpot(m, xs[i]));
   }
   const breakevens: number[] = [];
   for (let i = 1; i <= N; i++) {

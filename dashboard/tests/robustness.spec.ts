@@ -112,6 +112,15 @@ async function randomWalk(page: Page, seed: number, steps: number, errors: strin
       const ok = await clickIfEnabled('ticker-submit');
       return `${sym} @ ${JSON.stringify(px)} ${ok}`;
     }],
+    ['smile', 2, async () => {
+      const choice = pick(['Flat', 'Equity index', 'Single stock', 'Custom']);
+      await page.locator(tid(`smile-${choice}`)).click();
+      if (choice === 'Custom') {
+        await setRange(page, 'smile-rho', pick([-0.95, -0.4, 0, 0.55, 0.95]));
+        await setRange(page, 'smile-eta', pick([0.05, 0.8, 2]));
+      }
+      return choice;
+    }],
     ['add leg', 3, async () => String(await clickIfEnabled('add-leg'))],
     ['remove leg', 2, async () => { const i = await legIndex(); return `${i} ${await clickIfEnabled(`leg-${i}-remove`)}`; }],
     ['strike', 3, async () => {

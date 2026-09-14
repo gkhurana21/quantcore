@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { bsGreeks } from '@/lib/quant/blackScholes';
+import { legSigma } from '@/lib/quant/volSurface';
 import type { Greeks, Leg, Market } from '@/lib/quant/types';
 import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
 import { firstExpiry, netPremium, payoffAnalytics, portfolioGreeks } from '@/lib/strategy/portfolio';
@@ -74,7 +75,7 @@ export default function Dashboard() {
 
   // ── browser pricing (always available) ────────────────────────────────────
   const browser = useMemo(() => {
-    const per = legs.map(l => bsGreeks(l.call, market.S, l.K, l.T, market.sigma, market.r, market.q));
+    const per = legs.map(l => bsGreeks(l.call, market.S, l.K, l.T, legSigma(market, l.K, l.T), market.r, market.q));
     return aggregate(legs, per);
   }, [legs, market]);
 
@@ -82,7 +83,7 @@ export default function Dashboard() {
   useEffect(() => {
     // timer resolution is coarse, so repeat the calculation and report the mean
     const run = () => (legs.length === 1
-      ? bsGreeks(legs[0].call, market.S, legs[0].K, legs[0].T, market.sigma, market.r, market.q)
+      ? bsGreeks(legs[0].call, market.S, legs[0].K, legs[0].T, legSigma(market, legs[0].K, legs[0].T), market.r, market.q)
       : portfolioGreeks(legs, market));
     const t0 = performance.now();
     let n = 0;
@@ -104,8 +105,10 @@ export default function Dashboard() {
 
   // ── C++ engine: streaming canonical contract ──────────────────────────────
   const { sendUpdate, pricePortfolio } = engine;
-  // An engine that predates protocol v3 ignores q, so it is authoritative only at q = 0.
+  // An engine before protocol v3 ignores q, and one before v4 prices every leg at one σ, so each is
+  // authoritative only for the markets it understands (q = 0, no smile).
   const engineHandlesQ = market.q === 0 || engine.info?.dividends === true;
+  const engineHandlesSmile = !market.smile || (engine.info?.protocol ?? 0) >= 4;
   useEffect(() => {
     if (engine.status === 'connected' && canonical && engineHandlesQ) sendUpdate(market);
   }, [engine.status, canonical, engineHandlesQ, market, sendUpdate]);
@@ -114,7 +117,7 @@ export default function Dashboard() {
   const [batch, setBatch] = useState<{ legsKey: string; res: EnginePortfolioResult } | null>(null);
   const batchSeq = useRef(0);
   const batchAccepted = useRef(0);
-  const batchEligible = engine.status === 'connected' && !canonical && engineHandlesQ;
+  const batchEligible = engine.status === 'connected' && !canonical && engineHandlesQ && engineHandlesSmile;
   useEffect(() => {
     if (!batchEligible) return;
     const seq = ++batchSeq.current;
@@ -143,6 +146,7 @@ export default function Dashboard() {
       : engine.status === 'connecting' ? 'connecting to the native engine…'
       : engine.status === 'offline' ? 'native engine offline'
       : !engineHandlesQ ? 'q ≠ 0 — the native build predates dividend support'
+      : !engineHandlesSmile ? 'smile — the native build predates per-leg volatility'
       : 'awaiting the native engine';
     quote = { ...aggregate(legs, wasmPer), calcUs: wasmUs,
               source: { kind: 'wasm', label: 'C++ · WebAssembly', reason: `bsm_full in this tab · ${why}` } };

@@ -3,6 +3,7 @@
 // row-level validation. Nothing here touches the network.
 
 import { bsPrice } from '../quant/blackScholes';
+import { legSigma } from '../quant/volSurface';
 import type { Leg, Market, Side } from '../quant/types';
 import { CONTRACT_MULT as M } from '../quant/types';
 
@@ -200,7 +201,7 @@ export interface ImportOptions {
 export function importPortfolio(table: unknown[][], opts: ImportOptions): PortfolioImport {
   const today = opts.today ?? new Date();
   const maxLegs = opts.maxLegs ?? 8;
-  const { S, sigma, r, q } = opts.market;
+  const { S, r, q } = opts.market;
   const result: PortfolioImport = {
     rows: [], legs: [], errors: [], warnings: [], mapping: {}, headerless: false, summary: null,
   };
@@ -291,7 +292,7 @@ export function importPortfolio(table: unknown[][], opts: ImportOptions): Portfo
     const row: ImportedRow = { line, cells: cells.map(cellText), errors, warnings };
     if (!errors.length) {
       const T = days! / 365;
-      if (premium == null) { premium = bsPrice(kind.call!, S, K!, T, sigma, r, q); premiumFilled++; }
+      if (premium == null) { premium = bsPrice(kind.call!, S, K!, T, legSigma(opts.market, K!, T), r, q); premiumFilled++; }
       if (K! < 0.25 * S || K! > 4 * S) warnings.push(`strike ${K} is far from spot ${S.toFixed(2)}`);
       row.leg = { id: `imp-${line}`, call: kind.call!, side, qty: Math.abs(rawQty!), K: K!, T, premium };
     }

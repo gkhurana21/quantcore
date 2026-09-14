@@ -21,6 +21,12 @@
 .searchMsg { margin-top: 4px; font-size: 11.5px; color: var(--red); }
 .searchHint { margin-top: 4px; font-size: 11px; color: var(--ink-4); }
 .sliders { display: grid; gap: 10px; margin-top: 12px; }
+.smile { display: grid; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.smileTitle { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 560; color: var(--ink-2); }
+.smileFig { margin: 0; }
+.smileChart { display: block; width: 100%; height: auto; }
+.smileTick { font-family: var(--mono); font-size: 9px; fill: var(--ink-3); }
+.smileCap { margin-top: 2px; font-size: 11px; color: var(--ink-3); }
 .marketFoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
 
 /* ── presets ───────────────────────────────────────────────────────── */

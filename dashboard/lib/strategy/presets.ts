@@ -1,4 +1,5 @@
 import { bsPrice } from '../quant/blackScholes';
+import { legSigma } from '../quant/volSurface';
 import type { Leg, Market, Side } from '../quant/types';
 import type { Instrument } from '../market/instruments';
 import { CANONICAL } from '../market/instruments';
@@ -32,10 +33,10 @@ export const wingWidth = (S: number, kstep: number): number =>
 
 export const isCanonicalMarket = (sym: string, m: Market): boolean =>
   sym === CANONICAL.sym && m.S === CANONICAL.S && m.sigma === CANONICAL.sigma &&
-  m.r === CANONICAL.r && m.q === 0;
+  m.r === CANONICAL.r && m.q === 0 && !m.smile;
 
 export function makeLeg(call: boolean, side: Side, K: number, T: number, qty: number, m: Market): Leg {
-  return { id: newLegId(), call, side, qty, K, T, premium: bsPrice(call, m.S, K, T, m.sigma, m.r, m.q) };
+  return { id: newLegId(), call, side, qty, K, T, premium: bsPrice(call, m.S, K, T, legSigma(m, K, T), m.r, m.q) };
 }
 
 /** Build a preset centred on the current spot; premiums are model prices at the current market. */

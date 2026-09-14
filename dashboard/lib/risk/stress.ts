@@ -2,6 +2,7 @@ import { bsPrice } from '../quant/blackScholes';
 import type { Leg, Market } from '../quant/types';
 import { CONTRACT_MULT as M, signedQty } from '../quant/types';
 import { grossPremium, netPremium, portfolioGreeks, portfolioValue, shiftLegs } from '../strategy/portfolio';
+import { atSpot, legSigma } from '../quant/volSurface';
 import { deltaNormalVaR } from './var';
 
 /** An instantaneous market shock. Vol points are absolute (40 = +40 vol pts). */
@@ -48,6 +49,8 @@ export function applyShock(m: Market, s: Shock): Market {
     sigma: Math.max(0.01, m.sigma * s.volMult + s.volPts / 100),
     r: Math.max(0, m.r + s.rateBp / 10_000),
     q: m.q,
+    // sticky strike: the smile stays centred on the pre-shock spot; the vol shock moves its ATM level
+    ...(m.smile ? { smile: m.smile, smileSpot: m.smileSpot ?? m.S } : {}),
   };
 }
 
@@ -88,12 +91,12 @@ export function stressReport(legs: Leg[], base: Market, shock: Shock): StressRep
   const after = metrics(legs, shocked, shock.days);
   const shifted = shiftLegs(legs, shock.days / 365);
   const pnlByLeg = legs.map((l, i) => signedQty(l) * M * (
-    bsPrice(l.call, shocked.S, l.K, shifted[i].T, shocked.sigma, shocked.r, shocked.q) -
-    bsPrice(l.call, base.S, l.K, l.T, base.sigma, base.r, base.q)));
+    bsPrice(l.call, shocked.S, l.K, shifted[i].T, legSigma(shocked, l.K, shifted[i].T), shocked.r, shocked.q) -
+    bsPrice(l.call, base.S, l.K, l.T, legSigma(base, l.K, l.T), base.r, base.q)));
   const ladder: { spotPct: number; pnl: number }[] = [];
   for (let p = -40; p <= 40; p += 5) {
     ladder.push({ spotPct: p,
-      pnl: portfolioValue(shifted, base.S * (1 + p / 100), shocked.sigma, shocked.r, shocked.q) - before.value });
+      pnl: portfolioValue(shifted, atSpot(shocked, base.S * (1 + p / 100))) - before.value });
   }
   const pnl = after.value - before.value;
   const gross = grossPremium(legs);

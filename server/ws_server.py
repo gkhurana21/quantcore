@@ -36,6 +36,10 @@ Server → Client  result:
     {"type":"result","price":...,"delta":...,"gamma":...,"theta":...,
      "vega":...,"pnl":...,"t_ns":<echo>,"calc_us":...}
 
+v4 — each portfolio leg accepts an optional "sigma", so a volatility smile prices
+every strike at its own volatility (legs without one use the message's sigma);
+info reports "leg_sigma": true.
+
 v3 — every pricing message (subscribe option, update, portfolio, mc) accepts
 an optional continuous dividend yield "q" (default 0, so v1/v2 clients are
 unaffected); info reports "dividends": true.
@@ -47,7 +51,7 @@ v2 — request/response messages, any number per connection, matched by "id":
 
   info       {"type":"info"}
           →  {"type":"info","protocol":3,"metal":bool,"device":"Apple M3",
-              "cpu_threads":8,"dividends":true}
+              "cpu_threads":8,"dividends":true,"leg_sigma":true}
 
   portfolio  {"type":"portfolio","id":7,"S":...,"sigma":...,"r":...,
               "legs":[{"call":true,"K":755,"T":0.129}, ...]}        (≤ 64 legs)
@@ -84,7 +88,7 @@ import quantcore
 
 app = FastAPI()
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 MAX_LEGS         = 64
 MAX_PATHS        = 10_000_000
 HAS_METAL        = hasattr(quantcore, "mc_price_gpu")
@@ -139,7 +143,7 @@ def price_portfolio(S: float, sigma: float, r: float, q: float, legs: list) -> t
         res = quantcore.batch_bs_full(
             is_call,
             np.full(n, S), np.array([legs[i]["K"] for i in idx], dtype=np.float64),
-            np.full(n, r), np.full(n, sigma),
+            np.full(n, r), np.array([legs[i].get("sigma", sigma) for i in idx], dtype=np.float64),
             np.array([legs[i]["T"] for i in idx], dtype=np.float64),
             q=q)
         for j, i in enumerate(idx):
@@ -272,7 +276,7 @@ async def ws_endpoint(ws: WebSocket):
             elif msg["type"] == "info":
                 await send({"type": "info", "protocol": PROTOCOL_VERSION,
                             "metal": HAS_METAL, "device": gpu_device(),
-                            "cpu_threads": CPU_THREADS, "dividends": True})
+                            "cpu_threads": CPU_THREADS, "dividends": True, "leg_sigma": True})
 
             # ── v2: portfolio ──────────────────────────────────────────────
             elif msg["type"] == "portfolio":
@@ -287,9 +291,12 @@ async def ws_endpoint(ws: WebSocket):
                         raise ValueError("legs must be a non-empty list")
                     if len(raw_legs) > MAX_LEGS:
                         raise ValueError(f"at most {MAX_LEGS} legs")
+                    # v4: an optional per-leg "sigma" (a volatility smile) overrides the portfolio sigma
                     legs = [{"call": bool(l.get("call", True)),
                              "K": _number(l, "K", 0, lo_open=True),
-                             "T": _number(l, "T", None, 30)} for l in raw_legs]
+                             "T": _number(l, "T", None, 30),
+                             **({"sigma": _number(l, "sigma", 0, 5, lo_open=True)} if "sigma" in l else {})}
+                            for l in raw_legs]
                     results, calc_us = price_portfolio(S, sigma, r, q, legs)
                     await send({"type": "portfolio_result", "id": req_id,
                                 "legs": results, "calc_us": calc_us})

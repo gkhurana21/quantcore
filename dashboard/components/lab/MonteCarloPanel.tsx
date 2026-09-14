@@ -4,7 +4,7 @@ import { memo, useEffect, useRef, useState } from 'react';
 import type { Leg, Market } from '@/lib/quant/types';
 import type { McVizResult } from '@/lib/compute/tasks';
 import { useWorkerTask } from '@/lib/compute/useWorkerTask';
-import { legsKeyOf } from '@/lib/strategy/labels';
+import { legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
 import { days, num, pct, usdSigned } from '@/lib/format';
 import { linear, niceTicks, numTick, strikeTick } from '@/components/charts/scale';
 import { useElementWidth } from '@/components/ui/useElementWidth';
@@ -178,7 +178,7 @@ export function MonteCarloPanel({ legs, market, active }: { legs: Leg[]; market:
   const [visible, setVisible] = useState(50);
   const [seed, setSeed] = useState(7);
   const [replay, setReplay] = useState(0);
-  const key = `${legsKeyOf(legs)}|${market.S}|${market.sigma}|${market.r}|${market.q}|${seed}`;
+  const key = `${legsKeyOf(legs)}|${marketKeyOf(market)}|${seed}`;
   const task = useWorkerTask('mcviz', active
     ? { legs, market, seed, nPaths: N_PATHS, nSteps: N_STEPS, histSamples: HIST_SAMPLES, bins: BINS } : null, key, 150);
   const v = task.result;
@@ -190,6 +190,9 @@ export function MonteCarloPanel({ legs, market, active }: { legs: Leg[]; market:
         Risk-neutral geometric Brownian motion, dS = (r − q)·S·dt + σ·S·dW, simulated from today to the last expiry.
         The histogram is a separate {HIST_SAMPLES.toLocaleString('en-US')}-sample draw of the price at the first expiry,
         checked against its analytic lognormal density.
+        {market.smile && v && (single
+          ? ` With the smile on, the paths use this leg's own volatility, σ ${pct(v.pathSigma, 1)}, so its price and P(ITM) match.`
+          : ` GBM has a single volatility, so with the smile on the paths use the at-the-money σ ${pct(v.pathSigma, 1)}; option values still price each strike at its own volatility.`)}
       </p>
       <div className={l.controls}>
         <Segmented size="sm" label="Visible paths" testid="mc-visible" value={visible}

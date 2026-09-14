@@ -12,7 +12,8 @@ import { crrAmericanPrice, crrPrice } from '../lib/quant/binomial';
 import { impliedVol } from '../lib/quant/impliedVol';
 import { mcPortfolio } from '../lib/quant/monteCarlo';
 import { normCdf, normInv } from '../lib/quant/normal';
-import type { Leg, Market } from '../lib/quant/types';
+import type { Leg, Market, Smile } from '../lib/quant/types';
+import { atSpot, legSigma } from '../lib/quant/volSurface';
 import { CONTRACT_MULT as M, signedQty } from '../lib/quant/types';
 import { payoffAnalytics, pnlAtFirstExpiry, portfolioGreeks, portfolioValue } from '../lib/strategy/portfolio';
 import { NO_SHOCK, SCENARIOS, stressReport } from '../lib/risk/stress';
@@ -48,6 +49,12 @@ function randomLegs(g: Rng, m: Market, sameExpiry: boolean, minT = 1 / 365): Leg
     const premium = g.u() < 0.2 ? 0 : bsPrice(call, m.S, K, T, m.sigma, m.r, m.q) * g.range(0.5, 1.5);
     return { id: `p${i}`, call, side: g.u() < 0.5 ? 'buy' : 'sell', qty: g.int(1, 20), K, T, premium } as Leg;
   });
+}
+
+/** A random SSVI smile inside the arbitrage-free region. */
+function randomSmile(g: Rng): Smile {
+  const rho = g.range(-0.95, 0.95);
+  return { rho, eta: g.range(0.05, 2 / (1 + Math.abs(rho))), gamma: g.range(0.05, 0.5) };
 }
 
 const finite = (o: Record<string, number>) => Object.values(o).every(Number.isFinite);
@@ -96,7 +103,7 @@ test.describe('property: pricing', () => {
       const gk = portfolioGreeks(legs, m);
       const size = legs.reduce((a, l) => a + l.qty * M, 0);
       const V = (S = m.S, sigma = m.sigma, dT = 0) =>
-        portfolioValue(legs.map(l => ({ ...l, T: l.T + dT })), S, sigma, m.r, m.q);
+        portfolioValue(legs.map(l => ({ ...l, T: l.T + dT })), { ...m, S, sigma });
       // Spot bumps are scaled to the width of the nearest expiry's price distribution
       // (one standard deviation, S·σ·√T): at low vol and short maturity gamma is a narrow
       // spike, and a bump proportional to S alone would not resolve it.
@@ -156,7 +163,7 @@ test.describe('property: pricing', () => {
     for (let i = 0; i < 40; i++) {
       const m = randomMarket(g);
       const legs = randomLegs(g, m, false);
-      const ref = portfolioValue(legs, m.S, m.sigma, m.r, m.q);
+      const ref = portfolioValue(legs, m);
       const mc = mcPortfolio(legs, m, 20_000, 100 + i);
       const size = legs.reduce((a, l) => a + l.qty * M, 0);
       expect(Math.abs(mc.price - ref), JSON.stringify({ m, legs, mc: mc.price, se: mc.se, ref }))
@@ -212,7 +219,7 @@ test.describe('property: strategy and risk', () => {
       const legs = randomLegs(g, m, false);
       if (legs.every(l => Math.abs(l.T - legs[0].T) < 1e-9)) continue;
       const a = payoffAnalytics(legs, m);
-      const f = (x: number) => pnlAtFirstExpiry(legs, x, m.sigma, m.r, m.q);
+      const f = (x: number) => pnlAtFirstExpiry(legs, { ...m, S: x });
       const h = (4 * Math.max(m.S, ...legs.map(l => l.K))) / 2400;
       for (const b of a.breakevens) {
         const lo = f(Math.max(0, b - h)), hi = f(b + h);
@@ -354,5 +361,64 @@ test.describe('property: import and formatting', () => {
       }
     }
     expect(bad.slice(0, 5)).toEqual([]);
+  });
+});
+
+test.describe('property: volatility smile', () => {
+  test('with a smile, every revaluation path agrees with the Greeks tiles at zero shock', () => {
+    const g = rng(20);
+    const bad: string[] = [];
+    for (let i = 0; i < 300; i++) {
+      const m: Market = { ...randomMarket(g), smile: randomSmile(g) };
+      const legs = randomLegs(g, m, g.u() < 0.5);
+      const tiles = portfolioGreeks(legs, m).price;
+      const tol = 1e-9 * Math.max(1, Math.abs(tiles));
+      const checks: [string, number][] = [
+        ['portfolioValue', portfolioValue(legs, m)],
+        ['sticky-strike scenario at today’s spot', portfolioValue(legs, atSpot(m, m.S))],
+        ['stress with no shock', stressReport(legs, m, NO_SHOCK).after.value],
+        ['P&L surface centre', portfolioValue(legs, m) + pnlSurface(legs, m)[2][2]],
+      ];
+      for (const [name, v] of checks) if (!(Math.abs(v - tiles) <= tol)) bad.push(`${name}: ${v} vs tiles ${tiles}`);
+      const one = mcVaR(legs, m, 0.95, 1, 2000, 7), twoAtZero = mcVaR(legs, m, 0.95, 1, 2000, 7, { volOfVol: 0, rho: -0.7 });
+      if (one.var !== twoAtZero.var) bad.push(`VaR: one-factor ${one.var} vs two-factor ν=0 ${twoAtZero.var}`);
+    }
+    expect(bad.slice(0, 5)).toEqual([]);
+  });
+
+  test('with a smile, delta and gamma are sticky-strike derivatives of portfolio value', () => {
+    const g = rng(21);
+    const bad: string[] = [];
+    for (let i = 0; i < 200; i++) {
+      const m: Market = { ...randomMarket(g), smile: randomSmile(g) };
+      const legs = randomLegs(g, m, false, 7 / 365);
+      const gk = portfolioGreeks(legs, m);
+      const size = legs.reduce((a, l) => a + l.qty * M, 0);
+      const V = (S: number) => portfolioValue(legs, atSpot(m, S));
+      // bumps scaled to the narrowest leg distribution, S·σ_leg·√T (see the flat-market test)
+      const width = m.S * Math.min(...legs.map(l => legSigma(m, l.K, l.T) * Math.sqrt(l.T)));
+      const hS = 1e-3 * width, hG = 2e-2 * width;
+      const delta = (V(m.S + hS) - V(m.S - hS)) / (2 * hS);
+      const D2 = (h: number) => (V(m.S + h) - 2 * V(m.S) + V(m.S - h)) / (h * h);
+      const gamma = (4 * D2(hG / 2) - D2(hG)) / 3;
+      const ctx = JSON.stringify({ m, legs });
+      if (Math.abs(gk.delta - delta) > 1e-5 * size) bad.push(`delta ${gk.delta} vs ${delta} ${ctx}`);
+      if (Math.abs(gk.gamma - gamma) > 1e-4 * Math.abs(gk.gamma) + 1e-6 * size / m.S) bad.push(`gamma ${gk.gamma} vs ${gamma} ${ctx}`);
+    }
+    expect(bad.slice(0, 5)).toEqual([]);
+  });
+
+  test('with a smile, portfolio Monte Carlo converges to the smile Black-Scholes value', () => {
+    const g = rng(22);
+    const bad: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      const m: Market = { ...randomMarket(g), smile: randomSmile(g) };
+      const legs = randomLegs(g, m, g.u() < 0.5, 7 / 365);
+      const ref = portfolioValue(legs, m);
+      const mc = mcPortfolio(legs, m, 100_000, 1000 + i);
+      const z = mc.se > 0 ? Math.abs(mc.price - ref) / mc.se : Math.abs(mc.price - ref) < 1e-9 ? 0 : Infinity;
+      if (!(z < 4)) bad.push(`|z| ${z.toFixed(2)}: MC ${mc.price} ± ${mc.se} vs ${ref} ${JSON.stringify({ m, legs })}`);
+    }
+    expect(bad).toEqual([]);
   });
 });

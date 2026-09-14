@@ -5,6 +5,7 @@
 
 import { crrAmericanPrice, crrPrice, CRR_STEPS } from '../quant/binomial';
 import { probItm } from '../quant/blackScholes';
+import { atSpot, legSigma } from '../quant/volSurface';
 import type { McResult, TerminalDistribution } from '../quant/monteCarlo';
 import { lognormalPdf, mcPortfolio, samplePaths, terminalDistribution } from '../quant/monteCarlo';
 import type { Leg, Market } from '../quant/types';
@@ -51,22 +52,22 @@ export interface LabResult {
   legMcPaths: number;
 }
 
-const legBs = (l: Leg, m: Market) => portfolioValue([{ ...l, side: 'buy', qty: 1 }], m.S, m.sigma, m.r, m.q) / M;
+const legBs = (l: Leg, m: Market) => portfolioValue([{ ...l, side: 'buy', qty: 1 }], m) / M;
 
 function crrValue(legs: Leg[], m: Market, steps: number): number {
   let v = 0;
-  for (const l of legs) v += signedQty(l) * M * crrPrice(l.call, m.S, l.K, l.T, m.sigma, m.r, m.q, steps);
+  for (const l of legs) v += signedQty(l) * M * crrPrice(l.call, m.S, l.K, l.T, legSigma(m, l.K, l.T), m.r, m.q, steps);
   return v;
 }
 
 function americanValue(legs: Leg[], m: Market, steps: number): number {
   let v = 0;
-  for (const l of legs) v += signedQty(l) * M * crrAmericanPrice(l.call, m.S, l.K, l.T, m.sigma, m.r, m.q, steps);
+  for (const l of legs) v += signedQty(l) * M * crrAmericanPrice(l.call, m.S, l.K, l.T, legSigma(m, l.K, l.T), m.r, m.q, steps);
   return v;
 }
 
 export function runLab({ legs, market: m, seed, antithetic }: LabRequest): LabResult {
-  const bs = timeIt(() => portfolioValue(legs, m.S, m.sigma, m.r, m.q), 3);
+  const bs = timeIt(() => portfolioValue(legs, m), 3);
   const crr = timeIt(() => crrValue(legs, m, CRR_STEPS), 8);
   const american = timeIt(() => americanValue(legs, m, CRR_STEPS), 8);
 
@@ -85,8 +86,8 @@ export function runLab({ legs, market: m, seed, antithetic }: LabRequest): LabRe
     const r = mcPortfolio([unit], m, LEG_MC_PATHS, seed + 100 + i, antithetic);
     return {
       bs: legBs(l, m),
-      crr: crrPrice(l.call, m.S, l.K, l.T, m.sigma, m.r, m.q, CRR_STEPS),
-      american: crrAmericanPrice(l.call, m.S, l.K, l.T, m.sigma, m.r, m.q, CRR_STEPS),
+      crr: crrPrice(l.call, m.S, l.K, l.T, legSigma(m, l.K, l.T), m.r, m.q, CRR_STEPS),
+      american: crrAmericanPrice(l.call, m.S, l.K, l.T, legSigma(m, l.K, l.T), m.r, m.q, CRR_STEPS),
       mc: r.price / M, mcSe: r.se / M,
     };
   });
@@ -117,6 +118,7 @@ export interface McVizResult {
   pProfit: number;                   // empirical P(P&L > 0) at the first expiry
   expectedPnl: number;               // mean P&L at the first expiry across samples
   forward: number;
+  pathSigma: number;                 // volatility of the simulated GBM: the leg's smile vol for one leg, ATM σ otherwise
   ms: number;
 }
 
@@ -128,16 +130,19 @@ export function runMcViz(req: McVizRequest): McVizResult {
   const firstT = Math.max(firstExpiry(legs), 1 / 365);
   const strikes = Array.from(new Set(legs.map(l => l.K))).sort((a, b) => a - b);
   const single = legs.length === 1 ? legs[0] : null;
+  // GBM has one volatility: a single leg is simulated at its own smile volatility (so its
+  // price and P(ITM) match), a multi-leg portfolio at the ATM volatility.
+  const vm: Market = { S: m.S, sigma: single ? legSigma(m, single.K, single.T) : m.sigma, r: m.r, q: m.q };
 
-  const paths = samplePaths(m, horizonT, req.nPaths, req.nSteps, seed);
+  const paths = samplePaths(vm, horizonT, req.nPaths, req.nSteps, seed);
 
   let profit = 0, pnlSum = 0;
   const later = legs.some(l => l.T - firstT > 1e-9);
   const cost = netPremium(legs);
-  const dist = terminalDistribution(m, firstT, req.histSamples, req.bins, seed ^ 0x5bd1e995,
+  const dist = terminalDistribution(vm, firstT, req.histSamples, req.bins, seed ^ 0x5bd1e995,
     single ? { K: single.K, call: single.call } : undefined,
     s => {
-      const pnl = later ? pnlAtFirstExpiry(legs, s, m.sigma, m.r, m.q) : expiryPnl(legs, s, cost);
+      const pnl = later ? pnlAtFirstExpiry(legs, atSpot(m, s)) : expiryPnl(legs, s, cost);
       pnlSum += pnl;
       if (pnl > 0) profit++;
     });
@@ -146,15 +151,16 @@ export function runMcViz(req: McVizRequest): McVizResult {
   const nPts = 120;
   for (let i = 0; i <= nPts; i++) {
     const x = dist.lo + ((dist.hi - dist.lo) * i) / nPts;
-    pdf.push({ x, y: lognormalPdf(x, m, firstT) * dist.samples * dist.binWidth });
+    pdf.push({ x, y: lognormalPdf(x, vm, firstT) * dist.samples * dist.binWidth });
   }
 
   return {
     paths, horizonT, expiries, strikes, firstT, dist, pdf,
-    analyticItm: single ? probItm(single.call, m.S, single.K, firstT, m.sigma, m.r, m.q) : null,
+    analyticItm: single ? probItm(single.call, m.S, single.K, firstT, vm.sigma, m.r, m.q) : null,
     pProfit: profit / req.histSamples,
     expectedPnl: pnlSum / req.histSamples,
     forward: m.S * Math.exp((m.r - m.q) * firstT),
+    pathSigma: vm.sigma,
     ms: now() - t0,
   };
 }

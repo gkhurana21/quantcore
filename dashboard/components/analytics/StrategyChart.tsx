@@ -5,6 +5,7 @@ import type { KeyboardEvent, PointerEvent } from 'react';
 import type { Leg, Market } from '@/lib/quant/types';
 import type { PayoffAnalytics } from '@/lib/strategy/portfolio';
 import { pnlAtFirstExpiry, pnlNow, portfolioGreeks } from '@/lib/strategy/portfolio';
+import { atSpot } from '@/lib/quant/volSurface';
 import { days, num, signed, signedPct, usdSigned } from '@/lib/format';
 import type { ChartMode } from '@/components/terminal/useTerminalState';
 import { linear, nearestIndex, niceTicks, numTick, pathD, strikeTick, usdTick } from '@/components/charts/scale';
@@ -21,9 +22,11 @@ const MODE_META: Record<ChartMode, { unit: string; name: string }> = {
   theta: { unit: 'Θ ($ / day)', name: 'net theta per day' },
 };
 
+// Spot scenarios are sticky-strike: with a smile, every strike keeps its volatility as spot moves.
 function valueAt(mode: ChartMode, legs: Leg[], x: number, m: Market): number {
-  if (mode === 'pnl') return pnlNow(legs, x, m.sigma, m.r, m.q);
-  const g = portfolioGreeks(legs, { ...m, S: x });
+  const at = atSpot(m, x);
+  if (mode === 'pnl') return pnlNow(legs, at);
+  const g = portfolioGreeks(legs, at);
   switch (mode) {
     case 'delta': return g.delta;
     case 'gamma': return g.gamma;
@@ -77,7 +80,7 @@ export const StrategyChart = memo(function StrategyChart({ legs, market, anchorS
       if (main[i] < yLo) yLo = main[i];
       if (main[i] > yHi) yHi = main[i];
       if (expiry) {
-        expiry[i] = pnlAtFirstExpiry(legs, xs[i], market.sigma, market.r, market.q);
+        expiry[i] = pnlAtFirstExpiry(legs, atSpot(market, xs[i]));
         if (expiry[i] < yLo) yLo = expiry[i];
         if (expiry[i] > yHi) yHi = expiry[i];
       }

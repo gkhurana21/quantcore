@@ -245,6 +245,44 @@ test.describe('QuantCore terminal flows', () => {
     }
   });
 
+  test('12. Volatility smile: equity skew reprices the wings, custom skew flips, flat restores', async ({ page }) => {
+    await open(page);
+    const premium = async (i: number) => Number(await page.getByTestId(`leg-${i}-premium`).inputValue());
+    const chart = page.getByTestId('smile-chart');
+    const vols = async () => Promise.all(['data-down', 'data-atm', 'data-up'].map(a => chart.getAttribute(a).then(Number)));
+
+    await page.getByTestId('preset-iron-condor').click();
+    const flatPut = await premium(0), flatCall = await premium(3);          // long 2-wing put and call
+    expect(new Set(await vols()).size).toBe(1);                              // flat: one volatility
+
+    await page.getByTestId('smile-Equity index').click();
+    await expect(page.getByTestId('smile-Equity index')).toHaveAttribute('aria-checked', 'true');
+    const [down, atm, up] = await vols();
+    expect(down).toBeGreaterThan(atm);
+    expect(up).toBeLessThan(atm);
+    await page.getByTestId('preset-iron-condor').click();                    // rebuild at smile prices
+    expect(await premium(0)).toBeGreaterThan(flatPut);
+    expect(await premium(3)).toBeLessThan(flatCall);
+    expect(Number(await page.getByTestId('leg-0-iv').getAttribute('data-value'))).toBeGreaterThan(0.138);
+
+    // dragging the skew positive makes it a custom smile with upside strikes richer
+    await page.getByTestId('smile-rho').evaluate((el, v) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, String(v));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, 0.6);
+    await expect(page.getByTestId('smile-Custom')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByTestId('smile-rho-display')).toHaveText('0.60');
+    const [down2, , up2] = await vols();
+    expect(up2).toBeGreaterThan(down2);
+
+    // the smile is a model choice: it survives an instrument switch, and Flat restores one volatility
+    await page.getByTestId('inst-NVDA').click();
+    await expect(page.getByTestId('smile-Custom')).toHaveAttribute('aria-checked', 'true');
+    await page.getByTestId('smile-Flat').click();
+    await expect(page.getByTestId('smile-rho')).toHaveCount(0);
+    expect(new Set(await vols()).size).toBe(1);
+  });
+
   test('9. Risk / VaR: headline, confidence and horizon scaling, Monte Carlo VaR', async ({ page }) => {
     await open(page);
     await page.keyboard.press('4');                                // keyboard shortcut → Risk tab

@@ -1,6 +1,7 @@
 import { normalSampler } from './rng';
 import type { Leg, Market } from './types';
 import { CONTRACT_MULT as M, signedQty } from './types';
+import { legSigma } from './volSurface';
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -30,28 +31,31 @@ export function mcPortfolio(legs: Leg[], m: Market, nPaths: number, seed: number
   const times = Array.from(new Set(legs.map(l => Math.max(0, l.T)))).sort((a, b) => a - b);
   const k = times.length;
   const incSd = new Float64Array(k);
-  const drift = new Float64Array(k);
   let prev = 0;
   for (let i = 0; i < k; i++) {
     incSd[i] = Math.sqrt(Math.max(times[i] - prev, 0));
-    drift[i] = (m.r - m.q - 0.5 * m.sigma * m.sigma) * times[i];
     prev = times[i];
   }
+  // Each leg is lognormal at its own smile volatility on the shared Brownian path, so its
+  // expected payoff is the Black-Scholes value at that volatility. In a flat market every
+  // leg has the same σ and this is the usual single-GBM simulation, number for number.
   const legTime = legs.map(l => times.indexOf(Math.max(0, l.T)));
+  const legVol = legs.map(l => legSigma(m, l.K, l.T));
+  const legDrift = legs.map((l, j) => (m.r - m.q - 0.5 * legVol[j] * legVol[j]) * Math.max(0, l.T));
   const weight = legs.map(l => Math.exp(-m.r * Math.max(0, l.T)) * signedQty(l) * M);
   const z = new Float64Array(k);
-  const ST = new Float64Array(k);
+  const W = new Float64Array(k);
   const next = normalSampler(seed);
 
   const valueFor = (sign: number): number => {
     let w = 0;
     for (let i = 0; i < k; i++) {
       w += sign * incSd[i] * z[i];
-      ST[i] = m.S * Math.exp(drift[i] + m.sigma * w);
+      W[i] = w;
     }
     let pv = 0;
     for (let j = 0; j < legs.length; j++) {
-      const l = legs[j], s = ST[legTime[j]];
+      const l = legs[j], s = m.S * Math.exp(legDrift[j] + legVol[j] * W[legTime[j]]);
       pv += weight[j] * (l.call ? Math.max(s - l.K, 0) : Math.max(l.K - s, 0));
     }
     return pv;

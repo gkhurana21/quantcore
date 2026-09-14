@@ -237,7 +237,7 @@ test.describe('Monte Carlo', () => {
 
   test('single call is within 3 standard errors of Black-Scholes across seeds', () => {
     const legs = [leg(true, 'buy', 105, 0.5)];
-    const ref = portfolioValue(legs, m.S, m.sigma, m.r, m.q);
+    const ref = portfolioValue(legs, m);
     for (const seed of [1, 7, 42, 1234, 99991]) {
       const res = mcPortfolio(legs, m, 50_000, seed);
       expect(Math.abs(res.price - ref)).toBeLessThan(3 * res.se);
@@ -274,7 +274,7 @@ test.describe('Monte Carlo', () => {
 
   test('mixed-expiry calendar spread is within 3 SE of the analytic value', () => {
     const legs = [leg(true, 'sell', 100, 0.1, 3), leg(true, 'buy', 100, 0.6, 3)];
-    const ref = portfolioValue(legs, m.S, m.sigma, m.r, m.q);
+    const ref = portfolioValue(legs, m);
     const res = mcPortfolio(legs, m, 100_000, 2024);
     expect(Math.abs(res.price - ref)).toBeLessThan(3 * res.se);
   });
@@ -357,7 +357,7 @@ test.describe('payoff analytics', () => {
     const a = payoffAnalytics(legs, m);
     expect(a.exact).toBe(false);
     expect(a.horizonT).toBeCloseTo(0.1, 12);
-    const atK = pnlAtFirstExpiry(legs, 100, m.sigma, m.r, m.q);
+    const atK = pnlAtFirstExpiry(legs, { ...m, S: 100 });
     const expected = 100 * ((0 - 3) * -1 + (bsPrice(true, 100, 100, 0.4, m.sigma, m.r) - 6));
     expect(atK).toBeCloseTo(expected, 9);
     expect(a.breakevens.length).toBe(2);

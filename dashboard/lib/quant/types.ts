@@ -2,9 +2,18 @@
 
 export interface Market {
   S: number;      // spot
-  sigma: number;  // annualised volatility (decimal)
+  sigma: number;  // annualised volatility (decimal); the at-the-money-forward volatility when a smile is set
   r: number;      // continuously-compounded risk-free rate
   q: number;      // continuous dividend yield
+  smile?: Smile | null;  // SSVI volatility smile; absent or null = flat volatility across strikes
+  smileSpot?: number;    // spot the smile is centred on; set by atSpot() for sticky-strike scenarios
+}
+
+/** SSVI smile parameters (lib/quant/volSurface.ts). */
+export interface Smile {
+  rho: number;    // skew, −1 < ρ < 1; negative makes downside strikes richer (equities)
+  eta: number;    // smile curvature, η > 0
+  gamma: number;  // how quickly curvature decays with maturity, 0 < γ ≤ ½
 }
 
 export interface Greeks {

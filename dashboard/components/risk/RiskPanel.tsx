@@ -6,7 +6,7 @@ import { normInv, normPdf } from '@/lib/quant/normal';
 import type { McVarResult } from '@/lib/risk/var';
 import { deltaGammaVaR, deltaNormalVaR, exposures, horizonVol } from '@/lib/risk/var';
 import { useWorkerTask } from '@/lib/compute/useWorkerTask';
-import { legsKeyOf } from '@/lib/strategy/labels';
+import { legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
 import { VAR_BACKTEST } from '@/lib/engine/benchmarks';
 import { num, pct, signed, usd, usdSigned } from '@/lib/format';
 import { linear, niceTicks, usdTick } from '@/components/charts/scale';
@@ -67,7 +67,7 @@ export function RiskPanel({ legs, market, conf, horizon, onConf, onHorizon, acti
   const hVol = horizonVol(market.sigma, horizon);
   const esDn = Math.abs(ex.dollarDelta) * hVol * normPdf(z) / (1 - conf);
 
-  const key = `${legsKeyOf(legs)}|${market.S}|${market.sigma}|${market.r}|${market.q}|${conf}|${horizon}`;
+  const key = `${legsKeyOf(legs)}|${marketKeyOf(market)}|${conf}|${horizon}`;
   const mc = useWorkerTask('mcvar', active
     ? { legs, market, conf, hDays: horizon, nScen: MC_SCENARIOS, seed: MC_SEED } : null, key, 150);
   const res = mc.result;

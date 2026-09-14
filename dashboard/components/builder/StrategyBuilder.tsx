@@ -4,6 +4,7 @@ import { memo, useEffect, useState } from 'react';
 import type { Dispatch } from 'react';
 import { bsPrice } from '@/lib/quant/blackScholes';
 import { impliedVol } from '@/lib/quant/impliedVol';
+import { legSigma } from '@/lib/quant/volSurface';
 import type { Leg } from '@/lib/quant/types';
 import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
 import type { Instrument } from '@/lib/market/instruments';
@@ -83,7 +84,8 @@ const LegRow = memo(function LegRow({ leg, index, state, dispatch, live, canRemo
 }) {
   const { market: m, instrument: inst } = state;
   const update = (patch: Partial<Omit<Leg, 'id'>>) => dispatch({ type: 'updateLeg', id: leg.id, patch });
-  const mark = bsPrice(leg.call, m.S, leg.K, leg.T, m.sigma, m.r, m.q);
+  const modelVol = legSigma(m, leg.K, leg.T);
+  const mark = bsPrice(leg.call, m.S, leg.K, leg.T, modelVol, m.r, m.q);
   const pnl = signedQty(leg) * M * (mark - leg.premium);
   const iv = impliedVol(leg.call, leg.premium, m.S, leg.K, leg.T, m.r, m.q);
   const ivText = iv ? `${(iv.sigma * 100).toFixed(1)}%` : '—';
@@ -105,7 +107,7 @@ const LegRow = memo(function LegRow({ leg, index, state, dispatch, live, canRemo
                    options={[{ value: 'buy', label: 'Buy' }, { value: 'sell', label: 'Sell' }]}
                    onChange={side => update({ side })} />
         <span className={b.legMark}
-              title={`Implied volatility of the entry premium: ${iv ? ivText : 'none (premium outside no-arbitrage bounds)'} · model price ${mark.toFixed(2)} · leg P&L at the current market`}>
+              title={`Implied volatility of the entry premium: ${iv ? ivText : 'none (premium outside no-arbitrage bounds)'} · model volatility ${(modelVol * 100).toFixed(1)}%${m.smile ? ' (smile)' : ''} · model price ${mark.toFixed(2)} · leg P&L at the current market`}>
           <span data-testid={`leg-${index}-iv`} data-value={iv?.sigma ?? ''}>IV {ivText}</span>
           {' · '}<span className={pnl > 0.5 ? 'pos' : pnl < -0.5 ? 'neg' : undefined}>{usdSigned(pnl)}</span>
         </span>
