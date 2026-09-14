@@ -173,9 +173,14 @@ Alpaca's stock snapshot, option snapshot and option-contract listing endpoints. 
 set the keys in the Netlify site's environment (they never enter the repository or the browser) and redeploy:
 
 ```bash
+# 1. keys into the site's environment (functions scope, production) — read from proxy/.env.local, never echoed
 (set -a; . proxy/.env.local; set +a
- npx netlify-cli env:set ALPACA_API_KEY_ID "$ALPACA_API_KEY_ID" --context production --scope functions
- npx netlify-cli env:set ALPACA_API_SECRET_KEY "$ALPACA_API_SECRET_KEY" --context production --scope functions)
+ npx netlify-cli env:set ALPACA_API_KEY_ID "$ALPACA_API_KEY_ID" --site 3fef089e-0253-49d3-b3dd-491f193362fb --context production --scope functions
+ npx netlify-cli env:set ALPACA_API_SECRET_KEY "$ALPACA_API_SECRET_KEY" --site 3fef089e-0253-49d3-b3dd-491f193362fb --context production --scope functions)
+
+# 2. redeploy so the function picks them up
+(cd dashboard && NEXT_PUBLIC_PROXY_URL=/api npm run build)
+npx netlify-cli deploy --prod --no-build --dir dashboard/out --functions dashboard/netlify/functions --site 3fef089e-0253-49d3-b3dd-491f193362fb
 ```
 
 ## Testing
