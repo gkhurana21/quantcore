@@ -24,7 +24,7 @@
 .swBand { display: inline-block; width: 12px; height: 9px; border-radius: 2px; background: var(--amber-soft); border: 1px solid var(--amber-line); }
 .swDash { display: inline-block; width: 14px; border-top: 1.5px dashed var(--ink-4); }
 
-.modelName { font-weight: 560; color: var(--ink); }
+.modelName { display: block; max-width: 36ch; white-space: normal; font-weight: 560; color: var(--ink); }
 /* details wrap within the column, so a long description never pushes |z| and the verdict out of view */
 .modelDetail { display: block; max-width: 36ch; white-space: normal; font-size: 11px; color: var(--ink-3); font-family: var(--mono); }
 .valueMain { font-weight: 600; color: var(--ink); }
