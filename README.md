@@ -95,9 +95,12 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
 - **Local volatility (Dupire)**: σ_loc²(K, T) = ∂T w(k, T) / g(k) in total variance (Gatheral), with Durrleman's g and
   ∂T w = ∂θ w·θ′(T) in closed form for SSVI — the forward variance θ′(T) of the term structure when there is no smile.
   The tests match it to Dupire's formula evaluated by finite differences of the surface's call prices (worst relative
-  error 1e-8 over 300 random surfaces). A log-Euler simulation with daily steps drives the Monte Carlo view's paths
-  and the Pricing Lab's local-vol row, and reprices vanillas across strikes and expiries; its measured bias falls as
-  1/steps, from 7.7% of a far out-of-the-money call's price at 52 steps a year to about 1% at 365. Without a smile each
+  error 1e-8 over 300 random surfaces). A log-Euler simulation drives the Monte Carlo view's paths. Its bias is
+  real — 7.7% of a far out-of-the-money call's price at 52 steps a year, about 1% at 365, and 2.1 standard errors on a
+  47-day SPY iron condor at 48 steps — so the Pricing Lab's local-vol row uses coupled Richardson extrapolation: every
+  path also runs on a half-step grid driven by the same Brownian increments, and the estimator 2·fine − coarse cancels
+  the O(Δt) error at an unchanged standard error (condor: −$58.6 → −$13.7 mean error over six seeds; 40 vanillas at two
+  steps a week reprice with RMS z 1.05). The row also shows the fine grid's own bias estimate. Without a smile each
   step's variance is integrated exactly, so there is no bias at all.
 - **Cox-Ross-Rubinstein** lattice: u = e^(σ√Δt), p = (e^((r−q)Δt) − d)/(u − d), backward induction; the American
   variant takes the larger of continuation and exercise value at every node.
@@ -238,9 +241,10 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
 - `tests/impliedDensity.spec.ts` — the smile-implied distribution: lognormal without skew, a proper density with the
   forward as its mean under random smiles, repricing the smile's calls and digitals, sampling, and the Monte Carlo view.
 - `tests/localVol.spec.ts` — Dupire local volatility: σ in a flat market and the forward volatility under a term
-  structure alone, agreement with Dupire's formula from finite differences of call prices, a local-volatility Monte
-  Carlo that reprices 40 vanillas across strikes and expiries within 4 SE, exact simulation without a smile, the Monte
-  Carlo view's path model, and finite capped values at the arbitrage-free boundary.
+  structure alone, agreement with Dupire's formula from finite differences of call prices, a Richardson-extrapolated
+  local-volatility Monte Carlo that reprices 40 vanillas across strikes and expiries at two steps a week (each within 4
+  SE, RMS z below 1.4), exact simulation without a smile, the Monte Carlo view's path model, and finite capped values at
+  the arbitrage-free boundary.
 - `tests/calibrate.spec.ts` — smile and surface calibration: exact recovery of known smiles and of seven-expiry
   surfaces, fit error matching quote noise, the arbitrage-free boundary, calendar arbitrage in the quotes pooled away,
   what γ changes, and quote and expiry selection. `tests/surface.live.spec.ts` (opt-in, `SURFACE_LIVE=1`) fits SPY,
@@ -317,9 +321,10 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
 - The volatility surface is parametric in strike: one SSVI shape (ρ, η, γ) is shared by every expiry, so a surface fit
   gives up some per-expiry accuracy to stay arbitrage-free (SPY: 1.02 vol pts RMSE across 8 expiries, against
   0.67–1.23 fitting each expiry on its own). Total variance is interpolated linearly between listed expiries, and vol
-  scenarios scale the term structure in proportion rather than reshaping it. Local volatility is simulated with
-  log-Euler steps, which leave a discretisation bias of up to about 1% of price for far out-of-the-money options at
-  daily steps; the Monte Carlo view's histogram and probabilities use the exact smile-implied distribution instead.
+  scenarios scale the term structure in proportion rather than reshaping it. The Monte Carlo view's local-volatility
+  paths use plain log-Euler steps (for display — its histogram and probabilities use the exact smile-implied
+  distribution); the Pricing Lab's local-vol price is Richardson-extrapolated, which leaves a residual bias of order Δt²
+  (mean z −0.4 over 40 vanillas at two steps a week).
 - American early exercise is priced only by the CRR lattice in the Pricing Models Lab; Greeks, charts, stress and VaR treat options as European.
 - Monte Carlo prices European payoffs only. The Metal GPU kernel prices one contract per run; whole portfolios run on
   the multithreaded CPU kernel or in WebAssembly.

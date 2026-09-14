@@ -89,8 +89,8 @@ test.describe('Dupire local volatility', () => {
     expect(bad.slice(0, 5)).toEqual([]);
   });
 
-  test('a local-volatility Monte Carlo reprices the surface’s vanillas across strikes and expiries', () => {
-    test.setTimeout(120_000);
+  test('a local-volatility Monte Carlo (coupled Richardson) reprices the surface’s vanillas across strikes and expiries', () => {
+    test.setTimeout(240_000);
     const g = rng(3);
     const bad: string[] = [];
     const zs: number[] = [];
@@ -103,7 +103,8 @@ test.describe('Dupire local volatility', () => {
           const K = +(F * Math.exp(x * sd)).toFixed(4);
           const leg = x < 0 ? put(K, T) : call(K, T);
           const ref = 100 * bsPrice(leg.call, m.S, K, T, legSigma(m, K, T), m.r, m.q);
-          const mc = mcLocalVol([leg], m, 100_000, 7000 + zs.length, 365);
+          // two steps a week, deliberately coarse: extrapolation has to remove the log-Euler bias, not step count
+          const mc = mcLocalVol([leg], m, 100_000, 7000 + zs.length, 104, true);
           const z = (mc.price - ref) / mc.se;
           zs.push(z);
           if (!(Math.abs(z) < 4)) bad.push(`|z| ${z.toFixed(2)}: LV ${mc.price.toFixed(4)} ± ${mc.se.toFixed(4)} vs ${ref.toFixed(4)} ${JSON.stringify({ m, K, T })}`);
@@ -112,10 +113,11 @@ test.describe('Dupire local volatility', () => {
     }
     const meanZ = zs.reduce((a, z) => a + z, 0) / zs.length;
     const rms = Math.sqrt(zs.reduce((a, z) => a + z * z, 0) / zs.length);
-    // an unbiased estimator would give mean ≈ 0 and RMS ≈ 1; RMS above 1 is the log-Euler bias measured in localVol.ts
+    // unbiased: mean z ≈ 0 and RMS z ≈ 1 (for 40 draws RMS has a standard deviation of about 0.11)
     console.log(`  ${zs.length} vanillas: mean z ${meanZ.toFixed(2)}, RMS z ${rms.toFixed(2)}`);
     expect(bad).toEqual([]);
     expect(Math.abs(meanZ)).toBeLessThan(4 / Math.sqrt(zs.length) + 0.25);   // no systematic discretisation bias
+    expect(rms).toBeLessThan(1.4);
   });
 
   test('without a smile the simulation is exact: each expiry is lognormal at its ATM term-structure volatility', () => {

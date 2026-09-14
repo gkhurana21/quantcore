@@ -5,7 +5,7 @@ import type { Leg, Market } from '@/lib/quant/types';
 import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
 import { hasVolSurface } from '@/lib/quant/volSurface';
 import type { LabResult, LocalVolRequest, LocalVolResult } from '@/lib/compute/tasks';
-import { LAB_PATHS, LV_PATHS, LV_STEPS_PER_YEAR } from '@/lib/compute/tasks';
+import { LAB_PATHS, LV_MIN_STEPS, LV_PATHS, LV_STEPS_PER_YEAR } from '@/lib/compute/tasks';
 import { useWorkerTask } from '@/lib/compute/useWorkerTask';
 import type { Engine } from '@/lib/engine/useEngine';
 import type { WasmEngine } from '@/lib/engine/useWasmEngine';
@@ -74,8 +74,9 @@ function LocalVolCheck({ legs, market, seed, runKey, stale, onResult }: {
         {busy ? 'Simulating local-vol paths…' : `Simulate ${fmtPaths(LV_PATHS)} local-volatility paths`}
       </Button>
       <span>
-        σ_loc(S, t) from Dupire’s formula on this surface, {LV_STEPS_PER_YEAR} steps a year · one diffusion for every leg, so it must
-        reprice each at its own implied volatility
+        σ_loc(S, t) from Dupire’s formula on this surface · log-Euler at {LV_STEPS_PER_YEAR} steps a year (at least {LV_MIN_STEPS}),
+        Richardson-extrapolated over a coupled half-step grid · one diffusion for every leg, so it must reprice each at its own
+        implied volatility
       </span>
       {task.error && job && task.resultKey === job.id && <span className="neg">{task.error}</span>}
       {stale && !busy && <span>Inputs changed since the last local-vol run.</span>}
@@ -142,7 +143,9 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
     const { price: value, se } = lv.res;
     const z = se > 0 ? Math.abs(value - ref) / se : 0;
     lvRow = { id: 'localvol', model: `Local vol (Dupire) · ${fmtPaths(lv.res.paths)}`,
-              detail: `log-Euler · ${lv.res.steps} steps · seed ${lv.res.seed}`,
+              detail: lv.res.extrapolated
+                ? `Richardson 2·fine − coarse · ${lv.res.steps} steps · fine-grid bias est. ${usdSigned(lv.res.fineBias ?? 0, 2)} · seed ${lv.res.seed}`
+                : `exact variance steps (no smile) · ${lv.res.steps} steps · seed ${lv.res.seed}`,
               value, se, ms: lv.res.ms, z, verdict: mcVerdict(z), engine: true };
   }
   const allRows = [...rows, ...(lvRow ? [lvRow] : []), ...(engRow ? [engRow] : [])];

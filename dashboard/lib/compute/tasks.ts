@@ -219,13 +219,18 @@ export function runMcViz(req: McVizRequest): McVizResult {
 
 export const LV_PATHS = 100_000;
 export const LV_STEPS_PER_YEAR = 365;
+/** Coarse steps to the last expiry at the least, so a short-dated portfolio still gets a fine time grid. */
+export const LV_MIN_STEPS = 64;
 
 export interface LocalVolRequest { legs: Leg[]; market: Market; seed: number; }
 
 export interface LocalVolResult extends LocalVolMcResult { seed: number; stepsPerYear: number; }
 
+/** Local-vol value of the portfolio: log-Euler with coupled Richardson extrapolation (exact without a smile). */
 export function runLocalVol({ legs, market, seed }: LocalVolRequest): LocalVolResult {
-  return { ...mcLocalVol(legs, market, LV_PATHS, seed, LV_STEPS_PER_YEAR), seed, stepsPerYear: LV_STEPS_PER_YEAR };
+  const lastT = legs.reduce((a, l) => Math.max(a, l.T), 0);
+  const stepsPerYear = lastT > 0 ? Math.max(LV_STEPS_PER_YEAR, Math.ceil(LV_MIN_STEPS / lastT)) : LV_STEPS_PER_YEAR;
+  return { ...mcLocalVol(legs, market, LV_PATHS, seed, stepsPerYear, true), seed, stepsPerYear };
 }
 
 // ── Volatility surface calibration ──────────────────────────────────────────

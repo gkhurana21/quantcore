@@ -110,7 +110,13 @@ export function timeGrid(expiries: number[], stepsPerYear: number): number[] {
   return out;
 }
 
-export interface LocalVolMcResult { price: number; se: number; paths: number; steps: number; ms: number; }
+export interface LocalVolMcResult {
+  price: number; se: number; paths: number;
+  steps: number;              // time steps per path (the fine grid when extrapolating)
+  ms: number;
+  extrapolated: boolean;      // Richardson extrapolation over a coupled coarse and fine grid
+  fineBias: number | null;    // coarse − fine mean when extrapolating: an estimate of the fine grid's own bias
+}
 
 /**
  * Monte Carlo value of a European portfolio under the market's local volatility: log-Euler steps with σ_loc read
@@ -118,11 +124,16 @@ export interface LocalVolMcResult { price: number; se: number; paths: number; st
  * depends on time only and each step's variance is integrated exactly, so the simulation has no discretisation bias.
  *
  * Measured on a random surface (400k paths): at 52 steps a year the bias reached 7.7% of the price of a call 1.5
- * standard deviations out of the money at three months; at 365 steps a year it fell to about 1% (within 1.7 standard
- * errors). A (i/n)² grid refined towards t = 0 did not reduce it, and a predictor–corrector that reuses the step's
- * draw to pick the variance is biased by construction (the variance becomes correlated with the shock).
+ * standard deviations out of the money at three months; at 365 steps a year about 1% (within 1.7 standard errors).
+ * Short-dated portfolios need more: an SPY iron condor at 47 days on the equity-index smile was off by 2.1 standard
+ * errors on average (six seeds, 100k paths) at 48 steps. `extrapolate` removes the O(Δt) term by coupled Richardson
+ * extrapolation (below): on that condor the mean error fell from −$58.6 to −$13.7 on the same grid with an unchanged
+ * standard error. A (i/n)² grid refined towards t = 0 did not reduce the bias, and a predictor–corrector that reuses
+ * the step's draw to pick the variance is biased by construction (the variance becomes correlated with the shock).
  */
-export function mcLocalVol(legs: Leg[], m: Market, nPaths: number, seed: number, stepsPerYear = 365): LocalVolMcResult {
+export function mcLocalVol(legs: Leg[], m: Market, nPaths: number, seed: number, stepsPerYear = 365,
+                           extrapolate = false): LocalVolMcResult {
+  if (extrapolate && m.smile) return mcLocalVolRichardson(legs, m, nPaths, seed, stepsPerYear);
   const t0 = now();
   const times = timeGrid(legs.map(l => l.T), stepsPerYear);
   const nSteps = times.length - 1;
@@ -175,7 +186,75 @@ export function mcLocalVol(legs: Leg[], m: Market, nPaths: number, seed: number,
     sumSq += pv * pv;
   }
   const mean = sum / nPaths;
-  return { price: mean, se: Math.sqrt(Math.max(sumSq / nPaths - mean * mean, 0) / nPaths), paths: nPaths, steps: nSteps, ms: now() - t0 };
+  return { price: mean, se: Math.sqrt(Math.max(sumSq / nPaths - mean * mean, 0) / nPaths), paths: nPaths, steps: nSteps,
+           ms: now() - t0, extrapolated: false, fineBias: null };
+}
+
+/**
+ * Coupled Richardson extrapolation of the log-Euler scheme. Every path is simulated twice on the same Brownian
+ * motion — on the grid, and on the grid with each step halved (the coarse step's increment is the sum of its two
+ * half-step increments) — and the estimator is 2·V_fine − V_coarse per path, which cancels the O(Δt) term of the weak
+ * error. Coupling keeps the two runs nearly perfectly correlated, so the standard error, computed on the combined
+ * per-path values, stays close to that of a single run; the coarse − fine mean estimates the fine grid's own bias.
+ */
+function mcLocalVolRichardson(legs: Leg[], m: Market, nPaths: number, seed: number, stepsPerYear: number): LocalVolMcResult {
+  const t0 = now();
+  const times = timeGrid(legs.map(l => l.T), stepsPerYear);
+  const nC = times.length - 1;
+  const payAt = new Map<number, number>(times.map((t, i) => [t, i]));
+  const legStep = legs.map(l => (l.T > 0 ? payAt.get(l.T)! : 0));
+  const weight = legs.map(l => Math.exp(-m.r * Math.max(0, l.T)) * signedQty(l) * M);
+  const dt = new Float64Array(nC), hdt = new Float64Array(nC), sqhdt = new Float64Array(nC);
+  const C = { th: new Float64Array(nC), dth: new Float64Array(nC), p: new Float64Array(nC), dp: new Float64Array(nC),
+              lfs: new Float64Array(nC), lfa: new Float64Array(nC) };
+  const F = { th: new Float64Array(2 * nC), dth: new Float64Array(2 * nC), p: new Float64Array(2 * nC),
+              dp: new Float64Array(2 * nC), lfs: new Float64Array(2 * nC), lfa: new Float64Array(2 * nC) };
+  const fill = (a: typeof C, i: number, t: number) => {
+    const c = slice(m, t);
+    a.th[i] = c.theta; a.dth[i] = c.dTheta; a.p[i] = c.p; a.dp[i] = c.dp; a.lfs[i] = c.lnFs; a.lfa[i] = c.lnFa;
+  };
+  for (let i = 0; i < nC; i++) {
+    dt[i] = times[i + 1] - times[i];
+    hdt[i] = dt[i] / 2;
+    sqhdt[i] = Math.sqrt(hdt[i]);
+    fill(C, i, times[i] + dt[i] / 2);
+    fill(F, 2 * i, times[i] + dt[i] / 4);
+    fill(F, 2 * i + 1, times[i] + (3 * dt[i]) / 4);
+  }
+  const rho = m.smile!.rho;
+  const carry = m.r - m.q;
+  const next = normalSampler(seed);
+  const xf = new Float64Array(nC + 1), xc = new Float64Array(nC + 1);
+  const x0 = Math.log(m.S);
+  let sum = 0, sumSq = 0, sumGap = 0;
+
+  for (let n = 0; n < nPaths; n++) {
+    let f = x0, c = x0;
+    xf[0] = x0; xc[0] = x0;
+    for (let i = 0; i < nC; i++) {
+      const z1 = next(), z2 = next();
+      let v = lvar(rho, F.th[2 * i], F.dth[2 * i], F.p[2 * i], F.dp[2 * i], F.lfs[2 * i], F.lfa[2 * i], f);
+      f += (carry - 0.5 * v) * hdt[i] + Math.sqrt(v) * sqhdt[i] * z1;
+      v = lvar(rho, F.th[2 * i + 1], F.dth[2 * i + 1], F.p[2 * i + 1], F.dp[2 * i + 1], F.lfs[2 * i + 1], F.lfa[2 * i + 1], f);
+      f += (carry - 0.5 * v) * hdt[i] + Math.sqrt(v) * sqhdt[i] * z2;
+      v = lvar(rho, C.th[i], C.dth[i], C.p[i], C.dp[i], C.lfs[i], C.lfa[i], c);
+      c += (carry - 0.5 * v) * dt[i] + Math.sqrt(v) * sqhdt[i] * (z1 + z2);
+      xf[i + 1] = f; xc[i + 1] = c;
+    }
+    let pf = 0, pc = 0;
+    for (let j = 0; j < legs.length; j++) {
+      const l = legs[j], sf = Math.exp(xf[legStep[j]]), sc = Math.exp(xc[legStep[j]]);
+      pf += weight[j] * (l.call ? Math.max(sf - l.K, 0) : Math.max(l.K - sf, 0));
+      pc += weight[j] * (l.call ? Math.max(sc - l.K, 0) : Math.max(l.K - sc, 0));
+    }
+    const v = 2 * pf - pc;
+    sum += v;
+    sumSq += v * v;
+    sumGap += pc - pf;
+  }
+  const mean = sum / nPaths;
+  return { price: mean, se: Math.sqrt(Math.max(sumSq / nPaths - mean * mean, 0) / nPaths), paths: nPaths, steps: 2 * nC,
+           ms: now() - t0, extrapolated: true, fineBias: sumGap / nPaths };
 }
 
 /** Local-volatility price paths for display (nSteps + 1 points each, evenly spaced to T). */
