@@ -283,6 +283,21 @@ test.describe('QuantCore terminal flows', () => {
     expect(new Set(await vols()).size).toBe(1);
   });
 
+  test('13. With a smile, the Monte Carlo histogram samples the smile-implied distribution', async ({ page }) => {
+    await open(page);
+    await page.getByTestId('preset-long-put').click();
+    await page.getByTestId('smile-Equity index').click();
+    await page.getByTestId('tab-mc').click();
+    const hist = page.getByTestId('mc-hist');
+    await expect(hist).toHaveAttribute('data-density', 'smile', { timeout: 20_000 });
+    await expect(hist).toContainText('Smile-implied density');
+    await expect(hist).toContainText('Lognormal at ATM σ');
+    await expect(page.getByTestId('mc-pitm').locator('xpath=..')).toContainText('smile-implied');
+    await page.getByTestId('smile-Flat').click();
+    await expect(hist).toHaveAttribute('data-density', 'lognormal', { timeout: 20_000 });
+    await expect(hist).not.toContainText('Smile-implied density');
+  });
+
   test('9. Risk / VaR: headline, confidence and horizon scaling, Monte Carlo VaR', async ({ page }) => {
     await open(page);
     await page.keyboard.press('4');                                // keyboard shortcut → Risk tab

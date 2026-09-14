@@ -6,6 +6,8 @@
 import { crrAmericanPrice, crrPrice, CRR_STEPS } from '../quant/binomial';
 import { probItm } from '../quant/blackScholes';
 import { atSpot, legSigma } from '../quant/volSurface';
+import { smileDistribution } from '../quant/impliedDensity';
+import { mulberry32 } from '../quant/rng';
 import type { McResult, TerminalDistribution } from '../quant/monteCarlo';
 import { lognormalPdf, mcPortfolio, samplePaths, terminalDistribution } from '../quant/monteCarlo';
 import type { Leg, Market } from '../quant/types';
@@ -113,7 +115,9 @@ export interface McVizResult {
   strikes: number[];
   firstT: number;                // histogram horizon
   dist: TerminalDistribution;
-  pdf: { x: number; y: number }[];   // lognormal density scaled to expected counts per bin
+  pdf: { x: number; y: number }[];   // density scaled to expected counts per bin: smile-implied with a smile, else lognormal
+  pdfLognormal: { x: number; y: number }[];   // with a smile: the lognormal at ATM σ, for comparison (else empty)
+  density: 'smile' | 'lognormal';    // the distribution the histogram samples
   analyticItm: number | null;        // N(d2) — single-leg portfolios
   pProfit: number;                   // empirical P(P&L > 0) at the first expiry
   expectedPnl: number;               // mean P&L at the first expiry across samples
@@ -139,24 +143,36 @@ export function runMcViz(req: McVizRequest): McVizResult {
   let profit = 0, pnlSum = 0;
   const later = legs.some(l => l.T - firstT > 1e-9);
   const cost = netPremium(legs);
+  // With a smile the price at the first expiry is drawn from the distribution the smile implies
+  // (Breeden–Litzenberger), so P(ITM), P(profit) and expected P&L agree with the smile's prices.
+  const smileDist = smileDistribution(m, firstT);
+  const uniform = mulberry32((seed ^ 0x5bd1e995) >>> 0);
   const dist = terminalDistribution(vm, firstT, req.histSamples, req.bins, seed ^ 0x5bd1e995,
     single ? { K: single.K, call: single.call } : undefined,
     s => {
       const pnl = later ? pnlAtFirstExpiry(legs, atSpot(m, s)) : expiryPnl(legs, s, cost);
       pnlSum += pnl;
       if (pnl > 0) profit++;
-    });
+    },
+    smileDist ? () => smileDist.quantile(uniform()) : undefined);
 
   const pdf: { x: number; y: number }[] = [];
+  const pdfLognormal: { x: number; y: number }[] = [];
+  const atm: Market = { S: m.S, sigma: m.sigma, r: m.r, q: m.q };
+  const perBin = dist.samples * dist.binWidth;
   const nPts = 120;
   for (let i = 0; i <= nPts; i++) {
     const x = dist.lo + ((dist.hi - dist.lo) * i) / nPts;
-    pdf.push({ x, y: lognormalPdf(x, vm, firstT) * dist.samples * dist.binWidth });
+    pdf.push({ x, y: (smileDist ? smileDist.pdf(x) : lognormalPdf(x, vm, firstT)) * perBin });
+    if (smileDist) pdfLognormal.push({ x, y: lognormalPdf(x, atm, firstT) * perBin });
   }
 
   return {
-    paths, horizonT, expiries, strikes, firstT, dist, pdf,
-    analyticItm: single ? probItm(single.call, m.S, single.K, firstT, vm.sigma, m.r, m.q) : null,
+    paths, horizonT, expiries, strikes, firstT, dist, pdf, pdfLognormal,
+    density: smileDist ? 'smile' : 'lognormal',
+    analyticItm: !single ? null
+      : smileDist ? (single.call ? smileDist.probAbove(single.K) : 1 - smileDist.probAbove(single.K))
+      : probItm(single.call, m.S, single.K, firstT, vm.sigma, m.r, m.q),
     pProfit: profit / req.histSamples,
     expectedPnl: pnlSum / req.histSamples,
     forward: m.S * Math.exp((m.r - m.q) * firstT),

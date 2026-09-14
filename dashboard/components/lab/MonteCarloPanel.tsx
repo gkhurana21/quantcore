@@ -121,11 +121,13 @@ const HistChart = memo(function HistChart({ v, legs }: { v: McVizResult; legs: L
   const pad = { l: 12, r: 12, t: 26, b: 30 };
   const { dist } = v;
   const X = linear(dist.lo, dist.hi, pad.l, width - pad.r);
-  const maxN = Math.max(1, ...dist.bins.map(b => b.n), ...v.pdf.map(p => p.y));
+  const maxN = Math.max(1, ...dist.bins.map(b => b.n), ...v.pdf.map(p => p.y), ...v.pdfLognormal.map(p => p.y));
   const Y = linear(0, maxN * 1.1, height - pad.b, pad.t);
   const single = legs.length === 1 ? legs[0] : null;
   const s0 = v.paths[0]?.[0] ?? dist.mean;
   const pdfD = v.pdf.map((p, i) => `${i ? 'L' : 'M'}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join('');
+  const flatD = v.pdfLognormal.map((p, i) => `${i ? 'L' : 'M'}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join('');
+  const smileDensity = v.density === 'smile';
   const animKey = `${dist.lo}|${dist.hi}|${dist.mean}`;
   const [grownKey, setGrownKey] = useState<string | null>(null);
   useEffect(() => {
@@ -136,9 +138,9 @@ const HistChart = memo(function HistChart({ v, legs }: { v: McVizResult; legs: L
   const inRange = (x: number) => x > dist.lo && x < dist.hi;
 
   return (
-    <div ref={wrap} data-testid="mc-hist" data-bins={dist.bins.length}>
+    <div ref={wrap} data-testid="mc-hist" data-bins={dist.bins.length} data-density={v.density}>
       <svg className={l.chartSvg} width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img"
-           aria-label={`Histogram of ${dist.samples} simulated prices at ${days(v.firstT)} days, mean ${num(dist.mean, 2)}, with the lognormal density overlaid.`}>
+           aria-label={`Histogram of ${dist.samples} simulated prices at ${days(v.firstT)} days, mean ${num(dist.mean, 2)}, with the ${smileDensity ? 'smile-implied' : 'lognormal'} density overlaid.`}>
         <g key={animKey}>
           {dist.bins.map((b, i) => {
             const mid = (b.x0 + b.x1) / 2;
@@ -151,6 +153,7 @@ const HistChart = memo(function HistChart({ v, legs }: { v: McVizResult; legs: L
             );
           })}
         </g>
+        {flatD && <path d={flatD} fill="none" stroke="var(--ink-3)" strokeWidth={1.2} strokeDasharray="4 3" />}
         <path d={pdfD} fill="none" stroke="var(--blue)" strokeWidth={1.6} />
         {v.strikes.filter(inRange).map(k => (
           <g key={k}>
@@ -165,7 +168,8 @@ const HistChart = memo(function HistChart({ v, legs }: { v: McVizResult; legs: L
         ))}
       </svg>
       <div className={l.legend} aria-hidden="true">
-        <span><i className={l.sw} style={{ background: 'var(--blue)', height: 2 }} />Lognormal density</span>
+        <span><i className={l.sw} style={{ background: 'var(--blue)', height: 2 }} />{smileDensity ? 'Smile-implied density' : 'Lognormal density'}</span>
+        {smileDensity && <span><i className={l.swDash} style={{ borderColor: 'var(--ink-3)' }} />Lognormal at ATM σ</span>}
         {single && <span><i className={l.swBand} style={{ background: 'rgba(76,203,141,.4)', borderColor: 'rgba(76,203,141,.6)' }} />In the money</span>}
         <span><i className={l.sw} style={{ background: 'var(--amber-2)' }} />Forward</span>
         <span><i className={l.swDash} style={{ borderColor: 'var(--blue)' }} />Spot</span>
@@ -189,10 +193,8 @@ export function MonteCarloPanel({ legs, market, active }: { legs: Leg[]; market:
       <p className={l.intro}>
         Risk-neutral geometric Brownian motion, dS = (r − q)·S·dt + σ·S·dW, simulated from today to the last expiry.
         The histogram is a separate {HIST_SAMPLES.toLocaleString('en-US')}-sample draw of the price at the first expiry,
-        checked against its analytic lognormal density.
-        {market.smile && v && (single
-          ? ` With the smile on, the paths use this leg's own volatility, σ ${pct(v.pathSigma, 1)}, so its price and P(ITM) match.`
-          : ` GBM has a single volatility, so with the smile on the paths use the at-the-money σ ${pct(v.pathSigma, 1)}; option values still price each strike at its own volatility.`)}
+        checked against its analytic {market.smile ? 'smile-implied' : 'lognormal'} density.
+        {market.smile && v && ` With the smile on, that draw comes from the distribution the smile implies (Breeden–Litzenberger), so P(ITM), P(profit) and expected P&L agree with smile prices; the paths are still GBM at ${single ? "this leg's volatility" : 'the at-the-money volatility'}, σ ${pct(v.pathSigma, 1)}.`}
       </p>
       <div className={l.controls}>
         <Segmented size="sm" label="Visible paths" testid="mc-visible" value={visible}
@@ -241,7 +243,7 @@ export function MonteCarloPanel({ legs, market, active }: { legs: Leg[]; market:
               <div className={l.mcStat}>
                 <dt>P(in the money)</dt>
                 <dd data-testid="mc-pitm" data-value={v.dist.pItm ?? ''}>{pct(v.dist.pItm ?? 0, 2)}</dd>
-                <dd className={l.statSub}>analytic N(d₂) = {pct(v.analyticItm, 2)}</dd>
+                <dd className={l.statSub}>{v.density === 'smile' ? 'smile-implied' : 'analytic N(d₂)'} = {pct(v.analyticItm, 2)}</dd>
               </div>
             )}
             <div className={l.mcStat}>

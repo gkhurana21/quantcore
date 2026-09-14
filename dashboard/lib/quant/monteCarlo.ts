@@ -121,18 +121,20 @@ export interface TerminalDistribution {
 /**
  * Histogram of simulated terminal prices S_T (central 99.6% of mass). `onSample`
  * sees every draw, so callers can compute path statistics on the same sample.
+ * `draw` replaces the lognormal draw — for example with a smile-implied distribution.
  */
 export function terminalDistribution(m: Market, T: number, nSamples: number, nBins: number,
                                      seed: number,
                                      strike?: { K: number; call: boolean },
-                                     onSample?: (s: number) => void): TerminalDistribution {
+                                     onSample?: (s: number) => void,
+                                     draw?: () => number): TerminalDistribution {
   const next = normalSampler(seed);
   const mu = (m.r - m.q - 0.5 * m.sigma * m.sigma) * Math.max(T, 0);
   const vol = m.sigma * Math.sqrt(Math.max(T, 0));
   const xs = new Float64Array(nSamples);
   let sum = 0, itm = 0;
   for (let i = 0; i < nSamples; i++) {
-    const s = m.S * Math.exp(mu + vol * next());
+    const s = draw ? draw() : m.S * Math.exp(mu + vol * next());
     xs[i] = s;
     sum += s;
     if (strike && (strike.call ? s > strike.K : s < strike.K)) itm++;
