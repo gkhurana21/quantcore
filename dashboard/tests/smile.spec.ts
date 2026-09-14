@@ -17,6 +17,7 @@ test('the native engine (protocol v5) prices the whole smile portfolio in the Pr
   await page.getByTestId('lab-engine-run').click();
   const row = page.getByTestId('lab-row-engine');
   await expect(row).toContainText('C++ native · 1M', { timeout: 30_000 });
+  await expect(row).toHaveAttribute('data-z', /\d/, { timeout: 30_000 });   // compared once the Lab's reference is current
   expect(Number(await row.getAttribute('data-z'))).toBeLessThan(4);
 });
 

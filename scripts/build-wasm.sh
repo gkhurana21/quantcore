@@ -4,7 +4,7 @@
 #   source ~/emsdk/emsdk_env.sh
 #   ./scripts/build-wasm.sh
 #
-# Same sources as the native library (core/src/black_scholes.cpp, core/src/monte_carlo.cpp)
+# Same sources as the native library (black_scholes, monte_carlo, monte_carlo_portfolio, local_vol)
 # plus bindings/quantcore_wasm.cpp, built as a standalone module with no JavaScript glue.
 # Writes dashboard/public/wasm/quantcore.wasm and quantcore.json — compiler version, flags,
 # and the size and SHA-256 of the module and of every source. Both files are committed, so
@@ -17,11 +17,14 @@ cd "$(dirname "$0")/.."
 command -v em++ >/dev/null || { echo "em++ not found — run: source ~/emsdk/emsdk_env.sh" >&2; exit 1; }
 
 OUT_DIR=dashboard/public/wasm
-SOURCES=(core/src/black_scholes.cpp core/src/monte_carlo.cpp core/src/monte_carlo_portfolio.cpp bindings/quantcore_wasm.cpp)
+SOURCES=(core/src/black_scholes.cpp core/src/monte_carlo.cpp core/src/monte_carlo_portfolio.cpp core/src/local_vol.cpp
+         bindings/quantcore_wasm.cpp)
 HEADERS=(core/include/quantcore/black_scholes.hpp core/include/quantcore/monte_carlo.hpp
-         core/include/quantcore/monte_carlo_portfolio.hpp)
+         core/include/quantcore/monte_carlo_portfolio.hpp core/include/quantcore/local_vol.hpp
+         core/include/quantcore/ziggurat.hpp)
+# 8 MB of fixed memory: a local-vol plan for the longest grid (10,000 coarse steps) needs about 3.3 MB
 FLAGS=(-std=c++17 -O3 -msimd128 -fno-exceptions -fno-rtti -Wall -Wextra -Wpedantic -Werror
-       --no-entry -sSTANDALONE_WASM -sFILESYSTEM=0 -sSTACK_SIZE=65536 -sINITIAL_MEMORY=1048576
+       --no-entry -sSTANDALONE_WASM -sFILESYSTEM=0 -sSTACK_SIZE=65536 -sINITIAL_MEMORY=8388608
        -sALLOW_MEMORY_GROWTH=0)
 
 mkdir -p "$OUT_DIR"
@@ -35,7 +38,7 @@ const [outDir, emscripten, flags, ...files] = process.argv.slice(2);
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 const wasm = readFileSync(`${outDir}/quantcore.wasm`);
 const manifest = {
-  abi: 2,
+  abi: 3,
   emscripten,
   flags: flags.split(' '),
   bytes: wasm.length,

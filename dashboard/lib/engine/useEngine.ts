@@ -44,6 +44,9 @@ export interface EngineMcResult {
   backend: string; device: string; rttMs: number;
 }
 
+/** Protocol v6 local-volatility run: time steps per path and, when extrapolating, the fine grid's bias estimate. */
+export interface EngineLocalVolResult extends EngineMcResult { steps: number; fineBias: number | null; }
+
 export interface EngineStats {
   sent: number;
   received: number;
@@ -75,6 +78,9 @@ export interface Engine {
   runMc: (req: EngineMcRequest) => Promise<EngineMcResult>;
   /** Protocol v5: the whole portfolio by Monte Carlo on the CPU, each leg at its smile volatility. */
   runPortfolioMc: (legs: Leg[], m: Market, paths: number, seed: number, antithetic: boolean) => Promise<EngineMcResult>;
+  /** Protocol v6: the portfolio under the market's Dupire local volatility, multithreaded on the CPU. */
+  runLocalVolMc: (legs: Leg[], m: Market, paths: number, seed: number, stepsPerYear: number,
+                  extrapolate: boolean) => Promise<EngineLocalVolResult>;
   reconnect: () => void;
 }
 
@@ -173,6 +179,7 @@ export function useEngine(): Engine {
         case 'portfolio_result':
         case 'mc_result':
         case 'mc_portfolio_result':
+        case 'mc_local_vol_result':
         case 'error': {
           const id = n('id');
           const p = pending.get(id);
@@ -188,7 +195,9 @@ export function useEngine(): Engine {
             p.resolve({ legs: msg.legs as Greeks[], calcUs: n('calc_us'), rttMs });
           } else {
             p.resolve({ price: n('price'), stdError: n('std_error'), paths: n('paths'), ms: n('ms'),
-                        backend: String(msg.backend), device: String(msg.device ?? ''), rttMs });
+                        backend: String(msg.backend), device: String(msg.device ?? ''), rttMs,
+                        ...(msg.type === 'mc_local_vol_result'
+                          ? { steps: n('steps'), fineBias: msg.fine_bias == null ? null : n('fine_bias') } : {}) });
           }
           break;
         }
@@ -291,7 +300,18 @@ export function useEngine(): Engine {
       legs: legs.map(l => ({ call: l.call, K: l.K, T: l.T, sigma: legSigma(m, l.K, l.T), weight: signedQty(l) * CONTRACT_MULT })),
     }, 120_000), [request]);
 
+  const runLocalVolMc = useCallback((legs: Leg[], m: Market, paths: number, seed: number, stepsPerYear: number,
+                                     extrapolate: boolean) =>
+    request<EngineLocalVolResult>({
+      type: 'mc_local_vol', paths, seed, steps_per_year: stepsPerYear, extrapolate,
+      // the market as the browser models see it: the server builds the same SSVI surface from it
+      market: { S: m.S, sigma: m.sigma, r: m.r, q: m.q, ...(m.smile ? { smile: m.smile } : {}),
+                ...(m.smileSpot != null ? { smileSpot: m.smileSpot } : {}), ...(m.term ? { term: m.term } : {}) },
+      legs: legs.map(l => ({ call: l.call, K: l.K, T: l.T, weight: signedQty(l) * CONTRACT_MULT })),
+    }, 120_000), [request]);
+
   const reconnect = useCallback(() => connectRef.current(), []);
 
-  return { url: ENGINE_URL, status, reason, quote, info, stats, sendUpdate, pricePortfolio, runMc, runPortfolioMc, reconnect };
+  return { url: ENGINE_URL, status, reason, quote, info, stats, sendUpdate, pricePortfolio, runMc, runPortfolioMc,
+           runLocalVolMc, reconnect };
 }

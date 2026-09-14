@@ -4,12 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Leg, Market } from '@/lib/quant/types';
 import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
 import { hasVolSurface } from '@/lib/quant/volSurface';
-import type { LabResult, LocalVolRequest, LocalVolResult } from '@/lib/compute/tasks';
-import { LAB_PATHS, LV_MIN_STEPS, LV_PATHS, LV_STEPS_PER_YEAR } from '@/lib/compute/tasks';
+import type { LabResult, LocalVolRequest } from '@/lib/compute/tasks';
+import {
+  LAB_PATHS, localVolStepsPerYear, localVolWasmPaths, LV_MIN_STEPS, LV_NATIVE_PATHS, LV_PATHS, LV_STEPS_PER_YEAR,
+} from '@/lib/compute/tasks';
 import { useWorkerTask } from '@/lib/compute/useWorkerTask';
 import type { Engine } from '@/lib/engine/useEngine';
 import type { WasmEngine } from '@/lib/engine/useWasmEngine';
-import { legLabel, legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
+import { legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
 import { signed, usd, usdSigned } from '@/lib/format';
 import type { Tone } from '@/components/ui/primitives';
 import { Badge, Button, cx, InfoTip, Segmented, ui } from '@/components/ui/primitives';
@@ -35,6 +37,16 @@ interface Row {
 /** A C++ Monte Carlo run of the whole portfolio ($ value). */
 interface EngineRun { price: number; stdError: number; paths: number; ms: number; native: boolean; }
 
+/** A local-volatility run of the portfolio ($ value), from whichever backend ran it. */
+interface LocalVolRun {
+  price: number; se: number; paths: number; steps: number; ms: number;
+  fineBias: number | null;   // null without extrapolation (no smile: exact variance steps)
+  seed: number;
+  backend: 'native' | 'wasm' | 'ts';
+}
+
+const LV_BACKEND_LABEL = { native: 'C++ native', wasm: 'C++ WebAssembly', ts: 'TypeScript' } as const;
+
 function buildRows(r: LabResult): Row[] {
   const ref = r.bs.value;
   return [
@@ -51,35 +63,84 @@ function buildRows(r: LabResult): Row[] {
   ];
 }
 
-/**
- * Runs the portfolio under Dupire local volatility in its own worker, on request. Mounted only when the market has a
- * smile or term structure, so a flat market starts no extra worker.
- */
-function LocalVolCheck({ legs, market, seed, runKey, stale, onResult }: {
-  legs: Leg[]; market: Market; seed: number; runKey: string; stale: boolean;
-  onResult: (key: string, res: LocalVolResult) => void;
+/** The TypeScript fallback, in its own worker — mounted only while it runs, when no C++ backend is available. */
+function TsLocalVolRun({ job, onDone }: {
+  job: { id: string; req: LocalVolRequest };
+  onDone: (res: LocalVolRun | null, error: string | null) => void;
 }) {
-  const [job, setJob] = useState<{ id: string; runKey: string; req: LocalVolRequest } | null>(null);
-  const task = useWorkerTask('localvol', job?.req ?? null, job?.id ?? '', 0);
+  const task = useWorkerTask('localvol', job.req, job.id, 0);
   useEffect(() => {
-    if (job && task.resultKey === job.id && task.result && !task.error) onResult(job.runKey, task.result);
-  }, [job, task.resultKey, task.result, task.error, onResult]);
-  const busy = !!job && task.resultKey !== job.id;
+    if (task.resultKey !== job.id) return;
+    const res = task.result;
+    onDone(!task.error && res ? { price: res.price, se: res.se, paths: res.paths, steps: res.steps, ms: res.ms,
+                                  fineBias: res.fineBias, seed: res.seed, backend: 'ts' } : null, task.error);
+  }, [job.id, task.resultKey, task.result, task.error, onDone]);
+  return null;
+}
+
+/**
+ * Prices the portfolio under Dupire local volatility on request: the native C++ engine (multithreaded) when it speaks
+ * protocol v6, otherwise the same C++ kernel in WebAssembly, and the TypeScript kernel only when neither is available.
+ * Mounted only when the market has a smile or term structure.
+ */
+function LocalVolCheck({ legs, market, seed, runKey, stale, engine, wasm, onResult }: {
+  legs: Leg[]; market: Market; seed: number; runKey: string; stale: boolean; engine: Engine; wasm: WasmEngine;
+  onResult: (key: string, res: LocalVolRun) => void;
+}) {
+  const native = engine.status === 'connected' && (engine.info?.protocol ?? 0) >= 6;
+  const inWasm = !native && wasm.status === 'ready';
+  const stepsPerYear = localVolStepsPerYear(legs);
+  const paths = native ? LV_NATIVE_PATHS : inWasm ? localVolWasmPaths(legs, stepsPerYear) : LV_PATHS;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [tsJob, setTsJob] = useState<{ id: string; runKey: string; req: LocalVolRequest } | null>(null);
+  const onTsDone = useCallback((res: LocalVolRun | null, err: string | null) => {
+    setTsJob(job => {
+      if (job && res) onResult(job.runKey, res);
+      return null;
+    });
+    setError(err);
+  }, [onResult]);
+
+  const run = async () => {
+    setError(null);
+    if (!native && !inWasm) {
+      setTsJob({ id: `${runKey}|${Date.now()}`, runKey, req: { legs, market, seed } });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = native
+        ? await engine.runLocalVolMc(legs, market, paths, seed, stepsPerYear, true)
+        : await wasm.runLocalVolMc(legs, market, paths, seed, stepsPerYear, true);
+      onResult(runKey, { price: res.price, se: res.stdError, paths: res.paths, steps: res.steps, ms: res.ms,
+                         fineBias: res.fineBias, seed, backend: native ? 'native' : 'wasm' });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const running = busy || !!tsJob;
 
   return (
     <div className={l.engineBox} data-testid="lab-localvol">
       <strong>Local volatility cross-check</strong>
-      <Button size="sm" onClick={() => setJob({ id: `${runKey}|${Date.now()}`, runKey, req: { legs, market, seed } })}
-              disabled={busy} data-testid="lab-localvol-run">
-        {busy ? 'Simulating local-vol paths…' : `Simulate ${fmtPaths(LV_PATHS)} local-volatility paths`}
+      <Button size="sm" onClick={run} disabled={running} data-testid="lab-localvol-run">
+        {running ? 'Simulating local-vol paths…' : `Simulate ${fmtPaths(paths)} local-volatility paths`}
       </Button>
+      <span data-testid="lab-localvol-backend">
+        {native ? `native C++ engine · CPU, ${engine.info?.cpuThreads ?? 'all'} threads`
+          : inWasm ? 'C++ WebAssembly · single-threaded, in a worker' : 'TypeScript · in a worker'} · seed {seed}
+      </span>
       <span>
         σ_loc(S, t) from Dupire’s formula on this surface · log-Euler at {LV_STEPS_PER_YEAR} steps a year (at least {LV_MIN_STEPS}),
         Richardson-extrapolated over a coupled half-step grid · one diffusion for every leg, so it must reprice each at its own
         implied volatility
       </span>
-      {task.error && job && task.resultKey === job.id && <span className="neg">{task.error}</span>}
-      {stale && !busy && <span>Inputs changed since the last local-vol run.</span>}
+      {error && <span className="neg">{error}</span>}
+      {stale && !running && <span>Inputs changed since the last local-vol run.</span>}
+      {tsJob && <TsLocalVolRun job={tsJob} onDone={onTsDone} />}
     </div>
   );
 }
@@ -124,29 +185,36 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
     }
   };
 
+  // A cross-check is compared with the reference only once the Lab's own result belongs to the same inputs; while the
+  // Lab re-prices, its Black-Scholes value is still the previous portfolio's.
+  const current = !!r && task.resultKey === key;
+  const compare = (value: number, se: number) => {
+    if (!current) return { z: null, verdict: { tone: 'muted', text: 'Updating reference…' } as Verdict };
+    const z = se > 0 ? Math.abs(value - ref) / se : 0;
+    return { z, verdict: mcVerdict(z) };
+  };
+
   let engRow: Row | null = null;
   if (eng?.res && eng.key === engKey && r) {
     const { price: value, stdError: se } = eng.res;
-    const z = se > 0 ? Math.abs(value - ref) / se : 0;
     engRow = { id: 'engine', model: `C++ ${eng.res.native ? 'native' : 'WebAssembly'} · ${fmtPaths(eng.res.paths)}`,
                detail: `whole portfolio · ${eng.res.native ? 'CPU multithreaded' : 'single-threaded'}${antithetic ? ' · antithetic' : ''}`,
-               value, se, ms: eng.res.ms, z, verdict: mcVerdict(z), engine: true };
+               value, se, ms: eng.res.ms, ...compare(value, se), engine: true };
   }
 
   // Dupire local volatility: one diffusion for every leg, which must reprice each at its own implied volatility
   const surface = hasVolSurface(market);
   const lvKey = `${legsKey}|${marketKeyOf(market)}|${seed}`;
-  const [lv, setLv] = useState<{ key: string; res: LocalVolResult } | null>(null);
-  const onLocalVol = useCallback((key: string, res: LocalVolResult) => setLv({ key, res }), []);
+  const [lv, setLv] = useState<{ key: string; res: LocalVolRun } | null>(null);
+  const onLocalVol = useCallback((key: string, res: LocalVolRun) => setLv({ key, res }), []);
   let lvRow: Row | null = null;
   if (surface && lv && lv.key === lvKey && r) {
     const { price: value, se } = lv.res;
-    const z = se > 0 ? Math.abs(value - ref) / se : 0;
-    lvRow = { id: 'localvol', model: `Local vol (Dupire) · ${fmtPaths(lv.res.paths)}`,
-              detail: lv.res.extrapolated
-                ? `Richardson · ${lv.res.steps} steps · fine-grid bias ${usdSigned(lv.res.fineBias ?? 0, 2)} · seed ${lv.res.seed}`
+    lvRow = { id: 'localvol', model: `Local vol (Dupire) · ${LV_BACKEND_LABEL[lv.res.backend]} · ${fmtPaths(lv.res.paths)}`,
+              detail: lv.res.fineBias != null
+                ? `Richardson · ${lv.res.steps} steps · fine-grid bias ${usdSigned(lv.res.fineBias, 2)} · seed ${lv.res.seed}`
                 : `exact variance steps (no smile) · ${lv.res.steps} steps · seed ${lv.res.seed}`,
-              value, se, ms: lv.res.ms, z, verdict: mcVerdict(z), engine: true };
+              value, se, ms: lv.res.ms, ...compare(value, se), engine: true };
   }
   const allRows = [...rows, ...(lvRow ? [lvRow] : []), ...(engRow ? [engRow] : [])];
   const head = rows.find(x => x.id === 'mc200k');
@@ -295,13 +363,12 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
                   </tr>
                 </thead>
                 <tbody>
-                  {legs.map((lg, i) => {
-                    const p = r.perLeg[i];
-                    if (!p) return null;
+                  {r.perLeg.map((p, i) => {
+                    // labels come with the result, so a re-pricing never pairs new legs with old numbers
                     const z = p.mcSe > 0 ? Math.abs(p.mc - p.bs) / p.mcSe : 0;
                     return (
-                      <tr key={lg.id}>
-                        <td className="mono">{legLabel(lg)}</td>
+                      <tr key={`${i}-${r.legLabels[i]}`}>
+                        <td className="mono">{r.legLabels[i]}</td>
                         <td className={ui.num}>{p.bs.toFixed(4)}</td>
                         <td className={ui.num}>{p.crr.toFixed(4)}</td>
                         <td className={ui.num}>{signed(p.crr - p.bs, 4)}</td>
@@ -336,7 +403,7 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
 
       {surface && r && (
         <LocalVolCheck legs={legs} market={market} seed={seed + 3} runKey={lvKey} onResult={onLocalVol}
-                       stale={!!lv && lv.key !== lvKey} />
+                       stale={!!lv && lv.key !== lvKey} engine={engine} wasm={wasm} />
       )}
 
       <details className={l.formulas}>

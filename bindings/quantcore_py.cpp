@@ -10,13 +10,68 @@
 #include "quantcore/black_scholes_batch.hpp"
 #include "quantcore/monte_carlo_mt.hpp"
 #include "quantcore/monte_carlo_portfolio.hpp"
+#include "quantcore/local_vol.hpp"
 #ifdef __APPLE__
 #  include "quantcore/monte_carlo_gpu.hpp"
 #endif
 
+#include <cmath>
+#include <string>
+#include <vector>
+
 namespace py = pybind11;
 using namespace pybind11::literals;
 using namespace quantcore;
+
+// A volatility surface from the dashboard's Market JSON:
+//   {"S", "sigma", "r", "q"?, "smile"?: {"rho", "eta", "gamma"}, "smileSpot"?,
+//    "term"?: {"kind": "curve", "ratio", "halfLife"} | {"kind": "fitted", "T": [...], "w": [...]}}
+static VolSurface surface_from(const py::dict& m) {
+    auto has = [&m](const char* key) { return m.contains(key) && !m[key].is_none(); };
+    auto num = [&m, &has](const char* key) {
+        if (!has(key)) throw std::invalid_argument(std::string("market needs ") + key);
+        return m[key].cast<double>();
+    };
+    VolSurface s;
+    s.S = num("S");
+    s.sigma = num("sigma");
+    s.r = num("r");
+    s.q = has("q") ? m["q"].cast<double>() : 0.0;
+    if (has("smile")) {
+        const py::dict sm = m["smile"].cast<py::dict>();
+        s.smile = true;
+        s.rho = sm["rho"].cast<double>();
+        s.eta = sm["eta"].cast<double>();
+        s.gamma = sm["gamma"].cast<double>();
+    }
+    if (has("smileSpot")) s.smile_spot = m["smileSpot"].cast<double>();
+    if (has("term")) {
+        const py::dict t = m["term"].cast<py::dict>();
+        const std::string kind = t["kind"].cast<std::string>();
+        if (kind == "curve") {
+            s.term = TermKind::Curve;
+            s.ratio = t["ratio"].cast<double>();
+            s.half_life = t["halfLife"].cast<double>();
+        } else if (kind == "fitted") {
+            const std::vector<double> T = t["T"].cast<std::vector<double>>(), w = t["w"].cast<std::vector<double>>();
+            if (T.empty() || T.size() != w.size() || T.size() > kMaxTermPillars)
+                throw std::invalid_argument("a fitted term structure needs 1 to 32 pillars of T and w");
+            s.term = TermKind::Fitted;
+            s.n_pillars = static_cast<int>(T.size());
+            std::copy(T.begin(), T.end(), s.pillar_T);
+            std::copy(w.begin(), w.end(), s.pillar_w);
+        } else {
+            throw std::invalid_argument("term kind must be 'curve' or 'fitted'");
+        }
+    }
+    return s;
+}
+
+static py::dict local_vol_dict(const LocalVolResult& res) {
+    return py::dict("price"_a = res.price, "std_error"_a = res.std_error, "paths"_a = res.paths,
+                    "steps"_a = res.steps,
+                    "fine_bias"_a = std::isnan(res.fine_bias) ? py::object(py::none()) : py::object(py::float_(res.fine_bias)));
+}
 
 // ── batch helpers ─────────────────────────────────────────────────────────────
 //
@@ -237,6 +292,40 @@ PYBIND11_MODULE(quantcore, m) {
           py::arg("seed") = 42ULL, py::arg("antithetic") = false,
           "Monte Carlo $ value of a European option portfolio: one Brownian path observed at every leg "
           "expiry, each leg lognormal at its own volatility (weight = signed qty x multiplier).");
+
+    // ── Volatility surface and Dupire local volatility ─────────────────────────
+    m.def("implied_vol",
+          [](const py::dict& market, double K, double T) { return implied_vol(surface_from(market), K, T); },
+          py::arg("market"), py::arg("K"), py::arg("T"),
+          "Implied volatility of strike K at expiry T on the market's SSVI smile and ATM term structure.");
+
+    m.def("local_vol",
+          [](const py::dict& market, double S, double t) { return local_vol(surface_from(market), S, t); },
+          py::arg("market"), py::arg("S"), py::arg("t"),
+          "Dupire local volatility at spot S and time t implied by the market's surface.");
+
+    m.def("mc_local_vol",
+          [](DoubleArray is_call, DoubleArray K, DoubleArray T, DoubleArray weight, const py::dict& market,
+             long long paths, uint64_t seed, double steps_per_year, bool extrapolate, int n_threads) {
+              DoubleArray unused(K.size());
+              std::fill(unused.mutable_data(), unused.mutable_data() + unused.size(), 0.0);
+              const std::vector<PortfolioLeg> legs = portfolio_legs(is_call, K, T, unused, weight);
+              const VolSurface s = surface_from(market);
+              LocalVolResult res;
+              {
+                  py::gil_scoped_release release;
+                  res = n_threads == 0
+                      ? mc_local_vol(legs.data(), legs.size(), s, paths, seed, steps_per_year, extrapolate)
+                      : mc_local_vol_mt(legs.data(), legs.size(), s, paths, seed, steps_per_year, extrapolate, n_threads);
+              }
+              return local_vol_dict(res);
+          },
+          py::arg("is_call"), py::arg("K"), py::arg("T"), py::arg("weight"), py::arg("market"),
+          py::arg("paths") = 1000000LL, py::arg("seed") = 42ULL, py::arg("steps_per_year") = 365.0,
+          py::arg("extrapolate") = true, py::arg("n_threads") = 0,
+          "Monte Carlo $ value of a European portfolio under the market's Dupire local volatility (log-Euler, "
+          "optionally with coupled Richardson extrapolation). n_threads=0 runs the scalar kernel; -1 uses every "
+          "core (seed + t x golden ratio per thread; one thread equals the scalar kernel).");
 
     m.def("mc_portfolio_mt",
           [](DoubleArray is_call, DoubleArray K, DoubleArray T, DoubleArray sigma, DoubleArray weight,

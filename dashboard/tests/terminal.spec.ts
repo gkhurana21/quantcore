@@ -308,7 +308,20 @@ test.describe('QuantCore terminal flows', () => {
     const row = page.getByTestId('lab-row-engine');
     await expect(row).toContainText('C++ WebAssembly · 1M', { timeout: 30_000 });
     await expect(row).toContainText('whole portfolio');
+    await expect(row).toHaveAttribute('data-z', /\d/, { timeout: 30_000 });
     expect(Number(await row.getAttribute('data-z'))).toBeLessThan(4);
+
+    // with a surface, the local-vol check runs the same C++ kernel in WebAssembly
+    await page.getByTestId('smile-Equity index').click();
+    await page.getByTestId('term-Upward').click();
+    await page.getByTestId('lab-row-mc200k').waitFor();
+    await expect(page.getByTestId('lab-localvol-backend')).toContainText('WebAssembly', { timeout: 15_000 });
+    await page.getByTestId('lab-localvol-run').click();
+    const lv = page.getByTestId('lab-row-localvol');
+    await expect(lv).toContainText('Local vol (Dupire) · C++ WebAssembly', { timeout: 60_000 });
+    await expect(lv).toContainText('Richardson');
+    await expect(lv).toHaveAttribute('data-z', /\d/, { timeout: 30_000 });
+    expect(Number(await lv.getAttribute('data-z'))).toBeLessThan(4);
   });
 
   test('16. Local volatility: surface markets simulate Dupire paths, the local skew is steeper, and the Lab reprices the portfolio', async ({ page }) => {
@@ -322,7 +335,8 @@ test.describe('QuantCore terminal flows', () => {
     await page.getByTestId('lab-row-mc200k').waitFor();
     await page.getByTestId('lab-localvol-run').click();
     const row = page.getByTestId('lab-row-localvol');
-    await expect(row).toContainText('Local vol (Dupire) · 100k', { timeout: 60_000 });
+    await expect(row).toContainText('Local vol (Dupire) · C++ native · 1M', { timeout: 60_000 });   // the engine speaks v6
+    await expect(row).toHaveAttribute('data-z', /\d/, { timeout: 30_000 });
     expect(Number(await row.getAttribute('data-z'))).toBeLessThan(4);
 
     await page.getByTestId('tab-mc').click();

@@ -22,7 +22,7 @@ over WebSocket when it runs locally.
 | **C++ Engine** | The C++ core compiled to WebAssembly runs in every browser: build facts, agreement with the TypeScript models and Monte Carlo in a worker. The native engine adds live status, measured round-trip latency, engine-vs-browser agreement and 100k–10M-path Monte Carlo on Metal. Every tile says which engine produced the number and why. |
 
 **How the hosted demo computes.** The public site has no server, so it runs the C++ pricing core itself:
-`core/src/black_scholes.cpp`, `monte_carlo.cpp` and `monte_carlo_portfolio.cpp` compiled with Emscripten into an 18 KB WebAssembly module. The
+`core/src/black_scholes.cpp`, `monte_carlo.cpp`, `monte_carlo_portfolio.cpp` and `local_vol.cpp` compiled with Emscripten into a 48 KB WebAssembly module. The
 Greeks tiles are priced by it (labelled *C++ · WebAssembly*), and its Monte Carlo runs in a Web Worker. Charts,
 stress, VaR and the Pricing Lab use TypeScript implementations of the same models, which the unit tests hold to
 1e-12 of the C++ results. Run the native engine locally and its badge turns *Connected*: the tiles are then priced
@@ -100,7 +100,12 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   47-day SPY iron condor at 48 steps — so the Pricing Lab's local-vol row uses coupled Richardson extrapolation: every
   path also runs on a half-step grid driven by the same Brownian increments, and the estimator 2·fine − coarse cancels
   the O(Δt) error at an unchanged standard error (condor: −$58.6 → −$13.7 mean error over six seeds; 40 vanillas at two
-  steps a week reprice with RMS z 1.05). The row also shows the fine grid's own bias estimate. Without a smile each
+  steps a week reprice with RMS z 1.05). The row also shows the fine grid's own bias estimate. The C++ core carries the
+  same surface, local variance and simulation (`core/src/local_vol.cpp`), stepping blocks of 128 paths through each
+  time step with ziggurat normals; the row runs it on the native engine (multithreaded) or in WebAssembly, and falls
+  back to the TypeScript kernel only when neither is available. On the 47-day SPY iron condor (130 Richardson steps,
+  Apple M3): 1M paths in 396 ms on the native engine's 8 threads (1.65 s on one), 100k paths in 223 ms in WebAssembly
+  under Node — against about 1.45 s for the TypeScript kernel in Chromium. Without a smile each
   step's variance is integrated exactly, so there is no bias at all.
 - **Cox-Ross-Rubinstein** lattice: u = e^(σ√Δt), p = (e^((r−q)Δt) − d)/(u − d), backward induction; the American
   variant takes the larger of continuation and exercise value at every node.
@@ -125,7 +130,8 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
 version 3 adds an optional continuous dividend yield `q` to every pricing message and reports `dividends: true` in
 `info`; version 4 adds an optional `sigma` per portfolio leg, so a volatility smile prices each strike at its own
 volatility, and reports `leg_sigma: true`; version 5 adds `mc_portfolio`, a Monte Carlo of the whole portfolio on the
-CPU, and reports `portfolio_mc: true`.
+CPU, and reports `portfolio_mc: true`; version 6 adds `mc_local_vol`, the portfolio under the Dupire local volatility
+of the market's SSVI surface (sent as the dashboard's market JSON), and reports `local_vol: true`.
 
 | Client → server | Server → client | Notes |
 |---|---|---|
@@ -136,6 +142,7 @@ CPU, and reports `portfolio_mc: true`.
 | `portfolio {id, S, sigma, r, legs[{call, K, T, sigma?}]}` | `portfolio_result {id, legs[…], calc_us}` | v2 — calls and puts priced with one `batch_bs_full` each; v4 per-leg `sigma` |
 | `mc {id, call, S, K, r, sigma, T, paths ≤ 10M, seed}` | `mc_result {id, price, std_error, paths, ms, backend, device}` | v2 — Metal GPU, falling back to multithreaded CPU; runs off the event loop |
 | `mc_portfolio {id, S, r, q, legs[{call, K, T, sigma, weight}], paths ≤ 10M, seed, antithetic}` | `mc_portfolio_result {id, price, std_error, paths, ms, backend, device}` | v5 — every leg on one Brownian path at its own σ; multithreaded CPU |
+| `mc_local_vol {id, market{S, sigma, r, q, smile?, smileSpot?, term?}, legs[{call, K, T, weight}], paths ≤ 10M, seed, steps_per_year, extrapolate}` | `mc_local_vol_result {id, price, std_error, paths, steps, fine_bias, ms, backend, device}` | v6 — Dupire local volatility, log-Euler with coupled Richardson extrapolation; multithreaded CPU |
 
 Errors on v2 messages return `error {id, msg}` and keep the connection open.
 
@@ -176,7 +183,8 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
       -DPython3_EXECUTABLE=$(which python3)
 cmake --build build --parallel
 
-# 2. Run the C++ acceptance gate (BS prices vs Hull, Greeks analytic-vs-FD, MC convergence, dividend yield, portfolio MC)
+# 2. Run the C++ acceptance gate (BS prices vs Hull, Greeks analytic-vs-FD, MC convergence, dividend yield, portfolio MC,
+#    ziggurat normals, local volatility vs Dupire and its Monte Carlo)
 ./build/tests/phase1_validation
 
 # 3. Start the WebSocket engine
@@ -292,7 +300,8 @@ market-data requests at all.
 ## Project layout
 
 ```
-core/          C++17 pricing library — Black-Scholes, Monte Carlo, Greeks;
+core/          C++17 pricing library — Black-Scholes, Greeks, Monte Carlo (one contract, portfolios, local volatility
+               on the SSVI surface, ziggurat normals);
                Metal GPU kernel in core/src/monte_carlo_gpu.mm
 bindings/      pybind11 bindings (GIL released around C++ compute); quantcore_wasm.cpp WebAssembly entry points
 scripts/       build-wasm.sh — C++ core → dashboard/public/wasm (module + manifest)
@@ -313,7 +322,7 @@ dashboard/
   lib/compute/   Web Worker tasks and the worker hook
   workers/       Worker entry point
   tests/         Playwright unit, flow and engine tests
-tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
+tests/         C++ acceptance gate (BS prices, Greeks, MC convergence, portfolio MC, local volatility)
 ```
 
 ## Limitations
@@ -330,7 +339,8 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
   the multithreaded CPU kernel or in WebAssembly.
 - The native engine (Metal GPU, Accelerate SIMD, multithreading) is a local service. In the browser the C++ core runs
   as single-threaded WebAssembly and prices the Greeks tiles, single-contract Monte Carlo and the Pricing Lab's
-  portfolio cross-check; charts, stress, VaR and the Pricing Lab's main table use the TypeScript models.
+  portfolio and local-volatility cross-checks; charts, stress, VaR and the Pricing Lab's main table use the TypeScript
+  models.
 - Instrument prices are indicative snapshots or prices you enter unless live data is on (the local Go proxy, or the
   hosted function once its credentials are set); live data is Alpaca's free IEX stock feed and indicative options feed,
   for analysis rather than execution. Added tickers start at 30% volatility until you set it.

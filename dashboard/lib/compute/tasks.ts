@@ -19,6 +19,7 @@ import { CONTRACT_MULT as M, signedQty } from '../quant/types';
 import type { McVarResult, VolFactor } from '../risk/var';
 import { mcVaR } from '../risk/var';
 import { firstExpiry, netPremium, pnlAtFirstExpiry, portfolioValue } from '../strategy/portfolio';
+import { legLabel } from '../strategy/labels';
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -56,6 +57,7 @@ export interface LabResult {
   perLeg: LabLegRow[];                          // per-share prices, one row per leg
   gross: number;                                // Σ |qty·100·BS| — scale for relative errors
   legMcPaths: number;
+  legLabels: string[];                          // the legs these numbers belong to, e.g. "Buy 10 C 755 · 47d"
 }
 
 const legBs = (l: Leg, m: Market) => portfolioValue([{ ...l, side: 'buy', qty: 1 }], m) / M;
@@ -102,7 +104,7 @@ export function runLab({ legs, market: m, seed, antithetic }: LabRequest): LabRe
   return { bs: { value: bs.value, ms: bs.ms, runs: bs.runs },
            crr: { value: crr.value, ms: crr.ms, runs: crr.runs, steps: CRR_STEPS },
            american: { value: american.value, ms: american.ms, runs: american.runs },
-           mc, crrCurve, perLeg, gross, legMcPaths: LEG_MC_PATHS };
+           mc, crrCurve, perLeg, gross, legMcPaths: LEG_MC_PATHS, legLabels: legs.map(legLabel) };
 }
 
 // ── Monte Carlo visualisation ───────────────────────────────────────────────
@@ -226,10 +228,27 @@ export interface LocalVolRequest { legs: Leg[]; market: Market; seed: number; }
 
 export interface LocalVolResult extends LocalVolMcResult { seed: number; stepsPerYear: number; }
 
+/** Paths when the native C++ engine runs the local-vol check (multithreaded). */
+export const LV_NATIVE_PATHS = 1_000_000;
+/** Local-variance evaluations for one single-threaded WebAssembly run — about a second. */
+export const LV_WASM_WORK = 120_000_000;
+
+/** Steps a year for a local-vol run: daily, and at least LV_MIN_STEPS to the last expiry. */
+export function localVolStepsPerYear(legs: Leg[]): number {
+  const lastT = legs.reduce((a, l) => Math.max(a, l.T), 0);
+  return lastT > 0 ? Math.max(LV_STEPS_PER_YEAR, Math.ceil(LV_MIN_STEPS / lastT)) : LV_STEPS_PER_YEAR;
+}
+
+/** Paths for a WebAssembly run: LV_WASM_WORK evaluations at three a Richardson step, between 50k and 400k. */
+export function localVolWasmPaths(legs: Leg[], stepsPerYear: number): number {
+  const lastT = legs.reduce((a, l) => Math.max(a, l.T), 0);
+  const evalsPerPath = 3 * Math.max(1, Math.ceil(lastT * stepsPerYear));
+  return Math.min(400_000, Math.max(50_000, Math.floor(LV_WASM_WORK / evalsPerPath / 10_000) * 10_000));
+}
+
 /** Local-vol value of the portfolio: log-Euler with coupled Richardson extrapolation (exact without a smile). */
 export function runLocalVol({ legs, market, seed }: LocalVolRequest): LocalVolResult {
-  const lastT = legs.reduce((a, l) => Math.max(a, l.T), 0);
-  const stepsPerYear = lastT > 0 ? Math.max(LV_STEPS_PER_YEAR, Math.ceil(LV_MIN_STEPS / lastT)) : LV_STEPS_PER_YEAR;
+  const stepsPerYear = localVolStepsPerYear(legs);
   return { ...mcLocalVol(legs, market, LV_PATHS, seed, stepsPerYear, true), seed, stepsPerYear };
 }
 

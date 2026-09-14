@@ -54,9 +54,9 @@ async def main():
         pong = await rpc(ws, {"type": "ping", "t_ns": 987654321}, "pong")
         check("ping → pong echo", pong.get("t_ns") == 987654321)
         info = await rpc(ws, {"type": "info"}, "info")
-        check("info (protocol 5, dividends, per-leg sigma, portfolio MC)",
-              info.get("protocol") == 5 and info.get("dividends") is True and info.get("leg_sigma") is True
-              and info.get("portfolio_mc") is True,
+        check("info (protocol 6, dividends, per-leg sigma, portfolio MC, local vol)",
+              info.get("protocol") == 6 and info.get("dividends") is True and info.get("leg_sigma") is True
+              and info.get("portfolio_mc") is True and info.get("local_vol") is True,
               json.dumps(info))
 
         # v2 portfolio (mixed calls/puts, one expired leg)
@@ -155,6 +155,40 @@ async def main():
                                 "legs": [{"call": True, "K": 100.0, "T": 1.0, "sigma": 0.2}]}, "mc_portfolio_result")
         check("mc_portfolio leg without weight → error with id", bad_pf["type"] == "error" and bad_pf.get("id") == 16,
               bad_pf.get("msg", ""))
+
+        # v6 local volatility: the portfolio under the Dupire local vol of the market's SSVI surface
+        lv_market = {"S": 756.48, "sigma": 0.138, "r": 0.045, "q": 0.01,
+                     "smile": {"rho": -0.7, "eta": 1.0, "gamma": 0.45},
+                     "term": {"kind": "curve", "ratio": 0.5, "halfLife": 0.15}}
+        lv_legs = [{"call": False, "K": 715.0, "T": 0.129, "weight": 1000.0},
+                   {"call": False, "K": 735.0, "T": 0.129, "weight": -1000.0},
+                   {"call": True, "K": 775.0, "T": 0.129, "weight": -1000.0},
+                   {"call": True, "K": 795.0, "T": 0.129, "weight": 1000.0},
+                   {"call": True, "K": 760.0, "T": 0.5, "weight": 500.0}]
+        bs_lv = sum(l["weight"] * quantcore.bs_full(0 if l["call"] else 1, 756.48, l["K"], 0.045,
+                                                    quantcore.implied_vol(lv_market, l["K"], l["T"]), l["T"], 0.01)["price"]
+                    for l in lv_legs)
+        lvr = await rpc(ws, {"type": "mc_local_vol", "id": 17, "market": lv_market, "legs": lv_legs,
+                             "paths": 1_000_000, "seed": 5, "steps_per_year": 365, "extrapolate": True},
+                        "mc_local_vol_result")
+        if lvr["type"] == "mc_local_vol_result":
+            zl = abs(lvr["price"] - bs_lv) / lvr["std_error"]
+            check("mc_local_vol (Richardson) within 3 SE of the surface's Black-Scholes value", zl < 3,
+                  f"{lvr['price']:.2f} ± {lvr['std_error']:.2f} vs {bs_lv:.2f}, |z| {zl:.2f}, {lvr['steps']} steps, "
+                  f"fine-grid bias {lvr['fine_bias']:+.2f}, {lvr['ms']:.0f} ms, {lvr['device']}")
+            col = lambda k: [float(l[k]) for l in lv_legs]
+            direct = quantcore.mc_local_vol([1.0 if l["call"] else 0.0 for l in lv_legs], col("K"), col("T"), col("weight"),
+                                            lv_market, 1_000_000, 5, 365.0, True, -1)
+            check("mc_local_vol id echo, paths, and the wire result equals the bindings",
+                  lvr.get("id") == 17 and lvr.get("paths") == 1_000_000 and lvr["price"] == direct["price"]
+                  and lvr["fine_bias"] == direct["fine_bias"])
+        else:
+            check("mc_local_vol", False, lvr.get("msg", ""))
+        bad_lv = await rpc(ws, {"type": "mc_local_vol", "id": 18, "paths": 1000, "seed": 1, "legs": lv_legs,
+                                "market": {**lv_market, "smile": {"rho": -0.7, "eta": -1.0, "gamma": 0.45}}},
+                           "mc_local_vol_result")
+        check("mc_local_vol with an invalid smile → error with id", bad_lv["type"] == "error" and bad_lv.get("id") == 18,
+              bad_lv.get("msg", ""))
 
         # errors keep the connection open
         err = await rpc(ws, {"type": "portfolio", "id": 9, "S": -1, "sigma": 0.2, "r": 0.04, "legs": legs}, "portfolio_result")

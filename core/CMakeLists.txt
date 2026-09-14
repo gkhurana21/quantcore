@@ -4,6 +4,7 @@ set(CORE_SOURCES
     src/black_scholes_batch.cpp
     src/monte_carlo_mt.cpp
     src/monte_carlo_portfolio.cpp
+    src/local_vol.cpp
 )
 
 if(APPLE)

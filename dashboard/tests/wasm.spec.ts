@@ -14,9 +14,11 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { bsGreeks } from '../lib/quant/blackScholes';
-import type { Leg, Market } from '../lib/quant/types';
+import { localVol, mcLocalVol } from '../lib/quant/localVol';
+import { mulberry32 } from '../lib/quant/rng';
+import type { Leg, Market, Smile, TermStructure } from '../lib/quant/types';
 import { CONTRACT_MULT, signedQty } from '../lib/quant/types';
-import { legSigma, SMILE_PRESETS } from '../lib/quant/volSurface';
+import { fittedTerm, legSigma, SMILE_PRESETS, TERM_PRESETS } from '../lib/quant/volSurface';
 import { portfolioValue } from '../lib/strategy/portfolio';
 
 /** SPY iron condor on the 47-day expiry plus a long 6-month call. */
@@ -72,7 +74,8 @@ test.describe('C++ core compiled to WebAssembly', () => {
     expect(bytes.length).toBe(manifest.bytes);
     expect(sha256(bytes)).toBe(manifest.sha256);
     expect(manifest.sources.map(s => s.path)).toEqual(expect.arrayContaining(
-      ['core/src/black_scholes.cpp', 'core/src/monte_carlo.cpp', 'bindings/quantcore_wasm.cpp']));
+      ['core/src/black_scholes.cpp', 'core/src/monte_carlo.cpp', 'core/src/monte_carlo_portfolio.cpp', 'core/src/local_vol.cpp',
+       'core/include/quantcore/ziggurat.hpp', 'bindings/quantcore_wasm.cpp']));
     const stale = manifest.sources.filter(s => sha256(readFileSync(path.join(ROOT, s.path))) !== s.sha256).map(s => s.path);
     expect(stale, 'C++ sources changed without rebuilding the module: run scripts/build-wasm.sh').toEqual([]);
   });
@@ -189,6 +192,87 @@ test.describe('C++ core compiled to WebAssembly', () => {
     expect(w.mcPortfolio([], flat, 1000)).toBeNull();
     expect(w.mcPortfolio([{ ...one, K: 0 }], flat, 1000)).toBeNull();
     expect(w.mcPortfolio(Array.from({ length: 8 }, (_, i) => ({ ...one, id: `c${i}` })), flat, 10_000_000)).toBeNull();
+  });
+
+  test('implied and local volatility match the TypeScript surface across random smiles and term structures', () => {
+    const u = mulberry32(77);
+    const range = (a: number, b: number) => a + (b - a) * u();
+    const days = [7, 30, 91, 365];
+    const bad: string[] = [];
+    let worstImplied = 0, worstLocal = 0, n = 0;
+    for (let i = 0; i < 400; i++) {
+      const rho = range(-0.9, 0.5);
+      const smile: Smile | null = i % 4 === 3 ? null : { rho, eta: range(0.1, 0.95) * (2 / (1 + Math.abs(rho))), gamma: range(0.1, 0.5) };
+      let term: TermStructure | null = null;
+      if (i % 3 === 1) term = { kind: 'curve', ratio: range(0.4, 2.5), halfLife: range(0.02, 1) };
+      if (i % 3 === 2) {
+        const theta: number[] = [];
+        days.forEach((d, j) => theta.push(Math.max(theta[j - 1] ?? 0, range(0.12, 0.3) ** 2 * (d / 365))));
+        term = fittedTerm(days.map(d => d / 365), theta)!.term;
+      }
+      const S = range(50, 1000);
+      const m: Market = { S, sigma: range(0.08, 0.6), r: range(0, 0.06), q: range(0, 0.03), smile, term,
+                          ...(smile && i % 5 === 4 ? { smileSpot: S * range(0.9, 1.1) } : {}) };
+      for (const T of [2 / 365, 0.05, 0.3, 1.2]) for (const x of [0.7, 0.9, 1, 1.15, 1.4]) {
+        const K = S * x;
+        const a = w.impliedVol(m, K, T)!, b = legSigma(m, K, T);
+        const c = w.localVol(m, K, T)!, d = localVol(m, K, T);
+        // relative to the browser's value, floored: a pooled (flat) stretch of a fitted term structure has zero forward
+        // variance, where both kernels return exactly 0 and a plain ratio would be 0/0
+        const ei = Math.abs(a - b) / Math.max(b, 1e-6), el = Math.abs(c - d) / Math.max(d, 1e-6);
+        worstImplied = Math.max(worstImplied, ei);
+        worstLocal = Math.max(worstLocal, el);
+        if (!(ei <= 1e-12)) bad.push(`implied ${a} vs ${b} ${JSON.stringify({ m, K, T })}`);
+        if (!(el <= 1e-12)) bad.push(`local ${c} vs ${d} ${JSON.stringify({ m, K, T })}`);
+        n += 2;
+      }
+    }
+    console.log(`  wasm vs TypeScript surface: ${n} values, worst relative difference implied ${worstImplied.toExponential(1)}, local ${worstLocal.toExponential(1)}`);
+    expect(bad.slice(0, 5)).toEqual([]);
+  });
+
+  test('local-vol Monte Carlo reproduces the native C++ result for the same seed', () => {
+    test.skip(!nativeAvailable(), 'native quantcore module not built');
+    const m: Market = { S: 756.48, sigma: 0.138, r: 0.045, q: 0.01, smile: SMILE_PRESETS['Equity index'], term: TERM_PRESETS.Upward };
+    const legs = condorWithCalendar();
+    for (const extrapolate of [false, true]) {
+      const a = w.mcLocalVol(legs, m, 200_000, 9, 365, extrapolate)!;
+      const ref = native<{ price: number; std_error: number; paths: number; steps: number; fine_bias: number | null }>(
+        'quantcore.mc_local_vol(x["is_call"], x["K"], x["T"], x["weight"], x["market"], x["paths"], x["seed"], x["spy"], x["extrapolate"], 0)',
+        { is_call: legs.map(l => (l.call ? 1 : 0)), K: legs.map(l => l.K), T: legs.map(l => l.T),
+          weight: legs.map(l => signedQty(l) * CONTRACT_MULT), market: m, paths: 200_000, seed: 9, spy: 365, extrapolate });
+      // same mt19937_64 stream, ziggurat tables and algorithm; only exp/log/pow rounding and FMA contraction differ
+      expect(Math.abs(a.price - ref.price)).toBeLessThanOrEqual(1e-12 * Math.abs(ref.price) + 1e-9);
+      expect(Math.abs(a.stdError - ref.std_error)).toBeLessThanOrEqual(1e-12 * ref.std_error + 1e-9);
+      expect(a.steps).toBe(ref.steps);
+      if (extrapolate) expect(Math.abs(a.fineBias! - ref.fine_bias!)).toBeLessThanOrEqual(1e-9 * Math.max(1, Math.abs(ref.fine_bias!)));
+      else expect(a.fineBias).toBeNull();
+    }
+  });
+
+  test('local-vol Monte Carlo agrees with the surface’s Black-Scholes value and the TypeScript kernel; domain checks', () => {
+    test.setTimeout(120_000);
+    const m: Market = { S: 756.48, sigma: 0.138, r: 0.045, q: 0.01, smile: SMILE_PRESETS['Equity index'], term: TERM_PRESETS.Upward };
+    const legs = condorWithCalendar();
+    const ref = portfolioValue(legs, m);
+    const a = w.mcLocalVol(legs, m, 400_000, 21, 365, true)!;
+    const ts = mcLocalVol(legs, m, 60_000, 21, 365, true);
+    console.log(`  surface value ${ref.toFixed(2)} · wasm ${a.price.toFixed(2)} ± ${a.stdError.toFixed(2)} · TypeScript ${ts.price.toFixed(2)} ± ${ts.se.toFixed(2)}`);
+    expect(Math.abs(a.price - ref) / a.stdError).toBeLessThan(4);
+    expect(Math.abs(a.price - ts.price) / Math.hypot(a.stdError, ts.se)).toBeLessThan(4);
+
+    // no smile: exact variance steps, so four steps a year are unbiased
+    const termOnly: Market = { ...m, smile: null };
+    const e = w.mcLocalVol(legs, termOnly, 200_000, 3, 4, true)!;
+    expect(Math.abs(e.price - portfolioValue(legs, termOnly)) / e.stdError).toBeLessThan(4);
+    expect(e.fineBias).toBeNull();
+
+    // domain: no legs, an invalid smile, too much work, more pillars than the module holds
+    expect(w.mcLocalVol([], m, 1000, 1, 365, true)).toBeNull();
+    expect(w.mcLocalVol(legs, { ...m, smile: { rho: -0.5, eta: -1, gamma: 0.4 } }, 1000, 1, 365, true)).toBeNull();
+    expect(w.mcLocalVol(legs, m, 10_000_000, 1, 365, true)).toBeNull();
+    const weekly = fittedTerm(Array.from({ length: 40 }, (_, i) => (i + 1) / 52), Array.from({ length: 40 }, (_, i) => (0.04 * (i + 1)) / 52))!;
+    expect(w.mcLocalVol(legs, { ...m, sigma: weekly.sigma, term: weekly.term }, 1000, 1, 365, true)).toBeNull();
   });
 
   test('inputs outside the model domain are rejected, never priced', () => {

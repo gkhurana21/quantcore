@@ -36,6 +36,12 @@ Server → Client  result:
     {"type":"result","price":...,"delta":...,"gamma":...,"theta":...,
      "vega":...,"pnl":...,"t_ns":<echo>,"calc_us":...}
 
+v6 — mc_local_vol {id, market:{S, sigma, r, q?, smile?, smileSpot?, term?}, legs:[{call, K, T, weight}],
+paths ≤ 10M, seed, steps_per_year?, extrapolate?} → mc_local_vol_result {id, price, std_error, paths,
+steps, fine_bias, ms, backend, device}: the portfolio under the Dupire local volatility of the market's
+SSVI surface (the dashboard's Market JSON), log-Euler with optional coupled Richardson extrapolation,
+multithreaded on the CPU; info reports "local_vol": true.
+
 v5 — mc_portfolio {id, S, r, q?, legs:[{call, K, T, sigma, weight}], paths ≤ 10M, seed,
 antithetic?} → mc_portfolio_result {id, price, std_error, paths, ms, backend, device}: the
 whole portfolio on one Brownian path per draw, each leg at its own volatility (weight = signed
@@ -93,9 +99,10 @@ import quantcore
 
 app = FastAPI()
 
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 MAX_LEGS         = 64
 MAX_PATHS        = 10_000_000
+MAX_LV_WORK      = 4_000_000_000    # paths × coarse steps for one local-vol run
 HAS_METAL        = hasattr(quantcore, "mc_price_gpu")
 CPU_THREADS      = os.cpu_count() or 1
 
@@ -193,6 +200,49 @@ def run_mc_portfolio(legs: list, S: float, r: float, q: float, paths: int, seed:
     return {**res, "ms": ms, "backend": "cpu-mt", "device": f"CPU · {CPU_THREADS} threads"}
 
 
+def _market(raw) -> dict:
+    """The dashboard's Market JSON, validated; the bindings build the C++ surface from it."""
+    if not isinstance(raw, dict):
+        raise ValueError("market must be an object")
+    m = {"S": _number(raw, "S", 0, lo_open=True), "sigma": _number(raw, "sigma", 0, 5, lo_open=True),
+         "r": _number(raw, "r", -1, 1), "q": _number(raw, "q", -1, 1) if "q" in raw else 0.0}
+    smile = raw.get("smile")
+    if smile is not None:
+        if not isinstance(smile, dict):
+            raise ValueError("smile must be an object")
+        m["smile"] = {"rho": _number(smile, "rho", -1, 1), "eta": _number(smile, "eta", 0, 10, lo_open=True),
+                      "gamma": _number(smile, "gamma", 0, 0.5, lo_open=True)}
+    if raw.get("smileSpot") is not None:
+        m["smileSpot"] = _number(raw, "smileSpot", 0, lo_open=True)
+    term = raw.get("term")
+    if term is not None:
+        if not isinstance(term, dict) or term.get("kind") not in ("curve", "fitted"):
+            raise ValueError("term must be a curve or fitted term structure")
+        if term["kind"] == "curve":
+            m["term"] = {"kind": "curve", "ratio": _number(term, "ratio", 0, 100, lo_open=True),
+                         "halfLife": _number(term, "halfLife", 0, 100, lo_open=True)}
+        else:
+            T, w = term.get("T"), term.get("w")
+            if not isinstance(T, list) or not isinstance(w, list) or not 1 <= len(T) <= 32 or len(T) != len(w):
+                raise ValueError("a fitted term structure needs 1 to 32 pillars")
+            m["term"] = {"kind": "fitted", "T": [_number({"v": v}, "v", 0, 30, lo_open=True) for v in T],
+                         "w": [_number({"v": v}, "v", 0, 100, lo_open=True) for v in w]}
+    return m
+
+
+def run_mc_local_vol(legs: list, market: dict, paths: int, seed: int, steps_per_year: float,
+                     extrapolate: bool) -> dict:
+    col = lambda key: np.array([float(l[key]) for l in legs], dtype=np.float64)
+    is_call = np.array([1.0 if l["call"] else 0.0 for l in legs], dtype=np.float64)
+    t0 = time.perf_counter()
+    res = quantcore.mc_local_vol(is_call, col("K"), col("T"), col("weight"), market,
+                                 paths, seed, steps_per_year, extrapolate, -1)
+    ms = (time.perf_counter() - t0) * 1e3
+    if not math.isfinite(res["price"]):
+        raise ValueError("local-vol inputs are outside the engine's domain (surface, grid or legs)")
+    return {**res, "ms": ms, "backend": "cpu-mt", "device": f"CPU · {CPU_THREADS} threads"}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -223,6 +273,40 @@ async def ws_endpoint(ws: WebSocket):
                         "price": float(res["price"]), "std_error": float(res["std_error"]),
                         "paths": int(res["paths"]), "ms": res["ms"],
                         "backend": res["backend"], "device": res["device"]})
+        except Exception as exc:
+            try:
+                await send({"type": "error", "id": req_id, "msg": str(exc)})
+            except Exception:
+                pass
+
+    async def handle_mc_local_vol(msg: dict):
+        req_id = msg.get("id")
+        try:
+            market = _market(msg.get("market"))
+            paths = int(_number(msg, "paths", 2, MAX_PATHS))
+            seed  = int(_number(msg, "seed", 0, 2**63 - 1))
+            steps_per_year = _number(msg, "steps_per_year", 1, 100_000) if "steps_per_year" in msg else 365.0
+            extrapolate = bool(msg.get("extrapolate", True))
+            raw_legs = msg.get("legs")
+            if not isinstance(raw_legs, list) or not raw_legs:
+                raise ValueError("legs must be a non-empty list")
+            if len(raw_legs) > MAX_LEGS:
+                raise ValueError(f"at most {MAX_LEGS} legs")
+            legs = [{"call": bool(l.get("call", True)),
+                     "K": _number(l, "K", 0, lo_open=True),
+                     "T": _number(l, "T", None, 30),
+                     "weight": _number(l, "weight", -1e9, 1e9)} for l in raw_legs]
+            steps = max(0.0, max(l["T"] for l in legs)) * steps_per_year + len(legs)
+            evals = paths * steps * (3 if extrapolate and "smile" in market else 1)
+            if evals > MAX_LV_WORK:
+                raise ValueError("paths × time steps exceed the engine's limit for one local-vol run")
+            res = _finite(await asyncio.to_thread(run_mc_local_vol, legs, market, paths, seed, steps_per_year, extrapolate))
+            fine_bias = res.get("fine_bias")
+            await send({"type": "mc_local_vol_result", "id": req_id,
+                        "price": float(res["price"]), "std_error": float(res["std_error"]),
+                        "paths": int(res["paths"]), "steps": int(res["steps"]),
+                        "fine_bias": None if fine_bias is None else float(fine_bias),
+                        "ms": res["ms"], "backend": res["backend"], "device": res["device"]})
         except Exception as exc:
             try:
                 await send({"type": "error", "id": req_id, "msg": str(exc)})
@@ -323,7 +407,7 @@ async def ws_endpoint(ws: WebSocket):
                 await send({"type": "info", "protocol": PROTOCOL_VERSION,
                             "metal": HAS_METAL, "device": gpu_device(),
                             "cpu_threads": CPU_THREADS, "dividends": True, "leg_sigma": True,
-                            "portfolio_mc": True})
+                            "portfolio_mc": True, "local_vol": True})
 
             # ── v2: portfolio ──────────────────────────────────────────────
             elif msg["type"] == "portfolio":
@@ -359,6 +443,12 @@ async def ws_endpoint(ws: WebSocket):
             # ── v5: portfolio Monte Carlo (off the event loop) ─────────────
             elif msg["type"] == "mc_portfolio":
                 task = asyncio.create_task(handle_mc_portfolio(msg))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+
+            # ── v6: local-volatility Monte Carlo (off the event loop) ───────
+            elif msg["type"] == "mc_local_vol":
+                task = asyncio.create_task(handle_mc_local_vol(msg))
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
 

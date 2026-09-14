@@ -13,7 +13,12 @@
 #include "quantcore/monte_carlo.hpp"
 #include "quantcore/monte_carlo_mt.hpp"
 #include "quantcore/monte_carlo_portfolio.hpp"
+#include "quantcore/local_vol.hpp"
+#include "quantcore/ziggurat.hpp"
 
+#include <algorithm>
+#include <random>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
@@ -328,6 +333,182 @@ static void section_portfolio_mc() {
     printf("\n  %-22s  %s\n", "Portfolio MC overall:", all_ok ? "ALL PASS" : "FAIL");
 }
 
+// ── Section 6: Local volatility ──────────────────────────────────────────────
+//
+// The SSVI surface (equity-index smile × upward ATM term structure, as in the dashboard presets) and the
+// Dupire local volatility it implies. Local vol is checked against Dupire's formula evaluated by finite
+// differences of the surface's own call prices; the local-vol Monte Carlo must reprice the portfolio at each
+// leg's implied volatility.
+
+static double surface_value(const PortfolioLeg* legs, std::size_t n, const VolSurface& s) {
+    double v = 0.0;
+    for (std::size_t j = 0; j < n; ++j)
+        v += legs[j].weight * bsm_price(legs[j].type, s.S, legs[j].K, s.r, implied_vol(s, legs[j].K, legs[j].T), legs[j].T, s.q);
+    return v;
+}
+
+static void section_local_vol() {
+    banner("6. LOCAL VOLATILITY  (SSVI smile x ATM term structure -> Dupire)");
+
+    bool all_ok = true;
+
+    // The simulation's normal variates: 128-layer ziggurat (quantcore/ziggurat.hpp). Bounds fixed in advance:
+    // 4 standard errors for the moments and tail frequencies, and 1.95/√N (Kolmogorov 99.9%) for the CDF gap.
+    {
+        const long long N = 20'000'000;
+        std::mt19937_64 rng(2024);
+        const double R = 3.442619855899;
+        const int G = 81;
+        long long below[81] = {};
+        double m1 = 0.0, m2 = 0.0;
+        long long beyond2 = 0, beyondR = 0;
+        using clk = std::chrono::steady_clock;
+        auto t0 = clk::now();
+        for (long long i = 0; i < N; ++i) {
+            const double z = normal_ziggurat(rng);
+            m1 += z;
+            m2 += z * z;
+            beyond2 += std::fabs(z) > 2.0;
+            beyondR += std::fabs(z) > R;
+            const int g = static_cast<int>(std::floor((z + 4.0) * 10.0)) + 1;   // grid x_g = −4 + g/10
+            if (g <= 0) ++below[0]; else if (g < G) ++below[g];
+        }
+        const double ns = std::chrono::duration<double, std::nano>(clk::now() - t0).count() / static_cast<double>(N);
+        std::mt19937_64 rng2(2024);
+        std::normal_distribution<double> nd(0.0, 1.0);
+        t0 = clk::now();
+        double sink = 0.0;
+        for (long long i = 0; i < N; ++i) sink += nd(rng2);
+        const double ns_std = std::chrono::duration<double, std::nano>(clk::now() - t0).count() / static_cast<double>(N);
+        const double n = static_cast<double>(N);
+        const double mean = m1 / n, var = m2 / n - mean * mean;
+        auto Phi = [](double x) { return 0.5 * std::erfc(-x / std::sqrt(2.0)); };
+        const double p2 = 2.0 * (1.0 - Phi(2.0)), pR = 2.0 * (1.0 - Phi(R));
+        double gap = 0.0;
+        long long cum = 0;
+        for (int g = 0; g < G; ++g) {
+            cum += below[g];
+            gap = std::max(gap, std::fabs(static_cast<double>(cum) / n - Phi(-4.0 + g / 10.0)));
+        }
+        const bool zig_ok = std::fabs(mean) < 4.0 / std::sqrt(n) && std::fabs(var - 1.0) < 4.0 * std::sqrt(2.0 / n) &&
+                            std::fabs(beyond2 / n - p2) < 4.0 * std::sqrt(p2 * (1 - p2) / n) &&
+                            std::fabs(beyondR / n - pR) < 4.0 * std::sqrt(pR * (1 - pR) / n) && gap < 1.95 / std::sqrt(n);
+        all_ok = all_ok && zig_ok;
+        printf("  ziggurat normals, 20M draws: mean %+.1e · var %.5f · P(|Z|>2) %.5f vs %.5f · P(|Z|>R) %.2e vs %.2e · CDF gap %.1e\n",
+               mean, var, beyond2 / n, p2, beyondR / n, pR, gap);
+        printf("    %.1f ns a draw vs %.1f ns for std::normal_distribution (sink %.1f)  %s\n",
+               ns, ns_std, sink, zig_ok ? "OK" : "*** FAIL ***");
+    }
+
+    VolSurface s;
+    s.S = 756.48; s.r = 0.045; s.q = 0.01; s.sigma = 0.138;
+    s.smile = true; s.rho = -0.7; s.eta = 1.0; s.gamma = 0.45;
+    s.term = TermKind::Curve; s.ratio = 0.5; s.half_life = 0.15;
+
+    // σ is the 30-day ATM-forward implied volatility
+    const double T30 = 30.0 / 365.0, F30 = s.S * std::exp((s.r - s.q) * T30);
+    const double iv30 = implied_vol(s, F30, T30);
+    const bool atm_ok = std::fabs(iv30 - s.sigma) < 1e-12;
+    all_ok = all_ok && atm_ok;
+    printf("  30-day ATM-forward implied vol %.15f vs sigma %.3f  %s\n", iv30, s.sigma, atm_ok ? "OK" : "*** FAIL ***");
+
+    // Dupire from call prices: σ² = (∂C/∂T + (r − q)·K·∂C/∂K + q·C) / (½·K²·∂²C/∂K²), Richardson-extrapolated
+    // central differences with strike steps scaled to K·σ·√T
+    double worst = 0.0;
+    for (double T : { 0.1, 0.5, 1.5 }) {
+        const double F = s.S * std::exp((s.r - s.q) * T);
+        const double sd = implied_vol(s, F, T) * std::sqrt(T);
+        for (double x : { -1.0, -0.5, 0.0, 0.5, 1.0 }) {
+            const double K = F * std::exp(x * sd);
+            auto C = [&s](double k, double t) { return bsm_price(OptionType::Call, s.S, k, s.r, implied_vol(s, k, t), t, s.q); };
+            auto rich = [](auto f, double h) { return (4.0 * f(h / 2) - f(h)) / 3.0; };
+            const double width = K * implied_vol(s, K, T) * std::sqrt(T), hK = 1e-3 * width, hT = 1e-3 * T;
+            const double dT  = rich([&](double h) { return (C(K, T + h) - C(K, T - h)) / (2 * h); }, hT);
+            const double dK  = rich([&](double h) { return (C(K + h, T) - C(K - h, T)) / (2 * h); }, hK);
+            const double dKK = rich([&](double h) { return (C(K + h, T) - 2 * C(K, T) + C(K - h, T)) / (h * h); }, 20 * hK);
+            const double dupire = (dT + (s.r - s.q) * K * dK + s.q * C(K, T)) / (0.5 * K * K * dKK);
+            const double lv = local_vol(s, K, T);
+            worst = std::max(worst, std::fabs(lv * lv - dupire) / dupire);
+        }
+    }
+    const bool dupire_ok = worst < 1e-4;
+    all_ok = all_ok && dupire_ok;
+    printf("  local vol vs Dupire from call prices: worst relative error %.2e over 15 strikes x expiries  %s\n",
+           worst, dupire_ok ? "OK" : "*** FAIL ***");
+
+    // no smile: local vol depends on time only and each step's variance is integrated exactly
+    VolSurface term_only = s;
+    term_only.smile = false;
+    const PortfolioLeg spread[] = {
+        { OptionType::Call, 780.0, 0.1, 0.0, 100.0 },
+        { OptionType::Put,  720.0, 0.6, 0.0, 100.0 },
+        { OptionType::Call, 760.0, 1.7, 0.0, 100.0 },
+    };
+    const double ref_t = surface_value(spread, 3, term_only);
+    const LocalVolResult ex = mc_local_vol(spread, 3, term_only, 400'000, 11, 4.0, false);
+    const double zex = std::fabs(ex.price - ref_t) / ex.std_error;
+    const bool exact_ok = zex < 3.0 && std::isnan(ex.fine_bias);
+    all_ok = all_ok && exact_ok;
+    printf("  term structure only, 4 steps a year: %.4f ± %.4f vs %.4f (|z| %.2f)  %s\n",
+           ex.price, ex.std_error, ref_t, zex, exact_ok ? "OK" : "*** FAIL ***");
+
+    // smile + term: SPY iron condor at 47 days plus a 6-month call — plain log-Euler against coupled Richardson
+    const PortfolioLeg book[] = {
+        { OptionType::Put,  715.0, 0.129, 0.0, +1000.0 },
+        { OptionType::Put,  735.0, 0.129, 0.0, -1000.0 },
+        { OptionType::Call, 775.0, 0.129, 0.0, -1000.0 },
+        { OptionType::Call, 795.0, 0.129, 0.0, +1000.0 },
+        { OptionType::Call, 760.0, 0.500, 0.0,  +500.0 },
+    };
+    const std::size_t nb = sizeof(book) / sizeof(book[0]);
+    const double ref = surface_value(book, nb, s);
+    printf("  surface value of the book (Black-Scholes at each leg's implied vol): %.4f\n", ref);
+    using clock = std::chrono::steady_clock;
+    auto t0 = clock::now();
+    const LocalVolResult eu = mc_local_vol(book, nb, s, 400'000, 7, 365.0, false);
+    const double ms_eu = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+    t0 = clock::now();
+    const LocalVolResult ri = mc_local_vol(book, nb, s, 400'000, 7, 365.0, true);
+    const double ms_ri = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+    const double zeu = (eu.price - ref) / eu.std_error, zri = (ri.price - ref) / ri.std_error;
+    const bool rich_ok = std::fabs(zri) < 3.0 && ri.steps == 2 * eu.steps;
+    all_ok = all_ok && rich_ok;
+    printf("  log-Euler  %lld steps: %.4f ± %.4f (z %+.2f) · %.0f ms\n", eu.steps, eu.price, eu.std_error, zeu, ms_eu);
+    printf("  Richardson %lld steps: %.4f ± %.4f (z %+.2f) · fine-grid bias estimate %+.4f · %.0f ms  %s\n",
+           ri.steps, ri.price, ri.std_error, zri, ri.fine_bias, ms_ri, rich_ok ? "OK" : "*** FAIL ***");
+
+    // multithreaded: one thread reproduces the scalar kernel exactly
+    const LocalVolResult one = mc_local_vol(book, nb, s, 50'000, 3, 365.0, true);
+    const LocalVolResult mt1 = mc_local_vol_mt(book, nb, s, 50'000, 3, 365.0, true, 1);
+    t0 = clock::now();
+    const LocalVolResult mt = mc_local_vol_mt(book, nb, s, 2'000'000, 3, 365.0, true, -1);
+    const double ms_mt = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+    const bool same = one.price == mt1.price && one.std_error == mt1.std_error && one.fine_bias == mt1.fine_bias;
+    const double zmt = (mt.price - ref) / mt.std_error;
+    const bool mt_ok = same && std::fabs(zmt) < 3.0;
+    all_ok = all_ok && mt_ok;
+    printf("  multithreaded: one thread %s the scalar kernel · 2M Richardson paths %.4f ± %.4f (z %+.2f) in %.0f ms  %s\n",
+           same ? "reproduces" : "DIFFERS FROM", mt.price, mt.std_error, zmt, ms_mt, mt_ok ? "OK" : "*** FAIL ***");
+
+    // a flat surface is Black-Scholes; invalid inputs are rejected
+    VolSurface flat;
+    flat.S = 42.0; flat.r = 0.10; flat.sigma = 0.2;
+    const PortfolioLeg hull[] = { { OptionType::Call, 40.0, 0.5, 0.0, 1.0 } };
+    const LocalVolResult fl = mc_local_vol(hull, 1, flat, 400'000, 5, 12.0, true);
+    const double bs_hull = bsm_price(OptionType::Call, 42.0, 40.0, 0.10, 0.2, 0.5, 0.0);
+    const double zfl = std::fabs(fl.price - bs_hull) / fl.std_error;
+    VolSurface bad = s;
+    bad.eta = -1.0;
+    const bool flat_ok = zfl < 3.0 && local_vol(flat, 30.0, 0.3) == 0.2 && implied_vol(flat, 50.0, 1.0) == 0.2 &&
+                         std::isnan(mc_local_vol(book, nb, bad, 1000, 1, 365.0, true).price) &&
+                         std::isnan(mc_local_vol(book, nb, s, 1000, 1, 1e7, false).price);
+    all_ok = all_ok && flat_ok;
+    printf("  flat surface: Hull call %.4f ± %.4f vs %.4f (|z| %.2f) · invalid surface and oversized grid → NaN  %s\n",
+           fl.price, fl.std_error, bs_hull, zfl, flat_ok ? "OK" : "*** FAIL ***");
+
+    printf("\n  %-22s  %s\n", "Local volatility:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -340,6 +521,7 @@ int main() {
     section_mc_convergence();
     section_dividend_yield();
     section_portfolio_mc();
+    section_local_vol();
 
     banner("End of Phase 1 report");
     return 0;
