@@ -73,6 +73,10 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   calendar monotonicity numerically. Each leg is priced at its strike's volatility. Scenarios — payoff chart, stress,
   VaR, P&L surface — are sticky-strike, and vol shocks move the ATM level. Flat is the default and prices exactly as
   a single σ.
+- **Smile calibration**: with live data, *Fit to chain* fits SSVI to one expiry's out-of-the-money quotes (puts below
+  the forward, calls above) by least squares in implied volatility — a bounded Nelder–Mead search over θ, ρ and φ,
+  multi-start, inside the same arbitrage-free region with γ = ½ — then shows the market IVs against the fitted curve,
+  the RMSE in vol points, and whether the fit sits on the region's boundary.
 - **Cox-Ross-Rubinstein** lattice: u = e^(σ√Δt), p = (e^((r−q)Δt) − d)/(u − d), backward induction; the American
   variant takes the larger of continuation and exercise value at every node.
 - **Implied volatility**: Newton-Raphson on vega inside a shrinking bisection bracket; no solution is reported for
@@ -205,6 +209,8 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
 - `tests/alpaca.spec.ts` — the hosted market-data function against a fake Alpaca: the Go proxy's response shapes,
   validation, errors, caching, rate limiting, and that no order, position or account endpoint is reachable.
   `tests/alpaca.live.spec.ts` (opt-in, `ALPACA_LIVE=1`) checks it against the running Go proxy with real data.
+- `tests/calibrate.spec.ts` — smile calibration: exact recovery of known smiles, fit error matching quote noise, the
+  arbitrage-free boundary, what γ changes, and quote selection.
 - `tests/volSurface.spec.ts` — the SSVI smile: flat markets unchanged, ATM volatility equals σ, the arbitrage-free
   region (Durrleman's condition, butterfly prices and calendar spreads on dense grids, plus parameters outside the
   region that do fail), analytic derivatives, skew direction and sticky-strike scenarios.
@@ -269,8 +275,8 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
 
 ## Limitations
 
-- The volatility smile is parametric (one SSVI shape across maturities, flat at-the-money term structure) and is not
-  calibrated to market quotes. The Monte Carlo view simulates GBM, so with a smile its paths use one volatility — the
+- The volatility smile is parametric: one SSVI shape across maturities with a flat at-the-money term structure. With
+  live data it can be fitted to one expiry at a time; other maturities reuse that ATM volatility and shape. The Monte Carlo view simulates GBM, so with a smile its paths use one volatility — the
   leg's own for a single leg, at-the-money for a portfolio.
 - American early exercise is priced only by the CRR lattice in the Pricing Models Lab; Greeks, charts, stress and VaR treat options as European.
 - The native Monte Carlo kernel prices one European contract per run.

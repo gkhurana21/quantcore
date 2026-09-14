@@ -4,6 +4,8 @@ import { useState } from 'react';
 import type { Dispatch } from 'react';
 import { INSTRUMENTS, mkCustomInstrument } from '@/lib/market/instruments';
 import type { Market, Smile } from '@/lib/quant/types';
+import type { Calibration } from '@/lib/quant/calibrate';
+import { calibrateSmile, otmQuotes, yearsToExpiry } from '@/lib/quant/calibrate';
 import type { SmilePreset } from '@/lib/quant/volSurface';
 import { clampSmile, SMILE_PRESETS } from '@/lib/quant/volSurface';
 import { signedPct } from '@/lib/format';
@@ -64,6 +66,30 @@ export function MarketInputs({ state, dispatch, live }: {
     else if (c === 'Custom') setSmile(smile ?? { rho: -0.5, eta: 1, gamma: 0.45 });
     else setSmile(SMILE_PRESETS[c]);
   };
+
+  // ── fit the smile to the loaded option chain (live data only) ───────────────
+  const [fit, setFit] = useState<(Calibration & { sym: string; expiry: string }) | null>(null);
+  const [fitMsg, setFitMsg] = useState('');
+  const canFit = live.mode === 'live' && !!live.expiry && live.chain.length > 0;
+  const fitSigma = (c: Calibration) => Math.min(1.5, Math.max(0.01, c.sigma));
+  const runFit = () => {
+    const T = yearsToExpiry(live.expiry);
+    const quotes = otmQuotes(live.chain, m.S * Math.exp((m.r - m.q) * T), live.atmIv);
+    // γ = ½ gives the arbitrage-free region the most reach for short-dated, steep smiles
+    const cal = calibrateSmile(quotes, m.S, m.r, m.q, T, 0.5);
+    if (!cal) {
+      setFit(null);
+      setFitMsg(`${quotes.length} out-of-the-money strikes on ${live.expiry} have a market IV — at least 5 are needed to fit.`);
+      return;
+    }
+    setFitMsg('');
+    setCustomSmile(true);
+    setFit({ ...cal, sym: inst.sym, expiry: live.expiry });
+    set({ sigma: fitSigma(cal), smile: cal.smile });   // unrounded: the sliders display two decimals
+    dispatch({ type: 'setExpiry', T });                  // re-enter premiums at the fitted vols, as picking an expiry does
+  };
+  const fitShown = fit && smile && inst.sym === fit.sym && live.expiry === fit.expiry && m.sigma === fitSigma(fit) &&
+    smile.rho === fit.smile.rho && smile.eta === fit.smile.eta && smile.gamma === fit.smile.gamma ? fit : null;
 
   return (
     <div>
@@ -160,7 +186,20 @@ export function MarketInputs({ state, dispatch, live }: {
                          tip="How fast volatility rises away from the money. Capped at 2 / (1 + |ρ|), the arbitrage-free limit." />
           </div>
         )}
-        <SmileChart market={m} legs={state.legs} />
+        <SmileChart market={m} legs={state.legs} quotes={fitShown?.points} />
+        {canFit && (
+          <div className={b.fitRow}>
+            <Button size="sm" onClick={runFit} data-testid="smile-fit">Fit to {inst.sym} {live.expiry} chain</Button>
+            {fitShown && (
+              <span className={b.subtle} data-testid="smile-fit-stats" data-rmse={fitShown.rmseVolPts} data-n={fitShown.points.length}
+                    title="Root-mean-square gap between the fitted smile and the market implied vols of out-of-the-money quotes">
+                {fitShown.points.length} quotes · RMSE {fitShown.rmseVolPts.toFixed(2)} vol pts
+                {fitShown.atLimit ? ' · at the arbitrage-free limit' : ''}
+              </span>
+            )}
+          </div>
+        )}
+        {fitMsg && <p className={b.searchMsg} role="status" data-testid="smile-fit-msg">{fitMsg}</p>}
       </div>
 
       <div className={b.marketFoot}>

@@ -27,6 +27,7 @@
 .smileChart { display: block; width: 100%; height: auto; }
 .smileTick { font-family: var(--mono); font-size: 9px; fill: var(--ink-3); }
 .smileCap { margin-top: 2px; font-size: 11px; color: var(--ink-3); }
+.fitRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .marketFoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
 
 /* ── presets ───────────────────────────────────────────────────────── */
