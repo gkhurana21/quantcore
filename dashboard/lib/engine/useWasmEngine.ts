@@ -8,6 +8,7 @@
 // simulations never block the page.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Leg, Market } from '../quant/types';
 import type { EngineMcRequest } from './useEngine';
 import type { QuantcoreWasm, WasmManifest } from './wasm';
 import { loadQuantcore, WASM_MANIFEST_PATH, WASM_PATH } from './wasm';
@@ -23,9 +24,11 @@ export interface WasmEngine {
   loadMs: number | null;
   error: string | null;
   runMc: (req: EngineMcRequest) => Promise<WasmMcRun>;
+  /** The whole portfolio by Monte Carlo in the worker, each leg at its smile volatility ($ value). */
+  runPortfolioMc: (legs: Leg[], market: Market, paths: number, seed: number, antithetic: boolean) => Promise<WasmMcRun>;
 }
 
-type WasmState = Omit<WasmEngine, 'runMc'>;
+type WasmState = Omit<WasmEngine, 'runMc' | 'runPortfolioMc'>;
 
 let shared: Promise<{ module: QuantcoreWasm; loadMs: number }> | null = null;
 
@@ -71,7 +74,7 @@ export function useWasmEngine(): WasmEngine {
     };
   }, []);
 
-  const runMc = useCallback((req: EngineMcRequest) => new Promise<WasmMcRun>((resolve, reject) => {
+  const call = useCallback((kind: 'mc' | 'portfolio', req: unknown) => new Promise<WasmMcRun>((resolve, reject) => {
     const pending = pendingRef.current;
     let w = workerRef.current;
     if (!w) {
@@ -99,8 +102,12 @@ export function useWasmEngine(): WasmEngine {
     }
     const id = ++seqRef.current;
     pending.set(id, { resolve, reject });
-    w.postMessage({ id, url: new URL(WASM_PATH, window.location.href).href, req });
+    w.postMessage({ id, url: new URL(WASM_PATH, window.location.href).href, kind, req });
   }), []);
 
-  return { ...state, runMc };
+  const runMc = useCallback((req: EngineMcRequest) => call('mc', req), [call]);
+  const runPortfolioMc = useCallback((legs: Leg[], market: Market, paths: number, seed: number, antithetic: boolean) =>
+    call('portfolio', { legs, market, paths, seed, antithetic }), [call]);
+
+  return { ...state, runMc, runPortfolioMc };
 }

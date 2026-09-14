@@ -9,6 +9,7 @@
 #include "quantcore/monte_carlo.hpp"
 #include "quantcore/black_scholes_batch.hpp"
 #include "quantcore/monte_carlo_mt.hpp"
+#include "quantcore/monte_carlo_portfolio.hpp"
 #ifdef __APPLE__
 #  include "quantcore/monte_carlo_gpu.hpp"
 #endif
@@ -42,6 +43,23 @@ static DoubleArray dividend_yields(const py::object& q_obj, py::ssize_t n) {
         throw std::invalid_argument("q must be None, a scalar, or a 1-D array the same length as S");
     }
     return out;
+}
+
+// Portfolio legs from parallel arrays (is_call as 0/1), validated for equal length.
+static std::vector<PortfolioLeg> portfolio_legs(DoubleArray is_call, DoubleArray K, DoubleArray T,
+                                                DoubleArray sigma, DoubleArray weight) {
+    const py::ssize_t n = K.size();
+    if (is_call.size() != n || T.size() != n || sigma.size() != n || weight.size() != n)
+        throw std::invalid_argument("is_call, K, T, sigma and weight must have the same length");
+    if (n > static_cast<py::ssize_t>(kPortfolioMaxLegs))
+        throw std::invalid_argument("at most 64 legs per portfolio");
+    std::vector<PortfolioLeg> legs(static_cast<std::size_t>(n));
+    for (py::ssize_t i = 0; i < n; ++i) {
+        legs[static_cast<std::size_t>(i)] = PortfolioLeg{
+            is_call.data()[i] != 0.0 ? OptionType::Call : OptionType::Put,
+            K.data()[i], T.data()[i], sigma.data()[i], weight.data()[i]};
+    }
+    return legs;
 }
 
 static py::array_t<double>
@@ -201,6 +219,41 @@ PYBIND11_MODULE(quantcore, m) {
           py::arg("q") = 0.0,
           "Multithreaded GBM MC (vvexp SIMD + std::thread). "
           "n_threads=-1 uses hardware_concurrency.");
+
+    // ── Portfolio MC: every leg on one Brownian path, each at its own volatility ──
+    m.def("mc_portfolio",
+          [](DoubleArray is_call, DoubleArray K, DoubleArray T, DoubleArray sigma, DoubleArray weight,
+             double S, double r, double q, long long paths, uint64_t seed, bool antithetic) {
+              const std::vector<PortfolioLeg> legs = portfolio_legs(is_call, K, T, sigma, weight);
+              MCResult res;
+              {
+                  py::gil_scoped_release release;
+                  res = mc_portfolio(legs.data(), legs.size(), S, r, q, paths, seed, antithetic);
+              }
+              return py::dict("price"_a = res.price, "std_error"_a = res.std_error, "paths"_a = res.paths);
+          },
+          py::arg("is_call"), py::arg("K"), py::arg("T"), py::arg("sigma"), py::arg("weight"),
+          py::arg("S"), py::arg("r"), py::arg("q") = 0.0, py::arg("paths") = 1000000LL,
+          py::arg("seed") = 42ULL, py::arg("antithetic") = false,
+          "Monte Carlo $ value of a European option portfolio: one Brownian path observed at every leg "
+          "expiry, each leg lognormal at its own volatility (weight = signed qty x multiplier).");
+
+    m.def("mc_portfolio_mt",
+          [](DoubleArray is_call, DoubleArray K, DoubleArray T, DoubleArray sigma, DoubleArray weight,
+             double S, double r, double q, long long paths, uint64_t seed, bool antithetic, int n_threads) {
+              const std::vector<PortfolioLeg> legs = portfolio_legs(is_call, K, T, sigma, weight);
+              MCResult res;
+              {
+                  py::gil_scoped_release release;
+                  res = mc_portfolio_mt(legs.data(), legs.size(), S, r, q, paths, seed, antithetic, n_threads);
+              }
+              return py::dict("price"_a = res.price, "std_error"_a = res.std_error, "paths"_a = res.paths);
+          },
+          py::arg("is_call"), py::arg("K"), py::arg("T"), py::arg("sigma"), py::arg("weight"),
+          py::arg("S"), py::arg("r"), py::arg("q") = 0.0, py::arg("paths") = 1000000LL,
+          py::arg("seed") = 42ULL, py::arg("antithetic") = false, py::arg("n_threads") = -1,
+          "mc_portfolio split across std::threads (seed + t x golden ratio per thread); "
+          "equals mc_portfolio exactly with n_threads=1.");
 
 #ifdef __APPLE__
     // ── Phase 6: Apple Metal GPU MC ──────────────────────────────────────────

@@ -14,6 +14,18 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { bsGreeks } from '../lib/quant/blackScholes';
+import type { Leg, Market } from '../lib/quant/types';
+import { CONTRACT_MULT, signedQty } from '../lib/quant/types';
+import { legSigma, SMILE_PRESETS } from '../lib/quant/volSurface';
+import { portfolioValue } from '../lib/strategy/portfolio';
+
+/** SPY iron condor on the 47-day expiry plus a long 6-month call. */
+function condorWithCalendar(): Leg[] {
+  const leg = (id: string, call: boolean, side: 'buy' | 'sell', K: number, T = 0.129, qty = 10): Leg =>
+    ({ id, call, side, qty, K, T, premium: 0 });
+  return [leg('p1', false, 'buy', 715), leg('p2', false, 'sell', 735), leg('c1', true, 'sell', 775),
+          leg('c2', true, 'buy', 795), leg('cal', true, 'buy', 760, 0.5, 5)];
+}
 import type { QuantcoreWasm, WasmManifest } from '../lib/engine/wasm';
 import { instantiateQuantcore, MAX_WASM_PATHS, WASM_ABI } from '../lib/engine/wasm';
 
@@ -138,6 +150,45 @@ test.describe('C++ core compiled to WebAssembly', () => {
     expect(c.price).not.toBe(a.price);
     const bs = bsGreeks(true, 756.48, 755, 0.129, 0.138, 0.045, 0).price;
     for (const r of [a, c]) expect(Math.abs(r.price - bs) / r.stdError).toBeLessThan(4);
+  });
+
+  test('portfolio Monte Carlo reproduces the native C++ result for the same seed', () => {
+    test.skip(!nativeAvailable(), 'native quantcore module not built');
+    const m: Market = { S: 756.48, sigma: 0.138, r: 0.045, q: 0.01, smile: SMILE_PRESETS['Equity index'] };
+    const legs = condorWithCalendar();
+    const sigma = legs.map(l => legSigma(m, l.K, l.T));
+    for (const antithetic of [false, true]) {
+      const a = w.mcPortfolio(legs, m, 400_000, 11, antithetic)!;
+      const ref = native<{ price: number; std_error: number; paths: number }>(
+        'quantcore.mc_portfolio(x["is_call"], x["K"], x["T"], x["sigma"], x["weight"], x["S"], x["r"], x["q"], x["paths"], x["seed"], x["antithetic"])',
+        { is_call: legs.map(l => (l.call ? 1 : 0)), K: legs.map(l => l.K), T: legs.map(l => l.T), sigma,
+          weight: legs.map(l => signedQty(l) * CONTRACT_MULT), S: m.S, r: m.r, q: m.q, paths: 400_000, seed: 11, antithetic });
+      // same mt19937_64 stream and algorithm; only the C library's exp rounding may differ
+      expect(Math.abs(a.price - ref.price)).toBeLessThanOrEqual(1e-12 * Math.abs(ref.price) + 1e-9);
+      expect(Math.abs(a.stdError - ref.std_error)).toBeLessThanOrEqual(1e-12 * ref.std_error);
+      expect(a.paths).toBe(ref.paths);
+    }
+  });
+
+  test('portfolio Monte Carlo is consistent with Black-Scholes and with the single-contract kernel', () => {
+    const m: Market = { S: 756.48, sigma: 0.138, r: 0.045, q: 0.01, smile: SMILE_PRESETS['Equity index'] };
+    const legs = condorWithCalendar();
+    const ref = portfolioValue(legs, m);
+    for (const [paths, antithetic] of [[1_000_000, false], [1_000_000, true]] as const) {
+      const run = w.mcPortfolio(legs, m, paths, 5, antithetic)!;
+      expect(run.paths).toBe(paths);
+      expect(Math.abs(run.price - ref) / run.stdError).toBeLessThan(4);
+    }
+    // one long call: the portfolio kernel equals the single-contract kernel on the same seed
+    const one: Leg = { id: 'c', call: true, side: 'buy', qty: 1, K: 755, T: 0.129, premium: 0 };
+    const flat: Market = { S: 756.48, sigma: 0.138, r: 0.045, q: 0 };
+    const port = w.mcPortfolio([one], flat, 500_000, 42)!;
+    const single = w.mcPrice(true, 756.48, 755, 0.045, 0.138, 0.129, 500_000, 42)!;
+    expect(Math.abs(port.price / CONTRACT_MULT - single.price)).toBeLessThan(1e-12 * single.price);
+    // domain: no legs, a non-positive strike, too much work
+    expect(w.mcPortfolio([], flat, 1000)).toBeNull();
+    expect(w.mcPortfolio([{ ...one, K: 0 }], flat, 1000)).toBeNull();
+    expect(w.mcPortfolio(Array.from({ length: 8 }, (_, i) => ({ ...one, id: `c${i}` })), flat, 10_000_000)).toBeNull();
   });
 
   test('inputs outside the model domain are rejected, never priced', () => {

@@ -298,6 +298,19 @@ test.describe('QuantCore terminal flows', () => {
     await expect(hist).not.toContainText('Smile-implied density');
   });
 
+  test('14. With no native engine, the C++ cross-check prices the whole portfolio in WebAssembly', async ({ page }) => {
+    await page.routeWebSocket('ws://localhost:8765/ws', ws => ws.close({ code: 1000, reason: 'no native engine' }));
+    await open(page);
+    await page.getByTestId('preset-iron-condor').click();
+    await page.getByTestId('lab-row-mc200k').waitFor();
+    await expect(page.getByTestId('lab-engine-backend')).toContainText('WebAssembly', { timeout: 15_000 });
+    await page.getByTestId('lab-engine-run').click();
+    const row = page.getByTestId('lab-row-engine');
+    await expect(row).toContainText('C++ WebAssembly · 1M', { timeout: 30_000 });
+    await expect(row).toContainText('whole portfolio');
+    expect(Number(await row.getAttribute('data-z'))).toBeLessThan(4);
+  });
+
   test('9. Risk / VaR: headline, confidence and horizon scaling, Monte Carlo VaR', async ({ page }) => {
     await open(page);
     await page.keyboard.press('4');                                // keyboard shortcut → Risk tab

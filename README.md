@@ -14,7 +14,7 @@ over WebSocket when it runs locally.
 |---|---|
 | **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA, or any ticker — type a symbol and its price (with the optional data proxy running, any US ticker loads with a live quote, listed expirations and chain strikes). Spot, volatility, rate and dividend-yield inputs, and an arbitrage-free SSVI volatility smile (flat, equity index, single stock, or custom skew and curvature) drawn by strike. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
 | **Greeks & payoff** | Price, Δ, Γ, Θ, ν and P&L tiles; exact max profit / max loss and break-evens; an interactive payoff chart with P&L · Δ · Γ · Vega · Θ modes (hover or keyboard crosshair); a full-revaluation spot × vol P&L surface. |
-| **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice. |
+| **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice. A C++ cross-check simulates the whole portfolio — on the native engine when it is running, otherwise in WebAssembly. |
 | **Monte Carlo** | Animated risk-neutral GBM paths with spot, strike, expiry and in-the-money markers; a 50,000-sample terminal distribution against its analytic lognormal density; simulated P(ITM) vs N(d₂). |
 | **Stress Lab** | 2008-style credit crisis, COVID-style crash, volatility spike, rate shock, melt-up / vol crush, or a custom shock. Shows Spot → Vol → Greeks → P&L → VaR, P&L by leg, a P&L-vs-spot ladder and all scenarios side by side; apply a shock to the whole terminal and reset. |
 | **Risk / VaR** | 1-day 95% parametric VaR, plus delta-normal, delta-gamma and Monte Carlo full-revaluation VaR — spot only, and spot with correlated implied-vol shocks — with expected shortfall at 90 / 95 / 99% over 1 / 5 / 10 days, exposures and stated assumptions. |
@@ -86,7 +86,9 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   prices outside the no-arbitrage bounds.
 - **Monte Carlo**: seeded mulberry32 + Box-Muller; one Brownian path observed at every distinct leg expiry so
   mixed maturities stay correlated (with a smile, each leg is lognormal at its own volatility on that shared path);
-  standard error from the per-path portfolio value; optional antithetic variates.
+  standard error from the per-path portfolio value; optional antithetic variates. The C++ core has the same
+  portfolio estimator (`core/src/monte_carlo_portfolio.cpp`, allocation-free; scalar, multithreaded and in
+  WebAssembly), which the Pricing Lab runs as a cross-check.
 - **Payoff analytics**: exact piecewise-linear max P/L and break-evens for single-expiry portfolios; a numerical scan
   of first-expiry P&L (later legs at model value) for mixed expiries.
 - **VaR**: delta-normal z·|Δ·S|·σ√(h/252); delta-gamma at dS = ±z·S·σ√h; Monte Carlo full revaluation with the
@@ -100,7 +102,8 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
 `server/ws_server.py`. Version 1 messages are unchanged; version 2 adds request/response messages matched by `id`;
 version 3 adds an optional continuous dividend yield `q` to every pricing message and reports `dividends: true` in
 `info`; version 4 adds an optional `sigma` per portfolio leg, so a volatility smile prices each strike at its own
-volatility, and reports `leg_sigma: true`.
+volatility, and reports `leg_sigma: true`; version 5 adds `mc_portfolio`, a Monte Carlo of the whole portfolio on the
+CPU, and reports `portfolio_mc: true`.
 
 | Client → server | Server → client | Notes |
 |---|---|---|
@@ -110,6 +113,7 @@ volatility, and reports `leg_sigma: true`.
 | `info` | `info {protocol, metal, device, cpu_threads}` | v2 |
 | `portfolio {id, S, sigma, r, legs[{call, K, T, sigma?}]}` | `portfolio_result {id, legs[…], calc_us}` | v2 — calls and puts priced with one `batch_bs_full` each; v4 per-leg `sigma` |
 | `mc {id, call, S, K, r, sigma, T, paths ≤ 10M, seed}` | `mc_result {id, price, std_error, paths, ms, backend, device}` | v2 — Metal GPU, falling back to multithreaded CPU; runs off the event loop |
+| `mc_portfolio {id, S, r, q, legs[{call, K, T, sigma, weight}], paths ≤ 10M, seed, antithetic}` | `mc_portfolio_result {id, price, std_error, paths, ms, backend, device}` | v5 — every leg on one Brownian path at its own σ; multithreaded CPU |
 
 Errors on v2 messages return `error {id, msg}` and keep the connection open.
 
@@ -150,7 +154,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
       -DPython3_EXECUTABLE=$(which python3)
 cmake --build build --parallel
 
-# 2. Run the C++ acceptance gate (BS prices vs Hull, Greeks analytic-vs-FD, MC convergence, dividend yield)
+# 2. Run the C++ acceptance gate (BS prices vs Hull, Greeks analytic-vs-FD, MC convergence, dividend yield, portfolio MC)
 ./build/tests/phase1_validation
 
 # 3. Start the WebSocket engine
@@ -285,10 +289,11 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
   The Monte Carlo view's paths are GBM with one volatility; with a smile, its price histogram and probabilities come
   from the smile-implied distribution.
 - American early exercise is priced only by the CRR lattice in the Pricing Models Lab; Greeks, charts, stress and VaR treat options as European.
-- The native Monte Carlo kernel prices one European contract per run.
+- Monte Carlo prices European payoffs only. The Metal GPU kernel prices one contract per run; whole portfolios run on
+  the multithreaded CPU kernel or in WebAssembly.
 - The native engine (Metal GPU, Accelerate SIMD, multithreading) is a local service. In the browser the C++ core runs
-  as single-threaded WebAssembly and prices the Greeks tiles and single-contract Monte Carlo; charts, stress, VaR and
-  the Pricing Lab use the TypeScript models.
+  as single-threaded WebAssembly and prices the Greeks tiles, single-contract Monte Carlo and the Pricing Lab's
+  portfolio cross-check; charts, stress, VaR and the Pricing Lab's main table use the TypeScript models.
 - Instrument prices are indicative snapshots or prices you enter unless live data is on (the local Go proxy, or the
   hosted function once its credentials are set); live data is Alpaca's free IEX stock feed and indicative options feed,
   for analysis rather than execution. Added tickers start at 30% volatility until you set it.

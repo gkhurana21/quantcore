@@ -11,17 +11,20 @@
 
 #include "quantcore/black_scholes.hpp"
 #include "quantcore/monte_carlo.hpp"
+#include "quantcore/monte_carlo_portfolio.hpp"
 
 using quantcore::OptionType;
 
 namespace {
+constexpr int kMaxLegs = static_cast<int>(quantcore::kPortfolioMaxLegs);
 double g_out[8];
+double g_legs[kMaxLegs * 5];   // portfolio input: [call (0/1), K, T, sigma, weight] per leg
 }
 
 extern "C" {
 
 // Bumped whenever a signature or the output layout changes.
-EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 1; }
+EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 2; }
 
 EMSCRIPTEN_KEEPALIVE double* qc_out() { return g_out; }
 
@@ -42,6 +45,27 @@ EMSCRIPTEN_KEEPALIVE void qc_mc_price(int call, double S, double K, double r, do
     const quantcore::MCResult res =
         quantcore::mc_price(call ? OptionType::Call : OptionType::Put, S, K, r, sigma, T,
                             static_cast<long long>(paths), static_cast<uint64_t>(seed), q);
+    g_out[0] = res.price;
+    g_out[1] = res.std_error;
+    g_out[2] = static_cast<double>(res.paths);
+}
+
+EMSCRIPTEN_KEEPALIVE double* qc_legs() { return g_legs; }
+EMSCRIPTEN_KEEPALIVE int qc_max_legs() { return kMaxLegs; }
+
+// Portfolio Monte Carlo over the first n legs written to qc_legs(). out: price, std_error, paths.
+EMSCRIPTEN_KEEPALIVE void qc_mc_portfolio(int n, double S, double r, double q,
+                                          double paths, double seed, int antithetic) {
+    n = n < 0 ? 0 : (n > kMaxLegs ? kMaxLegs : n);
+    quantcore::PortfolioLeg legs[kMaxLegs];
+    for (int i = 0; i < n; ++i) {
+        const double* row = g_legs + 5 * i;
+        legs[i] = quantcore::PortfolioLeg{row[0] != 0.0 ? OptionType::Call : OptionType::Put,
+                                          row[1], row[2], row[3], row[4]};
+    }
+    const quantcore::MCResult res =
+        quantcore::mc_portfolio(legs, static_cast<std::size_t>(n), S, r, q,
+                                static_cast<long long>(paths), static_cast<uint64_t>(seed), antithetic != 0);
     g_out[0] = res.price;
     g_out[1] = res.std_error;
     g_out[2] = static_cast<double>(res.paths);

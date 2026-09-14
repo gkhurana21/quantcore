@@ -6,9 +6,9 @@ import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
 import type { LabResult } from '@/lib/compute/tasks';
 import { LAB_PATHS } from '@/lib/compute/tasks';
 import { useWorkerTask } from '@/lib/compute/useWorkerTask';
-import type { Engine, EngineMcResult } from '@/lib/engine/useEngine';
+import type { Engine } from '@/lib/engine/useEngine';
+import type { WasmEngine } from '@/lib/engine/useWasmEngine';
 import { legLabel, legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
-import { legSigma } from '@/lib/quant/volSurface';
 import { signed, usd, usdSigned } from '@/lib/format';
 import type { Tone } from '@/components/ui/primitives';
 import { Badge, Button, cx, InfoTip, Segmented, ui } from '@/components/ui/primitives';
@@ -31,6 +31,9 @@ interface Row {
   ms: number; z: number | null; verdict: Verdict; engine?: boolean;
 }
 
+/** A C++ Monte Carlo run of the whole portfolio ($ value). */
+interface EngineRun { price: number; stdError: number; paths: number; ms: number; native: boolean; }
+
 function buildRows(r: LabResult): Row[] {
   const ref = r.bs.value;
   return [
@@ -47,8 +50,8 @@ function buildRows(r: LabResult): Row[] {
   ];
 }
 
-export function PricingLab({ legs, market, engine, active }: {
-  legs: Leg[]; market: Market; engine: Engine; active: boolean;
+export function PricingLab({ legs, market, engine, wasm, active }: {
+  legs: Leg[]; market: Market; engine: Engine; wasm: WasmEngine; active: boolean;
 }) {
   const [seed, setSeed] = useState(42);
   const [antithetic, setAntithetic] = useState(false);
@@ -62,34 +65,37 @@ export function PricingLab({ legs, market, engine, active }: {
   const single = legs.length === 1 ? legs[0] : null;
   const w = single ? signedQty(single) * M : 1;
 
-  const [eng, setEng] = useState<{ key: string; busy: boolean; res?: EngineMcResult; error?: string } | null>(null);
-  const engKey = `${legsKey}|${marketKeyOf(market)}|${seed}`;
-  const engineBlocker = engine.status !== 'connected'
-    ? (engine.reason === 'hosted'
-      ? 'The C++ engine runs on a local machine — this hosted build prices everything in your browser.'
-      : 'Engine offline — start server/ws_server.py to compare against the native Metal / CPU kernel.')
-    : legs.length !== 1 ? 'The native Monte Carlo kernel prices one contract — choose a single-leg strategy to compare.'
-    : market.q !== 0 && !engine.info?.dividends ? 'This engine build predates dividend support — set q to 0% or rebuild the engine.'
-    : null;
+  // C++ cross-check of the whole portfolio: the native engine when it speaks protocol v5, otherwise the same
+  // kernel compiled to WebAssembly in a worker — available everywhere, including the hosted site.
+  const native = engine.status === 'connected' && (engine.info?.protocol ?? 0) >= 5;
+  const [eng, setEng] = useState<{ key: string; busy: boolean; res?: EngineRun; error?: string } | null>(null);
+  const engKey = `${legsKey}|${marketKeyOf(market)}|${seed}|${antithetic ? 1 : 0}|${native ? 'native' : 'wasm'}`;
+  const engineBlocker = native || wasm.status === 'ready' ? null
+    : wasm.status === 'loading' ? 'Loading the C++ WebAssembly engine…'
+    : 'No native engine is connected and the WebAssembly build could not load.';
+  const backend = native
+    ? `native engine · CPU, ${engine.info?.cpuThreads ?? 'all'} threads`
+    : 'WebAssembly · single-threaded, in this tab';
 
   const runEngine = async () => {
-    if (!single) return;
-    setEng({ key: engKey, busy: true });
+    const runKey = engKey;
+    setEng({ key: runKey, busy: true });
     try {
-      const res = await engine.runMc({ call: single.call, S: market.S, K: single.K, r: market.r,
-                                       sigma: legSigma(market, single.K, single.T), T: single.T, paths: ENGINE_PATHS, seed, q: market.q });
-      setEng({ key: engKey, busy: false, res });
+      const res: EngineRun = native
+        ? { ...(await engine.runPortfolioMc(legs, market, ENGINE_PATHS, seed, antithetic)), native: true }
+        : { ...(await wasm.runPortfolioMc(legs, market, ENGINE_PATHS, seed, antithetic)), native: false };
+      setEng({ key: runKey, busy: false, res });
     } catch (err) {
-      setEng({ key: engKey, busy: false, error: err instanceof Error ? err.message : String(err) });
+      setEng({ key: runKey, busy: false, error: err instanceof Error ? err.message : String(err) });
     }
   };
 
   let engRow: Row | null = null;
-  if (eng?.res && eng.key === engKey && single && r && legsKeyOf([single]) === legsKey) {
-    const value = eng.res.price * w, se = eng.res.stdError * Math.abs(w);
+  if (eng?.res && eng.key === engKey && r) {
+    const { price: value, stdError: se } = eng.res;
     const z = se > 0 ? Math.abs(value - ref) / se : 0;
-    engRow = { id: 'engine', model: `C++ engine · ${fmtPaths(eng.res.paths)}`,
-               detail: `${eng.res.backend === 'metal' ? 'Metal GPU' : 'CPU multithreaded'} · ${eng.res.device}`,
+    engRow = { id: 'engine', model: `C++ ${eng.res.native ? 'native' : 'WebAssembly'} · ${fmtPaths(eng.res.paths)}`,
+               detail: `whole portfolio · ${eng.res.native ? 'CPU multithreaded' : 'single-threaded'}${antithetic ? ' · antithetic' : ''}`,
                value, se, ms: eng.res.ms, z, verdict: mcVerdict(z), engine: true };
   }
   const allRows = engRow ? [...rows, engRow] : rows;
@@ -150,7 +156,8 @@ export function PricingLab({ legs, market, engine, active }: {
                 {allRows.map(row => {
                   const diff = row.value - ref;
                   return (
-                    <tr key={row.id} data-testid={`lab-row-${row.id}`} className={row.engine ? l.engineRow : undefined}>
+                    <tr key={row.id} data-testid={`lab-row-${row.id}`} data-z={row.z ?? undefined}
+                        className={row.engine ? l.engineRow : undefined}>
                       <td><span className={l.modelName}>{row.model}</span><span className={l.modelDetail}>{row.detail}</span></td>
                       <td className={ui.num}>
                         <span className={l.valueMain} data-testid={`lab-value-${row.id}`} data-value={row.value}>{usd(row.value, 2)}</span>
@@ -268,14 +275,11 @@ export function PricingLab({ legs, market, engine, active }: {
         {engineBlocker ? <span>{engineBlocker}</span> : (
           <>
             <Button size="sm" variant="primary" onClick={runEngine} disabled={eng?.busy} data-testid="lab-engine-run">
-              {eng?.busy ? 'Running on engine…' : `Run ${fmtPaths(ENGINE_PATHS)} paths on C++ engine`}
+              {eng?.busy ? 'Simulating in C++…' : `Run ${fmtPaths(ENGINE_PATHS)} paths of this portfolio in C++`}
             </Button>
-            <span>
-              {engine.info ? (engine.info.metal ? `Metal GPU · ${engine.info.device}` : `CPU · ${engine.info.cpuThreads} threads`) : 'native kernel'}
-              {' '}· seed {seed}
-            </span>
+            <span data-testid="lab-engine-backend">{backend} · seed {seed}{antithetic ? ' · antithetic' : ''}</span>
             {eng?.error && eng.key === engKey && <span className="neg">{eng.error}</span>}
-            {eng?.res && eng.key !== engKey && <span>Inputs changed since the last engine run.</span>}
+            {eng?.res && eng.key !== engKey && <span>Inputs changed since the last C++ run.</span>}
           </>
         )}
       </div>

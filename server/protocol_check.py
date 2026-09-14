@@ -54,8 +54,9 @@ async def main():
         pong = await rpc(ws, {"type": "ping", "t_ns": 987654321}, "pong")
         check("ping → pong echo", pong.get("t_ns") == 987654321)
         info = await rpc(ws, {"type": "info"}, "info")
-        check("info (protocol 4, dividends, per-leg sigma)",
-              info.get("protocol") == 4 and info.get("dividends") is True and info.get("leg_sigma") is True,
+        check("info (protocol 5, dividends, per-leg sigma, portfolio MC)",
+              info.get("protocol") == 5 and info.get("dividends") is True and info.get("leg_sigma") is True
+              and info.get("portfolio_mc") is True,
               json.dumps(info))
 
         # v2 portfolio (mixed calls/puts, one expired leg)
@@ -131,6 +132,29 @@ async def main():
                                    "legs": [{"call": True, "K": 100.0, "T": 1.0, "sigma": -0.3}]}, "portfolio_result")
         check("invalid per-leg sigma → error with id", bad_sigma["type"] == "error" and bad_sigma.get("id") == 14,
               bad_sigma.get("msg", ""))
+
+        # v5 portfolio Monte Carlo: every leg on one Brownian path, each at its own volatility
+        pf_legs = [{"call": False, "K": 715.0, "T": 0.129, "sigma": 0.181, "weight": 1000.0},
+                   {"call": False, "K": 735.0, "T": 0.129, "sigma": 0.162, "weight": -1000.0},
+                   {"call": True, "K": 775.0, "T": 0.129, "sigma": 0.125, "weight": -1000.0},
+                   {"call": True, "K": 795.0, "T": 0.129, "sigma": 0.109, "weight": 1000.0},
+                   {"call": True, "K": 760.0, "T": 0.5, "sigma": 0.14, "weight": 500.0}]
+        bs_pf = sum(l["weight"] * quantcore.bs_full(0 if l["call"] else 1, 756.48, l["K"], 0.045, l["sigma"],
+                                                    l["T"], 0.01)["price"] for l in pf_legs)
+        mcp = await rpc(ws, {"type": "mc_portfolio", "id": 15, "S": 756.48, "r": 0.045, "q": 0.01,
+                             "legs": pf_legs, "paths": 2_000_000, "seed": 11}, "mc_portfolio_result")
+        if mcp["type"] == "mc_portfolio_result":
+            zp = abs(mcp["price"] - bs_pf) / mcp["std_error"]
+            check("mc_portfolio within 3 SE of the Black-Scholes sum of legs", zp < 3,
+                  f"{mcp['price']:.2f} ± {mcp['std_error']:.2f} vs {bs_pf:.2f}, |z| {zp:.2f}, "
+                  f"{mcp['ms']:.0f} ms, {mcp['device']}")
+            check("mc_portfolio id echo + paths", mcp.get("id") == 15 and mcp.get("paths") == 2_000_000)
+        else:
+            check("mc_portfolio", False, mcp.get("msg", ""))
+        bad_pf = await rpc(ws, {"type": "mc_portfolio", "id": 16, "S": 100.0, "r": 0.01, "paths": 1000, "seed": 1,
+                                "legs": [{"call": True, "K": 100.0, "T": 1.0, "sigma": 0.2}]}, "mc_portfolio_result")
+        check("mc_portfolio leg without weight → error with id", bad_pf["type"] == "error" and bad_pf.get("id") == 16,
+              bad_pf.get("msg", ""))
 
         # errors keep the connection open
         err = await rpc(ws, {"type": "portfolio", "id": 9, "S": -1, "sigma": 0.2, "r": 0.04, "legs": legs}, "portfolio_result")

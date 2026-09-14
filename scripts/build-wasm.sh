@@ -17,8 +17,9 @@ cd "$(dirname "$0")/.."
 command -v em++ >/dev/null || { echo "em++ not found — run: source ~/emsdk/emsdk_env.sh" >&2; exit 1; }
 
 OUT_DIR=dashboard/public/wasm
-SOURCES=(core/src/black_scholes.cpp core/src/monte_carlo.cpp bindings/quantcore_wasm.cpp)
-HEADERS=(core/include/quantcore/black_scholes.hpp core/include/quantcore/monte_carlo.hpp)
+SOURCES=(core/src/black_scholes.cpp core/src/monte_carlo.cpp core/src/monte_carlo_portfolio.cpp bindings/quantcore_wasm.cpp)
+HEADERS=(core/include/quantcore/black_scholes.hpp core/include/quantcore/monte_carlo.hpp
+         core/include/quantcore/monte_carlo_portfolio.hpp)
 FLAGS=(-std=c++17 -O3 -msimd128 -fno-exceptions -fno-rtti -Wall -Wextra -Wpedantic -Werror
        --no-entry -sSTANDALONE_WASM -sFILESYSTEM=0 -sSTACK_SIZE=65536 -sINITIAL_MEMORY=1048576
        -sALLOW_MEMORY_GROWTH=0)
@@ -34,7 +35,7 @@ const [outDir, emscripten, flags, ...files] = process.argv.slice(2);
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 const wasm = readFileSync(`${outDir}/quantcore.wasm`);
 const manifest = {
-  abi: 1,
+  abi: 2,
   emscripten,
   flags: flags.split(' '),
   bytes: wasm.length,

@@ -1,5 +1,5 @@
 {
-  "abi": 1,
+  "abi": 2,
   "emscripten": "6.0.9",
   "flags": [
     "-std=c++17",
@@ -18,8 +18,8 @@
     "-sINITIAL_MEMORY=1048576",
     "-sALLOW_MEMORY_GROWTH=0"
   ],
-  "bytes": 10646,
-  "sha256": "4df6a1abeb422df6b8dbd8d1792319afa40992cd01caf31d14e0e59cc7d26ee1",
+  "bytes": 18068,
+  "sha256": "9e5b334da1373b34cdf5c796be6d209ccd1678302bfaaf050c84249a8b3d881c",
   "sources": [
     {
       "path": "core/src/black_scholes.cpp",
@@ -30,8 +30,12 @@
       "sha256": "34c723b2c6a413d91a09817653ec1b3bd8e0b6fdd7d7e1f313f63b17e9c0593d"
     },
     {
+      "path": "core/src/monte_carlo_portfolio.cpp",
+      "sha256": "4100ae3943d71c664c9a7f1a73eb5dbe199d419fd227ffc7dcc05483d48bfa22"
+    },
+    {
       "path": "bindings/quantcore_wasm.cpp",
-      "sha256": "e9ef85eb0cbe2bec0c9273d02656c35c26dad74c22534b754fc9356aba397fd0"
+      "sha256": "6cf6202097d07c103f079c7707c4b1ff8db8c7aa78fccbdcfb158659efb1aa18"
     },
     {
       "path": "core/include/quantcore/black_scholes.hpp",
@@ -40,6 +44,10 @@
     {
       "path": "core/include/quantcore/monte_carlo.hpp",
       "sha256": "15bb8b6d9377ddb7199fb47e9ce594c16b5a760eeb5e5d7a920cd967af7928eb"
+    },
+    {
+      "path": "core/include/quantcore/monte_carlo_portfolio.hpp",
+      "sha256": "0790019bb062c400796a5e6e98cb68d7ad0d75c93689f343621e4b113002d347"
     }
   ]
 }

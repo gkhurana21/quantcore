@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ENGINE_SUBSCRIPTION } from '../market/instruments';
 import type { Greeks, Leg, Market } from '../quant/types';
+import { CONTRACT_MULT, signedQty } from '../quant/types';
 import { legSigma } from '../quant/volSurface';
 
 export const ENGINE_URL = 'ws://localhost:8765/ws';
@@ -72,6 +73,8 @@ export interface Engine {
   sendUpdate: (m: Pick<Market, 'S' | 'sigma' | 'r' | 'q'>) => boolean;
   pricePortfolio: (legs: Leg[], m: Market) => Promise<EnginePortfolioResult>;
   runMc: (req: EngineMcRequest) => Promise<EngineMcResult>;
+  /** Protocol v5: the whole portfolio by Monte Carlo on the CPU, each leg at its smile volatility. */
+  runPortfolioMc: (legs: Leg[], m: Market, paths: number, seed: number, antithetic: boolean) => Promise<EngineMcResult>;
   reconnect: () => void;
 }
 
@@ -169,6 +172,7 @@ export function useEngine(): Engine {
           break;
         case 'portfolio_result':
         case 'mc_result':
+        case 'mc_portfolio_result':
         case 'error': {
           const id = n('id');
           const p = pending.get(id);
@@ -281,7 +285,13 @@ export function useEngine(): Engine {
   const runMc = useCallback((req: EngineMcRequest) =>
     request<EngineMcResult>({ type: 'mc', ...req }, 120_000), [request]);
 
+  const runPortfolioMc = useCallback((legs: Leg[], m: Market, paths: number, seed: number, antithetic: boolean) =>
+    request<EngineMcResult>({
+      type: 'mc_portfolio', S: m.S, r: m.r, q: m.q, paths, seed, antithetic,
+      legs: legs.map(l => ({ call: l.call, K: l.K, T: l.T, sigma: legSigma(m, l.K, l.T), weight: signedQty(l) * CONTRACT_MULT })),
+    }, 120_000), [request]);
+
   const reconnect = useCallback(() => connectRef.current(), []);
 
-  return { url: ENGINE_URL, status, reason, quote, info, stats, sendUpdate, pricePortfolio, runMc, reconnect };
+  return { url: ENGINE_URL, status, reason, quote, info, stats, sendUpdate, pricePortfolio, runMc, runPortfolioMc, reconnect };
 }

@@ -36,6 +36,11 @@ Server → Client  result:
     {"type":"result","price":...,"delta":...,"gamma":...,"theta":...,
      "vega":...,"pnl":...,"t_ns":<echo>,"calc_us":...}
 
+v5 — mc_portfolio {id, S, r, q?, legs:[{call, K, T, sigma, weight}], paths ≤ 10M, seed,
+antithetic?} → mc_portfolio_result {id, price, std_error, paths, ms, backend, device}: the
+whole portfolio on one Brownian path per draw, each leg at its own volatility (weight = signed
+quantity × multiplier), multithreaded on the CPU; info reports "portfolio_mc": true.
+
 v4 — each portfolio leg accepts an optional "sigma", so a volatility smile prices
 every strike at its own volatility (legs without one use the message's sigma);
 info reports "leg_sigma": true.
@@ -51,7 +56,7 @@ v2 — request/response messages, any number per connection, matched by "id":
 
   info       {"type":"info"}
           →  {"type":"info","protocol":3,"metal":bool,"device":"Apple M3",
-              "cpu_threads":8,"dividends":true,"leg_sigma":true}
+              "cpu_threads":8,"dividends":true,"leg_sigma":true,"portfolio_mc":true}
 
   portfolio  {"type":"portfolio","id":7,"S":...,"sigma":...,"r":...,
               "legs":[{"call":true,"K":755,"T":0.129}, ...]}        (≤ 64 legs)
@@ -88,7 +93,7 @@ import quantcore
 
 app = FastAPI()
 
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 MAX_LEGS         = 64
 MAX_PATHS        = 10_000_000
 HAS_METAL        = hasattr(quantcore, "mc_price_gpu")
@@ -177,6 +182,17 @@ def run_mc(call: bool, S: float, K: float, r: float, sigma: float, T: float,
     return {**res, "ms": ms, "backend": "cpu-mt", "device": f"CPU · {CPU_THREADS} threads"}
 
 
+def run_mc_portfolio(legs: list, S: float, r: float, q: float, paths: int, seed: int,
+                     antithetic: bool) -> dict:
+    col = lambda key: np.array([float(l[key]) for l in legs], dtype=np.float64)
+    is_call = np.array([1.0 if l["call"] else 0.0 for l in legs], dtype=np.float64)
+    t0 = time.perf_counter()
+    res = quantcore.mc_portfolio_mt(is_call, col("K"), col("T"), col("sigma"), col("weight"),
+                                    S, r, q, paths, seed, antithetic, -1)
+    ms = (time.perf_counter() - t0) * 1e3
+    return {**res, "ms": ms, "backend": "cpu-mt", "device": f"CPU · {CPU_THREADS} threads"}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -204,6 +220,36 @@ async def ws_endpoint(ws: WebSocket):
             q     = _number(msg, "q", -1, 1) if "q" in msg else 0.0
             res   = _finite(await asyncio.to_thread(run_mc, call, S, K, r, sigma, T, paths, seed, q))
             await send({"type": "mc_result", "id": req_id,
+                        "price": float(res["price"]), "std_error": float(res["std_error"]),
+                        "paths": int(res["paths"]), "ms": res["ms"],
+                        "backend": res["backend"], "device": res["device"]})
+        except Exception as exc:
+            try:
+                await send({"type": "error", "id": req_id, "msg": str(exc)})
+            except Exception:
+                pass
+
+    async def handle_mc_portfolio(msg: dict):
+        req_id = msg.get("id")
+        try:
+            S     = _number(msg, "S", 0, lo_open=True)
+            r     = _number(msg, "r", -1, 1)
+            q     = _number(msg, "q", -1, 1) if "q" in msg else 0.0
+            paths = int(_number(msg, "paths", 2, MAX_PATHS))
+            seed  = int(_number(msg, "seed", 0, 2**63 - 1))
+            antithetic = bool(msg.get("antithetic", False))
+            raw_legs = msg.get("legs")
+            if not isinstance(raw_legs, list) or not raw_legs:
+                raise ValueError("legs must be a non-empty list")
+            if len(raw_legs) > MAX_LEGS:
+                raise ValueError(f"at most {MAX_LEGS} legs")
+            legs = [{"call": bool(l.get("call", True)),
+                     "K": _number(l, "K", 0, lo_open=True),
+                     "T": _number(l, "T", None, 30),
+                     "sigma": _number(l, "sigma", 0, 5, lo_open=True),
+                     "weight": _number(l, "weight", -1e9, 1e9)} for l in raw_legs]
+            res = _finite(await asyncio.to_thread(run_mc_portfolio, legs, S, r, q, paths, seed, antithetic))
+            await send({"type": "mc_portfolio_result", "id": req_id,
                         "price": float(res["price"]), "std_error": float(res["std_error"]),
                         "paths": int(res["paths"]), "ms": res["ms"],
                         "backend": res["backend"], "device": res["device"]})
@@ -276,7 +322,8 @@ async def ws_endpoint(ws: WebSocket):
             elif msg["type"] == "info":
                 await send({"type": "info", "protocol": PROTOCOL_VERSION,
                             "metal": HAS_METAL, "device": gpu_device(),
-                            "cpu_threads": CPU_THREADS, "dividends": True, "leg_sigma": True})
+                            "cpu_threads": CPU_THREADS, "dividends": True, "leg_sigma": True,
+                            "portfolio_mc": True})
 
             # ── v2: portfolio ──────────────────────────────────────────────
             elif msg["type"] == "portfolio":
@@ -306,6 +353,12 @@ async def ws_endpoint(ws: WebSocket):
             # ── v2: Monte Carlo (off the event loop) ───────────────────────
             elif msg["type"] == "mc":
                 task = asyncio.create_task(handle_mc(msg))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+
+            # ── v5: portfolio Monte Carlo (off the event loop) ─────────────
+            elif msg["type"] == "mc_portfolio":
+                task = asyncio.create_task(handle_mc_portfolio(msg))
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
 

@@ -293,7 +293,7 @@ export default function Dashboard() {
             {TABS.map(x => state.visited.includes(x.id) && (
               <div key={x.id} role="tabpanel" id={tabPanelId('deck', x.id)} aria-labelledby={tabId('deck', x.id)}
                    hidden={state.tab !== x.id} className={t.deckPanel} data-testid={`panel-${x.id}`}>
-                {x.id === 'lab' && <PricingLab legs={legs} market={market} engine={engine} active={state.tab === 'lab'} />}
+                {x.id === 'lab' && <PricingLab legs={legs} market={market} engine={engine} wasm={wasm} active={state.tab === 'lab'} />}
                 {x.id === 'mc' && <MonteCarloPanel legs={legs} market={market} active={state.tab === 'mc'} />}
                 {x.id === 'stress' && (
                   <StressLab legs={legs} market={market} scenarioId={scenarioId} onScenario={setScenarioId}

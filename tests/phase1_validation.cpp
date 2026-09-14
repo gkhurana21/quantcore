@@ -12,6 +12,7 @@
 #include "quantcore/black_scholes.hpp"
 #include "quantcore/monte_carlo.hpp"
 #include "quantcore/monte_carlo_mt.hpp"
+#include "quantcore/monte_carlo_portfolio.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -268,6 +269,65 @@ static void section_dividend_yield() {
     printf("\n  %-22s  %s\n", "Dividend yield overall:", all_ok ? "ALL PASS" : "FAIL");
 }
 
+// ── Section 5: portfolio Monte Carlo ─────────────────────────────────────────
+//
+// An iron condor with its own volatility per strike (a skew) plus a longer-dated call: the
+// estimate must sit within 3 standard errors of the sum of Black-Scholes leg values at those
+// volatilities, the multithreaded kernel must reproduce the scalar one exactly on one thread,
+// a single leg must agree with mc_price on the same seed, and antithetic variates must cut
+// the standard error for a monotone payoff (for a condor they need not).
+
+static void section_portfolio_mc() {
+    banner("5. PORTFOLIO MONTE CARLO  (skewed iron condor + 6-month call, S=756.48 r=0.045 q=0.01)");
+
+    const double S = 756.48, r = 0.045, q = 0.01;
+    const PortfolioLeg legs[] = {
+        { OptionType::Put,  715.0, 0.129, 0.181, +1000.0 },
+        { OptionType::Put,  735.0, 0.129, 0.162, -1000.0 },
+        { OptionType::Call, 775.0, 0.129, 0.125, -1000.0 },
+        { OptionType::Call, 795.0, 0.129, 0.109, +1000.0 },
+        { OptionType::Call, 760.0, 0.500, 0.140,  +500.0 },
+    };
+    const std::size_t n = sizeof(legs) / sizeof(legs[0]);
+    double bs = 0.0;
+    for (const auto& l : legs) bs += l.weight * bsm_price(l.type, S, l.K, r, l.sigma, l.T, q);
+    printf("  Black-Scholes sum of legs: %.4f\n\n", bs);
+    bool all_ok = true;
+
+    for (long long paths : { 200'000LL, 2'000'000LL }) {
+        MCResult plain = mc_portfolio(legs, n, S, r, q, paths, 42, false);
+        MCResult anti  = mc_portfolio(legs, n, S, r, q, paths, 42, true);
+        double zp = std::fabs(plain.price - bs) / plain.std_error;
+        double za = std::fabs(anti.price - bs) / anti.std_error;
+        bool ok = zp < 3.0 && za < 3.0;
+        all_ok = all_ok && ok;
+        printf("  %-9lld  plain %10.4f ± %.4f (|z| %.2f)   antithetic %10.4f ± %.4f (|z| %.2f)  %s\n",
+               paths, plain.price, plain.std_error, zp, anti.price, anti.std_error, za, ok ? "OK" : "*** FAIL ***");
+    }
+
+    MCResult one = mc_portfolio(legs, n, S, r, q, 300'000, 7, true);
+    MCResult mt1 = mc_portfolio_mt(legs, n, S, r, q, 300'000, 7, true, 1);
+    MCResult mt  = mc_portfolio_mt(legs, n, S, r, q, 2'000'000, 7, false, -1);
+    bool same = one.price == mt1.price && one.std_error == mt1.std_error && one.paths == mt1.paths;
+    double zmt = std::fabs(mt.price - bs) / mt.std_error;
+    bool mt_ok = same && zmt < 3.0;
+    all_ok = all_ok && mt_ok;
+    printf("  multithreaded: one thread %s the scalar kernel · all threads %.4f ± %.4f (|z| %.2f)  %s\n",
+           same ? "reproduces" : "DIFFERS FROM", mt.price, mt.std_error, zmt, mt_ok ? "OK" : "*** FAIL ***");
+
+    const PortfolioLeg call[] = { { OptionType::Call, 40.0, 0.5, 0.2, 1.0 } };
+    MCResult port = mc_portfolio(call, 1, 42.0, 0.10, 0.0, 1'000'000, 42, false);
+    MCResult ref  = mc_price(OptionType::Call, 42.0, 40.0, 0.10, 0.2, 0.5, 1'000'000, 42);
+    MCResult anti = mc_portfolio(call, 1, 42.0, 0.10, 0.0, 1'000'000, 42, true);
+    double rel = std::fabs(port.price - ref.price) / ref.price;
+    bool single_ok = rel < 1e-12 && anti.std_error < port.std_error;
+    all_ok = all_ok && single_ok;
+    printf("  single call vs mc_price (seed 42): %.10f vs %.10f (rel %.1e) · antithetic SE %.5f < %.5f  %s\n",
+           port.price, ref.price, rel, anti.std_error, port.std_error, single_ok ? "OK" : "*** FAIL ***");
+
+    printf("\n  %-22s  %s\n", "Portfolio MC overall:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -279,6 +339,7 @@ int main() {
     section_greeks();
     section_mc_convergence();
     section_dividend_yield();
+    section_portfolio_mc();
 
     banner("End of Phase 1 report");
     return 0;
