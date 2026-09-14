@@ -58,6 +58,7 @@ export type TerminalAction =
   | { type: 'liveQuote'; instrument: Instrument }
   | { type: 'market'; patch: Partial<Market> }
   | { type: 'resetMarket' }
+  | { type: 'repriceLegs' }
   | { type: 'preset'; name: PresetName }
   | { type: 'updateLeg'; id: string; patch: Partial<Omit<Leg, 'id'>> }
   | { type: 'addLeg' }
@@ -83,9 +84,11 @@ export function initialTerminalState(): TerminalState {
 }
 
 function selectInstrument(st: TerminalState, inst: Instrument): TerminalState {
-  // the smile is a model choice, so it carries over to the new underlying
+  // the smile and a term-structure curve are model choices, so they carry over to a new underlying;
+  // a term structure fitted to one underlying's option chains stays with that underlying
+  const term = inst.sym === st.instrument.sym || st.market.term?.kind === 'curve' ? st.market.term : null;
   const market: Market = { S: inst.spot, sigma: inst.vol, r: st.market.r, q: inst.q,
-                           ...(st.market.smile ? { smile: st.market.smile } : {}) };
+                           ...(st.market.smile ? { smile: st.market.smile } : {}), ...(term ? { term } : {}) };
   const preset: PresetName = st.preset === 'Custom' ? 'Long Call' : st.preset;
   const searched = (inst.live || inst.custom) && !INSTRUMENTS.some(i => i.sym === inst.sym)
     ? [...st.searched.filter(i => i.sym !== inst.sym), inst] : st.searched;
@@ -113,9 +116,13 @@ export function terminalReducer(st: TerminalState, a: TerminalAction): TerminalS
     case 'market':
       return { ...st, market: { ...st.market, ...a.patch } };
 
-    case 'resetMarket':   // restores spot, vol and rates; keeps the chosen smile
+    case 'resetMarket':   // restores spot, vol and rates; keeps the chosen smile and term structure
       return { ...st, market: { S: st.base.S, sigma: st.base.sigma, r: st.base.r, q: st.base.q,
-                                ...(st.market.smile ? { smile: st.market.smile } : {}) } };
+                                ...(st.market.smile ? { smile: st.market.smile } : {}),
+                                ...(st.market.term ? { term: st.market.term } : {}) } };
+
+    case 'repriceLegs':   // premiums re-entered at the current market's model prices
+      return { ...st, legs: st.legs.map(l => reprice(l, st.market)) };
 
     case 'preset':
       return { ...st, legs: buildPreset(a.name, st.instrument, st.market), preset: a.name,
@@ -178,7 +185,7 @@ export function useTerminalState() {
 
 /** The exact state in which the C++ engine's streaming subscription is authoritative. */
 export function isCanonicalPosition(st: Pick<TerminalState, 'instrument' | 'legs' | 'market'>): boolean {
-  if (st.instrument.sym !== CANONICAL.sym || st.legs.length !== 1 || st.market.smile) return false;
+  if (st.instrument.sym !== CANONICAL.sym || st.legs.length !== 1 || st.market.smile || st.market.term) return false;
   const l = st.legs[0], c = canonicalLeg();
   return l.call && l.side === 'buy' && l.K === c.K && Math.abs(l.T - c.T) < 1e-12 &&
          l.qty === c.qty && Math.abs(l.premium - c.premium) < 1e-9;

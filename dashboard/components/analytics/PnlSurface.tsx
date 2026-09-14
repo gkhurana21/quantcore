@@ -53,7 +53,11 @@ export const PnlSurface = memo(function PnlSurface({ legs, market }: { legs: Leg
       </div>
       <div className={c.surfaceFoot}>
         <span>loss</span><span className={c.surfaceScale} aria-hidden="true" /><span>gain</span>
-        <span style={{ marginLeft: 'auto' }}>Full revaluation · vol shocks are relative to {market.smile ? 'ATM ' : ''}σ {pct(market.sigma)}{market.smile ? ' (smile kept, sticky strike)' : ''} · outlined cell = current</span>
+        <span style={{ marginLeft: 'auto' }}>
+          Full revaluation · vol shocks are relative to {market.term ? '30-day ATM ' : market.smile ? 'ATM ' : ''}σ {pct(market.sigma)}
+          {market.smile && market.term ? ' (smile kept sticky strike, term structure scaled)'
+            : market.smile ? ' (smile kept, sticky strike)' : market.term ? ' (term structure scaled)' : ''} · outlined cell = current
+        </span>
       </div>
     </div>
   );

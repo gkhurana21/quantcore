@@ -6,8 +6,17 @@ export interface Market {
   r: number;      // continuously-compounded risk-free rate
   q: number;      // continuous dividend yield
   smile?: Smile | null;  // SSVI volatility smile; absent or null = flat volatility across strikes
+  term?: TermStructure | null;  // ATM term structure; absent or null = the same ATM volatility at every expiry
   smileSpot?: number;    // spot the smile is centred on; set by atSpot() for sticky-strike scenarios
 }
+
+/**
+ * At-the-money term structure (lib/quant/volSurface.ts). With one set, σ is the 30-day ATM volatility and
+ * ATM total variance is σ²·W(T), where W is normalised so that W(30 days) = 30 days.
+ */
+export type TermStructure =
+  | { kind: 'curve'; ratio: number; halfLife: number }   // short-end ÷ long-run ATM vol; years for the gap to halve
+  | { kind: 'fitted'; T: number[]; w: number[] };         // W at listed expiries (years), fitted to option chains
 
 /** SSVI smile parameters (lib/quant/volSurface.ts). */
 export interface Smile {

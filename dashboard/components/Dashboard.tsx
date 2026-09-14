@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { bsGreeks } from '@/lib/quant/blackScholes';
-import { legSigma } from '@/lib/quant/volSurface';
+import { hasVolSurface, legSigma } from '@/lib/quant/volSurface';
 import type { Greeks, Leg, Market } from '@/lib/quant/types';
 import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
 import { firstExpiry, netPremium, payoffAnalytics, portfolioGreeks } from '@/lib/strategy/portfolio';
@@ -106,9 +106,9 @@ export default function Dashboard() {
   // ── C++ engine: streaming canonical contract ──────────────────────────────
   const { sendUpdate, pricePortfolio } = engine;
   // An engine before protocol v3 ignores q, and one before v4 prices every leg at one σ, so each is
-  // authoritative only for the markets it understands (q = 0, no smile).
+  // authoritative only for the markets it understands (q = 0, one volatility for every leg).
   const engineHandlesQ = market.q === 0 || engine.info?.dividends === true;
-  const engineHandlesSmile = !market.smile || (engine.info?.protocol ?? 0) >= 4;
+  const engineHandlesSmile = !hasVolSurface(market) || (engine.info?.protocol ?? 0) >= 4;
   useEffect(() => {
     if (engine.status === 'connected' && canonical && engineHandlesQ) sendUpdate(market);
   }, [engine.status, canonical, engineHandlesQ, market, sendUpdate]);
@@ -146,7 +146,7 @@ export default function Dashboard() {
       : engine.status === 'connecting' ? 'connecting to the native engine…'
       : engine.status === 'offline' ? 'native engine offline'
       : !engineHandlesQ ? 'q ≠ 0 — the native build predates dividend support'
-      : !engineHandlesSmile ? 'smile — the native build predates per-leg volatility'
+      : !engineHandlesSmile ? 'smile or term structure — the native build predates per-leg volatility'
       : 'awaiting the native engine';
     quote = { ...aggregate(legs, wasmPer), calcUs: wasmUs,
               source: { kind: 'wasm', label: 'C++ · WebAssembly', reason: `bsm_full in this tab · ${why}` } };
@@ -260,7 +260,7 @@ export default function Dashboard() {
           <Panel id="market" index="01" title="Market">
             <MarketInputs state={state} dispatch={dispatch} live={live} />
           </Panel>
-          <Panel id="builder" index="02" title="Strategy Builder" meta={<span data-testid="builder-vol-model">{state.instrument.sym} · {market.smile ? 'SSVI smile' : 'flat σ'}</span>}>
+          <Panel id="builder" index="02" title="Strategy Builder" meta={<span data-testid="builder-vol-model">{state.instrument.sym} · {market.smile && market.term ? 'SSVI surface' : market.smile ? 'SSVI smile' : market.term ? 'ATM term structure' : 'flat σ'}</span>}>
             <StrategyBuilder state={state} dispatch={dispatch} live={live} />
           </Panel>
           <Panel id="upload" index="03" title="Portfolio Upload">

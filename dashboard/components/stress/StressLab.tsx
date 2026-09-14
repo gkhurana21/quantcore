@@ -115,7 +115,7 @@ export function StressLab({ legs, market, scenarioId, onScenario, onApply, onRes
           <Move before={rep.before.S} after={rep.after.S} format={v => num(v, 2)} testid="stress-spot-after" />
           <div className={st.sub}>{signedPct(rep.shocked.S / rep.base.S - 1)}</div>
         </Stage>
-        <Stage n={2} title="Volatility" pulseKey={pulseKey}>
+        <Stage n={2} title={rep.base.term ? 'Volatility · 30-day ATM' : 'Volatility'} pulseKey={pulseKey}>
           <Move before={rep.before.sigma} after={rep.after.sigma} format={v => pct(v, 1)} testid="stress-vol-after" />
           <div className={st.sub}>r {pct(rep.before.r, 2)} → {pct(rep.after.r, 2)}{shock.days ? ` · +${shock.days}d` : ''}</div>
         </Stage>

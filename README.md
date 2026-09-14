@@ -12,7 +12,7 @@ over WebSocket when it runs locally.
 
 | | What it does |
 |---|---|
-| **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA, or any ticker — type a symbol and its price (with the optional data proxy running, any US ticker loads with a live quote, listed expirations and chain strikes). Spot, volatility, rate and dividend-yield inputs, and an arbitrage-free SSVI volatility smile (flat, equity index, single stock, or custom skew and curvature) drawn by strike. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
+| **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA, or any ticker — type a symbol and its price (with the optional data proxy running, any US ticker loads with a live quote, listed expirations and chain strikes). Spot, volatility, rate and dividend-yield inputs, and an arbitrage-free SSVI volatility surface: a smile by strike (flat, equity index, single stock, or custom skew and curvature) and an at-the-money term structure by expiry (flat, upward, inverted or custom) — with live data, fitted to a spread of listed expiries in one step. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
 | **Greeks & payoff** | Price, Δ, Γ, Θ, ν and P&L tiles; exact max profit / max loss and break-evens; an interactive payoff chart with P&L · Δ · Γ · Vega · Θ modes (hover or keyboard crosshair); a full-revaluation spot × vol P&L surface. |
 | **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice. A C++ cross-check simulates the whole portfolio — on the native engine when it is running, otherwise in WebAssembly. |
 | **Monte Carlo** | Animated risk-neutral GBM paths with spot, strike, expiry and in-the-money markers; a 50,000-sample terminal distribution against its analytic lognormal density; simulated P(ITM) vs N(d₂). |
@@ -22,7 +22,7 @@ over WebSocket when it runs locally.
 | **C++ Engine** | The C++ core compiled to WebAssembly runs in every browser: build facts, agreement with the TypeScript models and Monte Carlo in a worker. The native engine adds live status, measured round-trip latency, engine-vs-browser agreement and 100k–10M-path Monte Carlo on Metal. Every tile says which engine produced the number and why. |
 
 **How the hosted demo computes.** The public site has no server, so it runs the C++ pricing core itself:
-`core/src/black_scholes.cpp` and `monte_carlo.cpp` compiled with Emscripten into a 10 KB WebAssembly module. The
+`core/src/black_scholes.cpp`, `monte_carlo.cpp` and `monte_carlo_portfolio.cpp` compiled with Emscripten into an 18 KB WebAssembly module. The
 Greeks tiles are priced by it (labelled *C++ · WebAssembly*), and its Monte Carlo runs in a Web Worker. Charts,
 stress, VaR and the Pricing Lab use TypeScript implementations of the same models, which the unit tests hold to
 1e-12 of the C++ results. Run the native engine locally and its badge turns *Connected*: the tiles are then priced
@@ -68,15 +68,27 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   double-precision N(x) — erfc in C++, Hart/West in TypeScript — and the unit tests require them to agree to
   1e-12 on price and every Greek, with and without dividends.
 - **Volatility smile (SSVI, Gatheral & Jacquier)**: total variance w(k) = θ/2·(1 + ρφk + √((φk + ρ)² + 1 − ρ²))
-  in log-forward moneyness k, with power-law φ(θ) = η/(θ^γ(1+θ)^(1−γ)) and θ = σ_ATM²·T. Parameters stay in the
+  in log-forward moneyness k, with power-law φ(θ) = η/(θ^γ(1+θ)^(1−γ)) and ATM total variance θ(T) from the term
+  structure below (σ²·T when flat). Parameters stay in the
   arbitrage-free region η(1+|ρ|) ≤ 2, γ ≤ ½; the tests check Durrleman's density condition, butterfly prices and
   calendar monotonicity numerically. Each leg is priced at its strike's volatility. Scenarios — payoff chart, stress,
   VaR, P&L surface — are sticky-strike, and vol shocks move the ATM level. Flat is the default and prices exactly as
   a single σ.
-- **Smile calibration**: with live data, *Fit to chain* fits SSVI to one expiry's out-of-the-money quotes (puts below
-  the forward, calls above) by least squares in implied volatility — a bounded Nelder–Mead search over θ, ρ and φ,
-  multi-start, inside the same arbitrage-free region with γ = ½ — then shows the market IVs against the fitted curve,
-  the RMSE in vol points, and whether the fit sits on the region's boundary.
+- **ATM term structure**: θ(T) = σ²·W(T), with σ the 30-day ATM volatility (as for VIX) and W normalised so that
+  W(30d) = 30d. A *curve* is the average of an instantaneous variance mean-reverting from r²·v̄ to v̄:
+  W ∝ T + (r² − 1)(1 − e^(−κT))/κ with κ = ln 2 / half-life, whose slope is at least min(1, r²) > 0. A *fitted*
+  structure interpolates total variance linearly between listed expiries. Total variance never falls with maturity,
+  which with the power-law φ is all SSVI needs to be free of calendar arbitrage (Gatheral & Jacquier, Theorem 4.2);
+  the tests price calendar spreads on random surfaces. Vol shocks move σ and scale every expiry in proportion. The
+  *Upward* preset is a least-squares fit to SPY's live ATM curve (7 days 0.86×, 1 year 1.53× the 30-day vol).
+- **Surface calibration**: with live data, *Fit surface* loads up to eight listed expiries from a week to a year and a
+  half and fits one SSVI surface to their out-of-the-money quotes (puts below the forward, calls above) by least
+  squares in implied volatility: ρ, η and γ shared by every expiry through a bounded multi-start Nelder–Mead search,
+  and each expiry's ATM total variance θᵢ by golden-section search. Expiries whose quotes would make total variance
+  fall with maturity are pooled to one θ (pool-adjacent-violators on the fit's loss), so the result has no calendar
+  arbitrage. The fit runs in the compute worker and reports RMSE overall and by expiry, the market ATM vols against
+  the fitted curve, and whether it sits on the region's boundary. On live chains (2026-09-14): SPY 962 quotes over 8
+  expiries, RMSE 1.02 vol pts; QQQ 1,076 quotes, 1.06; AAPL 420 quotes, 2.00.
 - **Smile-implied distribution (Breeden–Litzenberger)**: the density of ln(S_T/F) is g(k)·φ(d₋)/√w, with Durrleman's
   g, and P(S_T > K) = N(d₋) − φ(d₋)·w′/(2√w). It reprices the smile's calls and digitals in the tests, and with a smile
   on it drives the Monte Carlo view's histogram, P(ITM), P(profit) and expected P&L.
@@ -218,19 +230,24 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
   `tests/alpaca.live.spec.ts` (opt-in, `ALPACA_LIVE=1`) checks it against the running Go proxy with real data.
 - `tests/impliedDensity.spec.ts` — the smile-implied distribution: lognormal without skew, a proper density with the
   forward as its mean under random smiles, repricing the smile's calls and digitals, sampling, and the Monte Carlo view.
-- `tests/calibrate.spec.ts` — smile calibration: exact recovery of known smiles, fit error matching quote noise, the
-  arbitrage-free boundary, what γ changes, and quote selection.
-- `tests/volSurface.spec.ts` — the SSVI smile: flat markets unchanged, ATM volatility equals σ, the arbitrage-free
-  region (Durrleman's condition, butterfly prices and calendar spreads on dense grids, plus parameters outside the
-  region that do fail), analytic derivatives, skew direction and sticky-strike scenarios.
-- `tests/smile.spec.ts` — with a smile, the native engine (protocol v4) and the WebAssembly build agree with the
-  browser models leg by leg.
+- `tests/calibrate.spec.ts` — smile and surface calibration: exact recovery of known smiles and of seven-expiry
+  surfaces, fit error matching quote noise, the arbitrage-free boundary, calendar arbitrage in the quotes pooled away,
+  what γ changes, and quote and expiry selection. `tests/surface.live.spec.ts` (opt-in, `SURFACE_LIVE=1`) fits SPY,
+  QQQ and AAPL through the running Go proxy.
+- `tests/volSurface.spec.ts` — the SSVI smile and ATM term structure: flat markets unchanged, ATM volatility equals σ
+  (the 30-day ATM volatility with a term structure), the curve against an independent formula, fitted pillars, the
+  arbitrage-free region (Durrleman's condition, butterfly prices and calendar spreads on dense grids under random
+  smiles and term structures, plus parameters outside the region that do fail), analytic derivatives, skew direction,
+  sticky-strike and proportional vol scenarios.
+- `tests/smile.spec.ts` — with a smile, a term structure or both, the native engine (protocol v4) and the WebAssembly
+  build agree with the browser models leg by leg, including mixed expiries.
 - `tests/wasm.spec.ts` — the committed WebAssembly module matches its manifest and the current C++ sources, loads with
   no imports, and agrees with the native build to 1e-12 on 960 contracts (most values bit-identical) and with the
   TypeScript models; same-seed Monte Carlo reproduces the native result to 1e-12.
 - `tests/marketData.spec.ts` — the data-proxy client with a stubbed fetch: opt-in gating, health probe, failures.
 - `tests/terminal.spec.ts` — preset, instrument switch, any-ticker entry, Pricing Lab, Monte Carlo view, chart modes,
-  CSV upload, XLSX and XLS upload, Stress Lab, Risk / VaR.
+  CSV upload, XLSX and XLS upload, Stress Lab, Risk / VaR, volatility smile, ATM term structure, the WebAssembly
+  portfolio cross-check.
 - `tests/robustness.spec.ts` — seeded random walks through the whole UI (desktop and 375 px mobile) with invalid and
   extreme inputs, failing on any console error, NaN/undefined/Infinity on screen or horizontal overflow; malformed
   uploads; stacked stress scenarios; the engine crashing mid-session and recovering; an engine that never answers.
@@ -284,10 +301,11 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
 
 ## Limitations
 
-- The volatility smile is parametric: one SSVI shape across maturities with a flat at-the-money term structure. With
-  live data it can be fitted to one expiry at a time; other maturities reuse that ATM volatility and shape.
-  The Monte Carlo view's paths are GBM with one volatility; with a smile, its price histogram and probabilities come
-  from the smile-implied distribution.
+- The volatility surface is parametric in strike: one SSVI shape (ρ, η, γ) is shared by every expiry, so a surface fit
+  gives up some per-expiry accuracy to stay arbitrage-free (SPY: 1.02 vol pts RMSE across 8 expiries, against
+  0.67–1.23 fitting each expiry on its own). Total variance is interpolated linearly between listed expiries, and vol
+  scenarios scale the term structure in proportion rather than reshaping it. The Monte Carlo view's paths are GBM with
+  one volatility; with a smile, its price histogram and probabilities come from the smile-implied distribution.
 - American early exercise is priced only by the CRR lattice in the Pricing Models Lab; Greeks, charts, stress and VaR treat options as European.
 - Monte Carlo prices European payoffs only. The Metal GPU kernel prices one contract per run; whole portfolios run on
   the multithreaded CPU kernel or in WebAssembly.

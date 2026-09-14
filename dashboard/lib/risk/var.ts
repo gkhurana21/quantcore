@@ -5,7 +5,7 @@ import { normalSampler } from '../quant/rng';
 import type { Leg, Market } from '../quant/types';
 import { CONTRACT_MULT as M, signedQty } from '../quant/types';
 import { portfolioGreeks, portfolioValue } from '../strategy/portfolio';
-import { atSpot, atVol, legSigma } from '../quant/volSurface';
+import { atSpot, atVol, hasVolSurface, legSigma } from '../quant/volSurface';
 
 export const TRADING_DAYS = 252;
 
@@ -103,8 +103,9 @@ export function mcVaR(legs: Leg[], m: Market, conf: number, hDays: number,
       const z2 = rho * z1 + rhoC * nextVol();
       sigma = m.sigma * Math.exp(-0.5 * nu * nu * h + nu * Math.sqrt(h) * z2);
     }
-    // with a smile, revalue sticky-strike: each strike keeps its place on the smile at the shocked ATM level
-    const sm = m.smile ? atVol(atSpot(m, S), sigma) : null;
+    // with a smile, revalue sticky-strike: each strike keeps its place on the smile at the shocked ATM level;
+    // a term structure scales with it, and each leg is read off it at its remaining maturity
+    const sm = hasVolSurface(m) ? atVol(atSpot(m, S), sigma) : null;
     let v = 0;
     for (const l of legs) {
       const T = l.T - h;

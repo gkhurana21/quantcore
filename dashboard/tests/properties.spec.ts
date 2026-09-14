@@ -12,8 +12,8 @@ import { crrAmericanPrice, crrPrice } from '../lib/quant/binomial';
 import { impliedVol } from '../lib/quant/impliedVol';
 import { mcPortfolio } from '../lib/quant/monteCarlo';
 import { normCdf, normInv } from '../lib/quant/normal';
-import type { Leg, Market, Smile } from '../lib/quant/types';
-import { atSpot, legSigma } from '../lib/quant/volSurface';
+import type { Leg, Market, Smile, TermStructure } from '../lib/quant/types';
+import { atSpot, fittedTerm, legSigma } from '../lib/quant/volSurface';
 import { CONTRACT_MULT as M, signedQty } from '../lib/quant/types';
 import { payoffAnalytics, pnlAtFirstExpiry, portfolioGreeks, portfolioValue } from '../lib/strategy/portfolio';
 import { NO_SHOCK, SCENARIOS, stressReport } from '../lib/risk/stress';
@@ -420,5 +420,48 @@ test.describe('property: volatility smile', () => {
       if (!(z < 4)) bad.push(`|z| ${z.toFixed(2)}: MC ${mc.price} ± ${mc.se} vs ${ref} ${JSON.stringify({ m, legs })}`);
     }
     expect(bad).toEqual([]);
+  });
+
+  test('with an ATM term structure (and a smile or not), mixed-expiry portfolios revalue consistently and Monte Carlo converges', () => {
+    const g = rng(23);
+    const bad: string[] = [];
+    const DAYS = [7, 30, 90, 365];
+    const randomTerm = (): TermStructure => {
+      if (g.u() < 0.5) return { kind: 'curve', ratio: g.logRange(0.4, 2.5), halfLife: g.logRange(3 / 365, 1) };
+      const theta: number[] = [];
+      DAYS.forEach((d, i) => theta.push(Math.max(theta[i - 1] ?? 0, g.logRange(0.08, 0.4) ** 2 * (d / 365))));
+      return fittedTerm(DAYS.map(d => d / 365), theta)!.term;
+    };
+    for (let i = 0; i < 200; i++) {
+      const m: Market = { ...randomMarket(g), term: randomTerm(), ...(g.u() < 0.6 ? { smile: randomSmile(g) } : {}) };
+      m.sigma = Math.min(m.sigma, 0.8);
+      const legs = randomLegs(g, m, false, 7 / 365);   // mixed expiries: each leg reads its own ATM volatility
+      const gk = portfolioGreeks(legs, m);
+      const tol = 1e-9 * Math.max(1, Math.abs(gk.price));
+      const ctx = JSON.stringify({ m, legs });
+      const checks: [string, number][] = [
+        ['portfolioValue', portfolioValue(legs, m)],
+        ['sticky-strike scenario at today’s spot', portfolioValue(legs, atSpot(m, m.S))],
+        ['stress with no shock', stressReport(legs, m, NO_SHOCK).after.value],
+        ['P&L surface centre', portfolioValue(legs, m) + pnlSurface(legs, m)[2][2]],
+      ];
+      for (const [name, v] of checks) if (!(Math.abs(v - gk.price) <= tol)) bad.push(`${name}: ${v} vs tiles ${gk.price} ${ctx}`);
+      const one = mcVaR(legs, m, 0.95, 1, 2000, 7), twoAtZero = mcVaR(legs, m, 0.95, 1, 2000, 7, { volOfVol: 0, rho: -0.7 });
+      if (one.var !== twoAtZero.var) bad.push(`VaR: one-factor ${one.var} vs two-factor ν=0 ${twoAtZero.var}`);
+
+      const size = legs.reduce((a, l) => a + l.qty * M, 0);
+      const V = (S: number) => portfolioValue(legs, atSpot(m, S));
+      const width = m.S * Math.min(...legs.map(l => legSigma(m, l.K, l.T) * Math.sqrt(l.T)));
+      const hS = 1e-3 * width;
+      const delta = (V(m.S + hS) - V(m.S - hS)) / (2 * hS);
+      if (Math.abs(gk.delta - delta) > 1e-5 * size) bad.push(`delta ${gk.delta} vs ${delta} ${ctx}`);
+
+      if (i < 12) {
+        const mc = mcPortfolio(legs, m, 100_000, 3000 + i);
+        const z = mc.se > 0 ? Math.abs(mc.price - gk.price) / mc.se : Math.abs(mc.price - gk.price) < 1e-9 ? 0 : Infinity;
+        if (!(z < 4)) bad.push(`|z| ${z.toFixed(2)}: MC ${mc.price} ± ${mc.se} vs ${gk.price} ${ctx}`);
+      }
+    }
+    expect(bad.slice(0, 5)).toEqual([]);
   });
 });

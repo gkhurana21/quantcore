@@ -18,7 +18,8 @@ const TICKER_RE = /^[A-Z][A-Z0-9.-]{0,9}$/;
 export interface LiveData {
   mode: DataMode;
   feed: string | null;
-  expirations: string[];
+  expirations: string[];      // the nearest expiries, for the legs' expiry picker
+  allExpirations: string[];   // every listed expiry out to two years, for a surface fit
   expiry: string;
   chain: LiveChainOption[];
   chainMsg: string;
@@ -32,6 +33,7 @@ export function useLiveData(sym: string, spot: number, dispatch: Dispatch<Termin
   const [mode, setMode] = useState<DataMode>('checking');
   const [feed, setFeed] = useState<string | null>(null);
   const [expirations, setExpirations] = useState<string[]>([]);
+  const [allExpirations, setAllExpirations] = useState<string[]>([]);
   const [expiry, setExpiry] = useState('');
   const [chain, setChain] = useState<LiveChainOption[]>([]);
   const [chainMsg, setChainMsg] = useState('');
@@ -47,7 +49,7 @@ export function useLiveData(sym: string, spot: number, dispatch: Dispatch<Termin
   }, []);
 
   useEffect(() => {
-    setExpirations([]); setExpiry(''); setChain([]); setChainMsg(''); setAtmIv(0);
+    setExpirations([]); setAllExpirations([]); setExpiry(''); setChain([]); setChainMsg(''); setAtmIv(0);
     if (mode !== 'live') return;
     let stale = false;
     fetchQuote(sym).then(q => {
@@ -57,7 +59,7 @@ export function useLiveData(sym: string, spot: number, dispatch: Dispatch<Termin
       dispatch({ type: 'liveQuote', instrument: mkLiveInstrument(sym, known?.name ?? sym, q.last, known?.vol ?? 0.3) });
     }).catch(() => { /* snapshot values stay in place */ });
     fetchExpirations(sym)
-      .then(e => { if (!stale) setExpirations(e.expirations.slice(0, 16)); })
+      .then(e => { if (!stale) { setExpirations(e.expirations.slice(0, 16)); setAllExpirations(e.expirations); } })
       .catch(() => { /* expiry picker stays hidden */ });
     return () => { stale = true; };
   }, [mode, sym, dispatch]);
@@ -110,5 +112,5 @@ export function useLiveData(sym: string, spot: number, dispatch: Dispatch<Termin
     return iv <= atmIv * 2.5 && iv >= atmIv * 0.25;
   }, [atmIv]);
 
-  return { mode, feed, expirations, expiry, chain, chainMsg, atmIv, search, applyExpiry, usableIv };
+  return { mode, feed, expirations, allExpirations, expiry, chain, chainMsg, atmIv, search, applyExpiry, usableIv };
 }

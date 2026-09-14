@@ -33,7 +33,7 @@ export const wingWidth = (S: number, kstep: number): number =>
 
 export const isCanonicalMarket = (sym: string, m: Market): boolean =>
   sym === CANONICAL.sym && m.S === CANONICAL.S && m.sigma === CANONICAL.sigma &&
-  m.r === CANONICAL.r && m.q === 0 && !m.smile;
+  m.r === CANONICAL.r && m.q === 0 && !m.smile && !m.term;
 
 export function makeLeg(call: boolean, side: Side, K: number, T: number, qty: number, m: Market): Leg {
   return { id: newLegId(), call, side, qty, K, T, premium: bsPrice(call, m.S, K, T, legSigma(m, K, T), m.r, m.q) };

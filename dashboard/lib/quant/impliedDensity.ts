@@ -13,7 +13,7 @@
 
 import { normCdf, normPdf } from './normal';
 import type { Market } from './types';
-import { durrleman, ssvi } from './volSurface';
+import { atmVariance, durrleman, ssvi } from './volSurface';
 
 export interface SmileDistribution {
   forward: number;
@@ -35,7 +35,7 @@ export function smileDistribution(m: Market, T: number): SmileDistribution | nul
   const s = m.smile;
   if (!s || !(T > 0) || !(m.S > 0) || !(m.sigma > 0)) return null;
   const forward = (m.smileSpot ?? m.S) * Math.exp((m.r - m.q) * T);
-  const theta = m.sigma * m.sigma * T;
+  const theta = atmVariance(m, T);   // σ²·T without a term structure
 
   const density = (k: number) => {
     const { w } = ssvi(k, theta, s);

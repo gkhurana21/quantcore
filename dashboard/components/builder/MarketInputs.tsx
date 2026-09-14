@@ -1,16 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Dispatch } from 'react';
 import { INSTRUMENTS, mkCustomInstrument } from '@/lib/market/instruments';
-import type { Market, Smile } from '@/lib/quant/types';
-import type { Calibration } from '@/lib/quant/calibrate';
-import { calibrateSmile, otmQuotes, yearsToExpiry } from '@/lib/quant/calibrate';
-import type { SmilePreset } from '@/lib/quant/volSurface';
-import { clampSmile, SMILE_PRESETS } from '@/lib/quant/volSurface';
-import { signedPct } from '@/lib/format';
+import type { Market, Smile, TermStructure } from '@/lib/quant/types';
+import type { SurfaceCalibration } from '@/lib/quant/calibrate';
+import { MIN_QUOTES } from '@/lib/quant/calibrate';
+import type { SmilePreset, TermPreset } from '@/lib/quant/volSurface';
+import { clampSmile, clampTerm, SMILE_PRESETS, TERM_LIMITS, TERM_PRESETS } from '@/lib/quant/volSurface';
+import { loadSurfaceSlices, pickSurfaceExpiries } from '@/lib/market/surfaceData';
+import type { SurfaceRequest } from '@/lib/compute/tasks';
+import { useWorkerTask } from '@/lib/compute/useWorkerTask';
+import { firstExpiry } from '@/lib/strategy/portfolio';
+import { pct, signedPct } from '@/lib/format';
 import { Badge, Button, InfoTip, Segmented, SliderField } from '@/components/ui/primitives';
 import { SmileChart } from './SmileChart';
+import { TermChart } from './TermChart';
 import type { TerminalAction, TerminalState } from '@/components/terminal/useTerminalState';
 import type { LiveData } from '@/components/terminal/useLiveData';
 import b from './builder.module.css';
@@ -30,6 +35,9 @@ const bps = (d: number) => `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d * 1e
 const SMILE_CHOICES = ['Flat', 'Equity index', 'Single stock', 'Custom'] as const;
 type SmileChoice = typeof SMILE_CHOICES[number];
 
+const TERM_CHOICES = ['Flat', 'Upward', 'Inverted', 'Custom'] as const;
+type TermChoice = typeof TERM_CHOICES[number] | 'Fitted';
+
 /** Largest curvature on the slider grid that stays arbitrage-free for this skew: η ≤ 2 / (1 + |ρ|). */
 const etaCap = (rho: number) => +(Math.floor(2 / (1 + Math.abs(rho)) / 0.05 + 1e-9) * 0.05).toFixed(2);
 
@@ -38,6 +46,11 @@ function snapSmile(s: Smile): Smile {
   const c = clampSmile({ rho: +s.rho.toFixed(2), eta: +s.eta.toFixed(2), gamma: s.gamma });
   return { ...c, eta: Math.min(c.eta, etaCap(c.rho)) };
 }
+
+type Fit = SurfaceCalibration & { sym: string; ms: number };
+
+/** The σ the sliders can show for a fit. */
+const fitSigma = (c: SurfaceCalibration) => Math.min(1.5, Math.max(0.01, c.sigma));
 
 export function MarketInputs({ state, dispatch, live }: {
   state: TerminalState; dispatch: Dispatch<TerminalAction>; live: LiveData;
@@ -52,6 +65,7 @@ export function MarketInputs({ state, dispatch, live }: {
   const changed = m.S !== base.S || m.sigma !== base.sigma || m.r !== base.r || m.q !== base.q;
   const all = [...INSTRUMENTS, ...state.searched];
 
+  // ── smile ──────────────────────────────────────────────────────────────────
   const [customSmile, setCustomSmile] = useState(false);
   const smile = m.smile;
   const presetName = smile
@@ -67,29 +81,38 @@ export function MarketInputs({ state, dispatch, live }: {
     else setSmile(SMILE_PRESETS[c]);
   };
 
-  // ── fit the smile to the loaded option chain (live data only) ───────────────
-  const [fit, setFit] = useState<(Calibration & { sym: string; expiry: string }) | null>(null);
-  const [fitMsg, setFitMsg] = useState('');
-  const canFit = live.mode === 'live' && !!live.expiry && live.chain.length > 0;
-  const fitSigma = (c: Calibration) => Math.min(1.5, Math.max(0.01, c.sigma));
-  const runFit = () => {
-    const T = yearsToExpiry(live.expiry);
-    const quotes = otmQuotes(live.chain, m.S * Math.exp((m.r - m.q) * T), live.atmIv);
-    // γ = ½ gives the arbitrage-free region the most reach for short-dated, steep smiles
-    const cal = calibrateSmile(quotes, m.S, m.r, m.q, T, 0.5);
-    if (!cal) {
-      setFit(null);
-      setFitMsg(`${quotes.length} out-of-the-money strikes on ${live.expiry} have a market IV — at least 5 are needed to fit.`);
-      return;
-    }
-    setFitMsg('');
-    setCustomSmile(true);
-    setFit({ ...cal, sym: inst.sym, expiry: live.expiry });
-    set({ sigma: fitSigma(cal), smile: cal.smile });   // unrounded: the sliders display two decimals
-    dispatch({ type: 'setExpiry', T });                  // re-enter premiums at the fitted vols, as picking an expiry does
+  // ── ATM term structure ────────────────────────────────────────────────────
+  const [customTerm, setCustomTerm] = useState(false);
+  const term = m.term ?? null;
+  const termPreset = term?.kind === 'curve'
+    ? (Object.keys(TERM_PRESETS) as TermPreset[]).find(k => TERM_PRESETS[k].ratio === term.ratio && TERM_PRESETS[k].halfLife === term.halfLife)
+    : undefined;
+  const termChoice: TermChoice = !term ? 'Flat' : term.kind === 'fitted' ? 'Fitted' : customTerm || !termPreset ? 'Custom' : termPreset;
+  const termOptions: TermChoice[] = term?.kind === 'fitted' ? [...TERM_CHOICES, 'Fitted'] : [...TERM_CHOICES];
+  const setTerm = (t: TermStructure | null) => set({ term: t ? clampTerm(t) : null });
+  const chooseTerm = (c: TermChoice) => {
+    if (c === 'Fitted') return;
+    setCustomTerm(c === 'Custom');
+    if (c === 'Flat') setTerm(null);
+    else if (c === 'Custom') setTerm(term?.kind === 'curve' ? term : { kind: 'curve', ratio: 0.8, halfLife: 0.25 });
+    else setTerm(TERM_PRESETS[c]);
   };
-  const fitShown = fit && smile && inst.sym === fit.sym && live.expiry === fit.expiry && m.sigma === fitSigma(fit) &&
+
+  // ── surface fit to the listed option chains (live data only) ──────────────
+  const [fit, setFit] = useState<Fit | null>(null);
+  const onFitted = useCallback((f: Fit) => {
+    if (f.sym !== inst.sym) return;
+    setCustomSmile(true);
+    setFit(f);
+    dispatch({ type: 'market', patch: { sigma: fitSigma(f), smile: f.smile, term: f.term } });   // unrounded
+    dispatch({ type: 'repriceLegs' });   // re-enter premiums at the fitted vols
+  }, [dispatch, inst.sym]);
+  const fitShown = fit && smile && inst.sym === fit.sym && m.sigma === fitSigma(fit) && (m.term ?? null) === fit.term &&
     smile.rho === fit.smile.rho && smile.eta === fit.smile.eta && smile.gamma === fit.smile.gamma ? fit : null;
+  const canFit = live.mode === 'live' && live.allExpirations.length > 0 && !inst.custom;
+  const chartT = state.legs.length ? Math.max(firstExpiry(state.legs), 1 / 365) : 30 / 365;
+  const chartSlice = fitShown?.slices.find(s => Math.abs(s.T - chartT) < 0.5 / 365);
+  const termPoints = fitShown?.slices.flatMap(s => (s.marketAtmVol != null ? [{ T: s.T, vol: s.marketAtmVol }] : []));
 
   return (
     <div>
@@ -151,11 +174,11 @@ export function MarketInputs({ state, dispatch, live }: {
                      testid="spot-input" displayTestid="spot-display" inputDecimals={2}
                      delta={m.S !== base.S ? signedPct(m.S / base.S - 1, 2) : null}
                      rangeLabels={[lo.toFixed(0), hi.toFixed(0)]} />
-        <SliderField label="Volatility" symbol="σ" value={m.sigma} min={0.01} max={1.5} step={0.005}
+        <SliderField label={term ? 'Volatility · 30-day ATM' : 'Volatility'} symbol="σ" value={m.sigma} min={0.01} max={1.5} step={0.005}
                      format={v => `${(v * 100).toFixed(1)}%`} onChange={sigma => set({ sigma })}
                      testid="vol-input" displayTestid="vol-display" inputScale={100} inputDecimals={1}
                      delta={m.sigma !== base.sigma ? volPts(m.sigma - base.sigma) : null}
-                     tip="Annualised implied volatility, flat across expiries. With a smile set below, this is the at-the-money volatility." />
+                     tip="Annualised implied volatility. With a smile it is the at-the-money volatility; with a term structure, the 30-day at-the-money volatility, and other expiries follow the curve below." />
         <SliderField label="Risk-free rate" symbol="r" value={m.r} min={0} max={0.15} step={0.0005}
                      format={v => `${(v * 100).toFixed(2)}%`} onChange={r => set({ r })}
                      testid="rate-input" displayTestid="rate-display" inputScale={100} inputDecimals={2}
@@ -186,20 +209,32 @@ export function MarketInputs({ state, dispatch, live }: {
                          tip="How fast volatility rises away from the money. Capped at 2 / (1 + |ρ|), the arbitrage-free limit." />
           </div>
         )}
-        <SmileChart market={m} legs={state.legs} quotes={fitShown?.points} />
-        {canFit && (
-          <div className={b.fitRow}>
-            <Button size="sm" onClick={runFit} data-testid="smile-fit">Fit to {inst.sym} {live.expiry} chain</Button>
-            {fitShown && (
-              <span className={b.subtle} data-testid="smile-fit-stats" data-rmse={fitShown.rmseVolPts} data-n={fitShown.points.length}
-                    title="Root-mean-square gap between the fitted smile and the market implied vols of out-of-the-money quotes">
-                {fitShown.points.length} quotes · RMSE {fitShown.rmseVolPts.toFixed(2)} vol pts
-                {fitShown.atLimit ? ' · at the arbitrage-free limit' : ''}
-              </span>
-            )}
+        <SmileChart market={m} legs={state.legs} quotes={chartSlice?.points} />
+      </div>
+
+      <div className={b.smile} data-testid="term-panel">
+        <span className={b.smileTitle}>
+          ATM term structure
+          <InfoTip align="start" text="How at-the-money volatility changes with expiry. With a term structure, σ above is the 30-day ATM volatility. Total variance never falls with maturity, so calendar spreads stay arbitrage-free; vol scenarios scale every expiry in proportion." />
+        </span>
+        <Segmented size="sm" full label="ATM term structure" testid="term" value={termChoice}
+                   options={termOptions.map(v => ({ value: v, label: v, ...(v === 'Fitted' ? { title: 'Fitted to the listed option chains' } : {}) }))}
+                   onChange={chooseTerm} />
+        {term?.kind === 'curve' && (
+          <div className={b.sliders} style={{ marginTop: 0 }}>
+            <SliderField label="Short end ÷ long run" value={term.ratio} min={TERM_LIMITS.ratio[0]} max={TERM_LIMITS.ratio[1]} step={0.05}
+                         format={v => `${v.toFixed(2)}×`} testid="term-ratio" displayTestid="term-ratio-display"
+                         onChange={ratio => { setCustomTerm(true); setTerm({ ...term, ratio: +ratio.toFixed(2) }); }}
+                         tip="Instantaneous ATM volatility at the short end relative to its long-run level: below 1 the curve slopes upward (calm markets), above 1 it inverts (stress)." />
+            <SliderField label="Half-life" value={term.halfLife} min={TERM_LIMITS.halfLife[0]} max={TERM_LIMITS.halfLife[1]} step={1 / 365}
+                         format={v => `${Math.round(v * 365)} d`} testid="term-halflife" displayTestid="term-halflife-display"
+                         inputScale={365} inputDecimals={0}
+                         onChange={h => { setCustomTerm(true); setTerm({ ...term, halfLife: Math.max(TERM_LIMITS.halfLife[0], Math.round(h * 365) / 365) }); }}
+                         tip="How quickly short-dated volatility reverts to its long-run level (the variance gap halves in this time)." />
           </div>
         )}
-        {fitMsg && <p className={b.searchMsg} role="status" data-testid="smile-fit-msg">{fitMsg}</p>}
+        <TermChart market={m} legs={state.legs} points={termPoints} />
+        {canFit && <SurfaceFit key={inst.sym} sym={inst.sym} market={m} live={live} shown={fitShown} onFitted={onFitted} />}
       </div>
 
       <div className={b.marketFoot}>
@@ -208,5 +243,88 @@ export function MarketInputs({ state, dispatch, live }: {
                 onClick={() => dispatch({ type: 'resetMarket' })}>Reset</Button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Loads a spread of listed expiries' chains and fits one arbitrage-free SSVI surface to them in the compute
+ * worker. Mounted only with live data, so the hosted snapshot site starts no worker for it.
+ */
+function SurfaceFit({ sym, market, live, shown, onFitted }: {
+  sym: string; market: Market; live: LiveData; shown: Fit | null; onFitted: (fit: Fit) => void;
+}) {
+  const [job, setJob] = useState<{ key: string; sym: string; req: SurfaceRequest; failed: string[] } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState('');
+  const task = useWorkerTask('surface', job?.req ?? null, job?.key ?? '', 0);
+  const applied = useRef('');
+  const seq = useRef(0);
+
+  useEffect(() => {
+    if (!job || task.resultKey !== job.key || applied.current === job.key) return;
+    applied.current = job.key;
+    const cal = task.error ? null : task.result?.cal ?? null;
+    if (!cal) {
+      setMsg(task.error ? `Surface fit failed: ${task.error}`
+        : `No expiry had ${MIN_QUOTES} or more out-of-the-money quotes with a market implied volatility.`);
+      return;
+    }
+    setMsg(job.failed.length ? `Chain unavailable for ${job.failed.join(', ')} — fitted without ${job.failed.length === 1 ? 'it' : 'them'}.` : '');
+    onFitted({ ...cal, sym: job.sym, ms: task.result?.ms ?? 0 });
+  }, [job, task.resultKey, task.result, task.error, onFitted]);
+
+  const run = async () => {
+    const id = ++seq.current;
+    setLoading(true);
+    setMsg('');
+    const expiries = pickSurfaceExpiries(live.allExpirations, live.expiry);
+    const { slices, failed } = await loadSurfaceSlices(sym, expiries, market.S, market.r, market.q);
+    if (id !== seq.current) return;
+    setLoading(false);
+    setJob({ key: `${sym}|${id}`, sym, req: { slices, S: market.S, r: market.r, q: market.q }, failed });
+  };
+  const fitting = loading || (!!job && task.resultKey !== job.key);
+
+  return (
+    <>
+      <div className={b.fitRow}>
+        <Button size="sm" onClick={run} disabled={fitting} data-testid="surface-fit">
+          {loading ? 'Loading chains…' : fitting ? 'Fitting surface…' : `Fit surface to ${sym} chains`}
+        </Button>
+        {shown && (
+          <span className={b.subtle} data-testid="surface-fit-stats" data-rmse={shown.rmseVolPts} data-n={shown.quotes}
+                data-expiries={shown.slices.length} data-term={shown.term ? 'fitted' : 'flat'}
+                title="Root-mean-square gap between the fitted surface and the market implied vols of out-of-the-money quotes, over every expiry">
+            {shown.slices.length} {shown.slices.length === 1 ? 'expiry' : 'expiries'} · {shown.quotes} quotes · RMSE {shown.rmseVolPts.toFixed(2)} vol pts
+            {shown.atLimit ? ' · at the arbitrage-free limit' : ''}{shown.pooled ? ' · calendar arbitrage in the quotes pooled' : ''}
+          </span>
+        )}
+      </div>
+      {msg && <p className={b.searchMsg} role="status" data-testid="surface-fit-msg">{msg}</p>}
+      {shown && (
+        <details className={b.fitDetails}>
+          <summary>
+            Fit by expiry · ρ {shown.smile.rho.toFixed(2)} · η {shown.smile.eta.toFixed(2)} · γ {shown.smile.gamma.toFixed(2)} · {Math.round(shown.ms)} ms
+          </summary>
+          <div className={b.fitTableWrap}>
+            <table className={b.fitTable} data-testid="surface-fit-table">
+              <thead>
+                <tr><th scope="col">Expiry</th><th scope="col">Days</th><th scope="col">Quotes</th>
+                    <th scope="col">ATM fit</th><th scope="col">ATM mkt</th><th scope="col">RMSE</th></tr>
+              </thead>
+              <tbody>
+                {shown.slices.map(s => (
+                  <tr key={s.expiry}>
+                    <td>{s.expiry}</td><td>{Math.round(s.T * 365)}</td><td>{s.points.length}</td>
+                    <td>{pct(s.atmVol, 1)}</td><td>{s.marketAtmVol != null ? pct(s.marketAtmVol, 1) : '—'}</td>
+                    <td>{s.rmseVolPts.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+    </>
   );
 }

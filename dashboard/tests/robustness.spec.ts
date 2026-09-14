@@ -121,6 +121,15 @@ async function randomWalk(page: Page, seed: number, steps: number, errors: strin
       }
       return choice;
     }],
+    ['term structure', 2, async () => {
+      const choice = pick(['Flat', 'Upward', 'Inverted', 'Custom']);
+      await page.locator(tid(`term-${choice}`)).click();
+      if (choice === 'Custom') {
+        await setRange(page, 'term-ratio', pick([0.4, 1, 2.5]));
+        await setRange(page, 'term-halflife', pick([3 / 365, 60 / 365, 1]));
+      }
+      return choice;
+    }],
     ['add leg', 3, async () => String(await clickIfEnabled('add-leg'))],
     ['remove leg', 2, async () => { const i = await legIndex(); return `${i} ${await clickIfEnabled(`leg-${i}-remove`)}`; }],
     ['strike', 3, async () => {

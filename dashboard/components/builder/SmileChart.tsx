@@ -34,7 +34,8 @@ export const SmileChart = memo(function SmileChart({ market: m, legs, quotes }: 
   const d = xs.map((x, i) => `${i ? 'L' : 'M'}${X(x).toFixed(1)},${Y(vols[i]).toFixed(1)}`).join('');
   const fwd = Math.exp((m.r - m.q) * T);   // the forward as a fraction of spot: where the smile's ATM volatility σ sits
   const down = at(0.9), atm = at(fwd), up = at(1.1);
-  const strikes = legs.filter(l => l.K / m.S > LO && l.K / m.S < HI);
+  // legs at the first expiry sit on this curve; later expiries have their own slice of the surface
+  const strikes = legs.filter(l => l.K / m.S > LO && l.K / m.S < HI && Math.abs(Math.max(l.T, 1 / 365) - T) < 1e-9);
 
   return (
     <figure className={b.smileFig}>
@@ -61,6 +62,7 @@ export const SmileChart = memo(function SmileChart({ market: m, legs, quotes }: 
       <figcaption className={b.smileCap}>
         {m.smile
           ? `σ by strike at ${days(T)}d: ${pct(down, 1)} at 90% of spot · ${pct(atm, 1)} at the money (forward) · ${pct(up, 1)} at 110%${shownQuotes.length ? ' · circles: market implied vols' : ''}`
+          : m.term ? `Flat across strikes: ${pct(atm, 1)} at ${days(T)}d, from the term structure below`
           : `Flat: every strike priced at σ ${pct(m.sigma, 1)}`}
       </figcaption>
     </figure>

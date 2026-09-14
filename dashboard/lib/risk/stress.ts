@@ -51,6 +51,8 @@ export function applyShock(m: Market, s: Shock): Market {
     q: m.q,
     // sticky strike: the smile stays centred on the pre-shock spot; the vol shock moves its ATM level
     ...(m.smile ? { smile: m.smile, smileSpot: m.smileSpot ?? m.S } : {}),
+    // the term structure keeps its shape: every expiry's ATM volatility scales with the shocked 30-day level
+    ...(m.term ? { term: m.term } : {}),
   };
 }
 

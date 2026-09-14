@@ -7,7 +7,7 @@ import type { Engine, EngineMcResult, EnginePortfolioResult } from '@/lib/engine
 import type { WasmEngine } from '@/lib/engine/useWasmEngine';
 import { BENCH_SOURCE, BENCHMARKS } from '@/lib/engine/benchmarks';
 import { legLabel, legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
-import { legSigma } from '@/lib/quant/volSurface';
+import { hasVolSurface, legSigma } from '@/lib/quant/volSurface';
 import type { CalcSource, CalcSourceKind } from '@/components/analytics/SummaryTiles';
 import { WasmPanel } from './WasmPanel';
 import { Badge, Button, cx, Segmented, Sparkline, ui } from '@/components/ui/primitives';
@@ -126,7 +126,7 @@ export function EnginePanel({ engine, wasm, legs, market, source }: {
   const blocker = !connected
     ? (engine.reason === 'hosted' ? 'Runs on a local machine only — not available on the hosted site.' : 'Native engine offline.')
     : market.q !== 0 && !engine.info?.dividends ? 'This engine build predates dividend support — set q to 0% or rebuild the engine.'
-    : market.smile && (engine.info?.protocol ?? 0) < 4 ? 'This engine build prices every leg at one volatility — set the smile to Flat or restart the engine.'
+    : hasVolSurface(market) && (engine.info?.protocol ?? 0) < 4 ? 'This engine build prices every leg at one volatility — set the smile and term structure to Flat or restart the engine.'
     : null;
 
   return (

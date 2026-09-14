@@ -4,8 +4,10 @@
 // seeded, so the same request always produces the same numbers.
 
 import { crrAmericanPrice, crrPrice, CRR_STEPS } from '../quant/binomial';
+import type { SurfaceCalibration, SurfaceSliceInput } from '../quant/calibrate';
+import { calibrateSurface } from '../quant/calibrate';
 import { probItm } from '../quant/blackScholes';
-import { atSpot, legSigma } from '../quant/volSurface';
+import { atmVol, atSpot, legSigma } from '../quant/volSurface';
 import { smileDistribution } from '../quant/impliedDensity';
 import { mulberry32 } from '../quant/rng';
 import type { McResult, TerminalDistribution } from '../quant/monteCarlo';
@@ -135,8 +137,8 @@ export function runMcViz(req: McVizRequest): McVizResult {
   const strikes = Array.from(new Set(legs.map(l => l.K))).sort((a, b) => a - b);
   const single = legs.length === 1 ? legs[0] : null;
   // GBM has one volatility: a single leg is simulated at its own smile volatility (so its
-  // price and P(ITM) match), a multi-leg portfolio at the ATM volatility.
-  const vm: Market = { S: m.S, sigma: single ? legSigma(m, single.K, single.T) : m.sigma, r: m.r, q: m.q };
+  // price and P(ITM) match), a multi-leg portfolio at the ATM volatility of the first expiry.
+  const vm: Market = { S: m.S, sigma: single ? legSigma(m, single.K, single.T) : atmVol(m, firstT), r: m.r, q: m.q };
 
   const paths = samplePaths(vm, horizonT, req.nPaths, req.nSteps, seed);
 
@@ -158,7 +160,7 @@ export function runMcViz(req: McVizRequest): McVizResult {
 
   const pdf: { x: number; y: number }[] = [];
   const pdfLognormal: { x: number; y: number }[] = [];
-  const atm: Market = { S: m.S, sigma: m.sigma, r: m.r, q: m.q };
+  const atm: Market = { S: m.S, sigma: atmVol(m, firstT), r: m.r, q: m.q };
   const perBin = dist.samples * dist.binWidth;
   const nPts = 120;
   for (let i = 0; i <= nPts; i++) {
@@ -179,6 +181,19 @@ export function runMcViz(req: McVizRequest): McVizResult {
     pathSigma: vm.sigma,
     ms: now() - t0,
   };
+}
+
+// ── Volatility surface calibration ──────────────────────────────────────────
+
+export interface SurfaceRequest { slices: SurfaceSliceInput[]; S: number; r: number; q: number; }
+
+/** `cal` is null when no expiry had enough quotes to fit. */
+export interface SurfaceResult { cal: SurfaceCalibration | null; ms: number; }
+
+export function runSurfaceFit(req: SurfaceRequest): SurfaceResult {
+  const t0 = now();
+  const cal = calibrateSurface(req.slices, req.S, req.r, req.q);
+  return { cal, ms: now() - t0 };
 }
 
 function expiryPnl(legs: Leg[], s: number, cost: number): number {
@@ -203,6 +218,7 @@ export interface TaskMap {
   lab: [LabRequest, LabResult];
   mcviz: [McVizRequest, McVizResult];
   mcvar: [McVarRequest, McVarResult];
+  surface: [SurfaceRequest, SurfaceResult];
 }
 export type TaskKind = keyof TaskMap;
 
@@ -211,6 +227,7 @@ export function runTask<K extends TaskKind>(kind: K, req: TaskMap[K][0]): TaskMa
     case 'lab': return runLab(req as LabRequest) as TaskMap[K][1];
     case 'mcviz': return runMcViz(req as McVizRequest) as TaskMap[K][1];
     case 'mcvar': return runMcVar(req as McVarRequest) as TaskMap[K][1];
+    case 'surface': return runSurfaceFit(req as SurfaceRequest) as TaskMap[K][1];
     default: throw new Error(`unknown task ${String(kind)}`);
   }
 }

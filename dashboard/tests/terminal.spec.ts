@@ -311,6 +311,52 @@ test.describe('QuantCore terminal flows', () => {
     expect(Number(await row.getAttribute('data-z'))).toBeLessThan(4);
   });
 
+  test('15. ATM term structure: each expiry reads its own ATM vol, σ stays the 30-day level, Flat restores', async ({ page }) => {
+    await open(page);
+    const chart = page.getByTestId('term-chart');
+    const attr = async (a: string) => Number(await chart.getAttribute(a));
+    const price = async () => Number(await page.getByTestId('price').textContent());
+
+    // one long call moved out to a year
+    const p47 = await price();
+    const dte = page.getByTestId('leg-0-dte');
+    await dte.fill('365');
+    await dte.press('Enter');
+    await expect.poll(price).not.toBe(p47);
+    const flatYear = await price();
+    expect(await attr('data-week')).toBe(await attr('data-year'));           // flat: one ATM volatility
+    expect(await attr('data-last')).toBe(0.138);
+
+    await page.getByTestId('term-Inverted').click();
+    await expect(page.getByTestId('term-Inverted')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByTestId('builder-vol-model')).toContainText('ATM term structure');
+    expect(await attr('data-month')).toBeCloseTo(0.138, 12);                  // σ is the 30-day ATM volatility
+    expect(await attr('data-week')).toBeGreaterThan(0.138);
+    expect(await attr('data-last')).toBeLessThan(0.138);                      // the one-year leg's ATM volatility
+    await expect.poll(price).toBeLessThan(flatYear);
+
+    await page.getByTestId('term-Upward').click();
+    expect(await attr('data-week')).toBeLessThan(0.138);
+    expect(await attr('data-last')).toBeGreaterThan(0.138);
+    await expect.poll(price).toBeGreaterThan(flatYear);
+
+    // a custom curve with no gap between the short end and the long run is flat again
+    await page.getByTestId('term-Custom').click();
+    await setRange(page, 'term-ratio', 1);
+    await expect(page.getByTestId('term-ratio-display')).toHaveText('1.00×');
+    await expect.poll(() => attr('data-last')).toBeCloseTo(0.138, 12);
+    await expect.poll(price).toBeCloseTo(flatYear, 3);
+
+    // a curve is a model choice: it survives an instrument switch, and Flat removes it
+    await setRange(page, 'term-ratio', 2);
+    await page.getByTestId('inst-NVDA').click();
+    await expect(page.getByTestId('term-Custom')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByTestId('term-ratio-display')).toHaveText('2.00×');
+    await page.getByTestId('term-Flat').click();
+    await expect(page.getByTestId('term-ratio')).toHaveCount(0);
+    expect(await attr('data-week')).toBe(await attr('data-year'));
+  });
+
   test('9. Risk / VaR: headline, confidence and horizon scaling, Monte Carlo VaR', async ({ page }) => {
     await open(page);
     await page.keyboard.press('4');                                // keyboard shortcut → Risk tab
