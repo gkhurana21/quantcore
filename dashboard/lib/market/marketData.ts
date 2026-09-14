@@ -2,7 +2,8 @@
 // All data is indicative / IEX — for education and analysis, never execution.
 //
 // The proxy is opt-in: it is contacted only when NEXT_PUBLIC_PROXY_URL is set
-// (e.g. http://localhost:8080 in dashboard/.env.local while `proxy/` runs). Without
+// (http://localhost:8080 while `proxy/` runs locally, or /api for the Netlify Function in
+// netlify/functions/market.ts on the hosted site). Without
 // it the terminal makes no market-data requests at all — no probe of a proxy that
 // isn't running, no console errors, no mixed-content requests from hosted builds.
 
@@ -39,14 +40,18 @@ async function get<T>(path: string, timeoutMs = 6000): Promise<T> {
   }
 }
 
-/** One cheap health probe gates every other request. /healthz answers plain text, so only the status counts. */
+/**
+ * One cheap health probe gates every other request. Live data only when /healthz answers exactly
+ * "ok": the Go proxy always does, the hosted function only once its credentials are configured.
+ */
 export async function probeProxy(timeoutMs = 1500): Promise<boolean> {
   const base = proxyUrl();
   if (!base) return false;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return (await fetch(`${base}/healthz`, { signal: ctrl.signal })).ok;
+    const res = await fetch(`${base}/healthz`, { signal: ctrl.signal });
+    return res.ok && (await res.text()).trim() === 'ok';
   } catch {
     return false;
   } finally {

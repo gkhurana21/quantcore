@@ -165,6 +165,19 @@ cd dashboard && NEXT_PUBLIC_PROXY_URL=http://localhost:8080 npm run dev
 
 The proxy is opt-in: without `NEXT_PUBLIC_PROXY_URL` the terminal makes no market-data requests.
 
+**Live data on the hosted site.** `dashboard/netlify/functions/market.ts` serves the same API as the Go proxy at
+`/api/*` on the site's own origin (a TypeScript port in `lib/market/alpaca.ts`: same Alpaca calls, response shapes,
+cache lifetimes and errors, plus CDN caching and a per-client rate limit). It can only make read-only GET requests to
+Alpaca's stock snapshot, option snapshot and option-contract listing endpoints. Until its credentials are set,
+`/api/healthz` answers `not configured` and the terminal stays on labelled snapshot and manual prices. To enable it,
+set the keys in the Netlify site's environment (they never enter the repository or the browser) and redeploy:
+
+```bash
+(set -a; . proxy/.env.local; set +a
+ npx netlify-cli env:set ALPACA_API_KEY_ID "$ALPACA_API_KEY_ID" --context production --scope functions
+ npx netlify-cli env:set ALPACA_API_SECRET_KEY "$ALPACA_API_SECRET_KEY" --context production --scope functions)
+```
+
 ## Testing
 
 ```bash
@@ -184,6 +197,9 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
   no-arbitrage bounds and parity at extreme inputs, portfolio Greeks vs finite differences, American ≥ European ≥
   intrinsic, implied-vol round trips, payoff analytics vs a dense scan (every sign change is a break-even), stress and
   VaR invariants, CSV round trips, import fuzzing and chart-axis ticks for degenerate ranges.
+- `tests/alpaca.spec.ts` — the hosted market-data function against a fake Alpaca: the Go proxy's response shapes,
+  validation, errors, caching, rate limiting, and that no order, position or account endpoint is reachable.
+  `tests/alpaca.live.spec.ts` (opt-in, `ALPACA_LIVE=1`) checks it against the running Go proxy with real data.
 - `tests/volSurface.spec.ts` — the SSVI smile: flat markets unchanged, ATM volatility equals σ, the arbitrage-free
   region (Durrleman's condition, butterfly prices and calendar spreads on dense grids, plus parameters outside the
   region that do fail), analytic derivatives, skew direction and sticky-strike scenarios.
@@ -217,8 +233,9 @@ source ~/emsdk/emsdk_env.sh && ./scripts/build-wasm.sh
 ```
 
 `netlify.toml` builds `dashboard/` and publishes `out/` for Git-connected Netlify deploys; `dashboard/out` can also
-be uploaded directly (Netlify CLI `deploy --dir dashboard/out`, or Netlify Drop). Set `NEXT_PUBLIC_PROXY_URL` at build
-time to enable live quotes through a deployed proxy; without it the hosted build makes no market-data requests.
+be uploaded directly with the market-data function (`NEXT_PUBLIC_PROXY_URL=/api npm run build`, then Netlify CLI
+`deploy --dir dashboard/out --functions dashboard/netlify/functions`). Without `NEXT_PUBLIC_PROXY_URL` a build makes no
+market-data requests at all.
 
 ## Project layout
 
@@ -229,7 +246,8 @@ bindings/      pybind11 bindings (GIL released around C++ compute); quantcore_wa
 scripts/       build-wasm.sh — C++ core → dashboard/public/wasm (module + manifest)
 python/        Benchmarks, market-data validation, VaR backtest
 server/        FastAPI WebSocket engine, latency harness, protocol check
-proxy/         Optional Go market-data proxy (Alpaca)
+proxy/         Optional Go market-data proxy (Alpaca) for local development
+dashboard/netlify/functions/  The same read-only market-data API as a Netlify Function for the hosted site
 dashboard/
   app/           Next.js app shell and design tokens
   components/    Terminal views: builder, analytics, lab, stress, risk, io, engine, layout, ui
@@ -254,8 +272,9 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
 - The native engine (Metal GPU, Accelerate SIMD, multithreading) is a local service. In the browser the C++ core runs
   as single-threaded WebAssembly and prices the Greeks tiles and single-contract Monte Carlo; charts, stress, VaR and
   the Pricing Lab use the TypeScript models.
-- Instrument prices are indicative snapshots or prices you enter, unless the optional data proxy is running; added
-  tickers start at 30% volatility until you set it.
+- Instrument prices are indicative snapshots or prices you enter unless live data is on (the local Go proxy, or the
+  hosted function once its credentials are set); live data is Alpaca's free IEX stock feed and indicative options feed,
+  for analysis rather than execution. Added tickers start at 30% volatility until you set it.
 - Stress scenarios are illustrative instantaneous shocks, not calibrated historical replays.
 - VaR is a single-underlying research model: the two-factor row adds implied-vol risk with illustrative, uncalibrated parameters, and rates stay fixed — educational, not a regulatory or trading risk measure.
 

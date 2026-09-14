@@ -10,6 +10,14 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  # the hosted terminal fetches market data from the Netlify Function below (same origin)
+  NEXT_PUBLIC_PROXY_URL = "/api"
+
+# Read-only Alpaca market data (dashboard/netlify/functions/market.ts, served at /api/*).
+# Needs ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY in the site's environment; without them
+# it answers "not configured" and the terminal stays on snapshot prices.
+[functions]
+  directory = "netlify/functions"
 
 # Static export already emits 404.html; no SPA rewrite needed (single route).
 [[headers]]

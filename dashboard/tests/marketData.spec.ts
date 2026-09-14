@@ -46,6 +46,9 @@ test.describe('market data client', () => {
     expect(await probeProxy()).toBe(true);
     expect(calls).toEqual(['http://localhost:8080/healthz']);
 
+    stub(() => new Response('not configured'));   // the hosted function before its credentials are set
+    expect(await probeProxy()).toBe(false);
+
     stub(() => new Response('unavailable', { status: 503 }));
     expect(await probeProxy()).toBe(false);
 

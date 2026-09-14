@@ -32,5 +32,5 @@ MSG
   exit 1
 fi
 
-echo "starting proxy with key ${ALPACA_API_KEY_ID:0:6}… on :${PORT:-8080}"
+echo "starting proxy on :${PORT:-8080} (credentials loaded from .env.local)"
 exec go run .
