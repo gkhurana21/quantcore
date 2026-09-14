@@ -172,7 +172,11 @@ export function RiskPanel({ legs, market, conf, horizon, onConf, onHorizon, acti
           <ul className={r.list}>
             <li>One risk factor: the underlying follows a zero-drift lognormal process over the horizon.</li>
             <li>Rates are held fixed. Volatility is fixed in the parametric and one-factor rows; the two-factor row adds implied-vol risk with illustrative parameters, not a calibrated vol model.</li>
-            <li>Flat implied volatility across strikes and expiries (no skew or smile); European exercise.</li>
+            <li data-testid="var-vol-assumption">
+              {market.smile
+                ? 'Implied volatility from the SSVI smile: spot returns use the at-the-money σ, each strike keeps its smile volatility (sticky strike), and the two-factor row shocks the at-the-money level'
+                : 'Flat implied volatility across strikes and expiries (no skew or smile)'}; European exercise.
+            </li>
             <li>σ√(h/252) scaling assumes independent daily returns (square-root-of-time).</li>
             <li>Parametric methods use today&rsquo;s Greeks; delta-normal is exact only for linear positions.</li>
           </ul>

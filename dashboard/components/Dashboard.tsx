@@ -260,7 +260,7 @@ export default function Dashboard() {
           <Panel id="market" index="01" title="Market">
             <MarketInputs state={state} dispatch={dispatch} live={live} />
           </Panel>
-          <Panel id="builder" index="02" title="Strategy Builder" meta={<span>{state.instrument.sym} · flat σ</span>}>
+          <Panel id="builder" index="02" title="Strategy Builder" meta={<span data-testid="builder-vol-model">{state.instrument.sym} · {market.smile ? 'SSVI smile' : 'flat σ'}</span>}>
             <StrategyBuilder state={state} dispatch={dispatch} live={live} />
           </Panel>
           <Panel id="upload" index="03" title="Portfolio Upload">

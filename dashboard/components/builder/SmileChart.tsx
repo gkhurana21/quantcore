@@ -23,15 +23,17 @@ export const SmileChart = memo(function SmileChart({ market: m, legs }: { market
   const X = (x: number) => PAD.l + ((x - LO) / (HI - LO)) * (W - PAD.l - PAD.r);
   const Y = (v: number) => PAD.t + (1 - (v - lo) / (hi - lo)) * (H - PAD.t - PAD.b);
   const d = xs.map((x, i) => `${i ? 'L' : 'M'}${X(x).toFixed(1)},${Y(vols[i]).toFixed(1)}`).join('');
-  const down = at(0.9), atm = at(1), up = at(1.1);
+  const fwd = Math.exp((m.r - m.q) * T);   // the forward as a fraction of spot: where the smile's ATM volatility σ sits
+  const down = at(0.9), atm = at(fwd), up = at(1.1);
   const strikes = legs.filter(l => l.K / m.S > LO && l.K / m.S < HI);
 
   return (
     <figure className={b.smileFig}>
       <svg viewBox={`0 0 ${W} ${H}`} className={b.smileChart} role="img" data-testid="smile-chart"
            data-down={down} data-atm={atm} data-up={up}
-           aria-label={`Implied volatility at ${days(T)} days: ${pct(down, 1)} at 90% of spot, ${pct(atm, 1)} at spot, ${pct(up, 1)} at 110%`}>
-        <line x1={X(1)} x2={X(1)} y1={PAD.t} y2={H - PAD.b} stroke="var(--line-2)" strokeDasharray="3 3" />
+           aria-label={`Implied volatility at ${days(T)} days: ${pct(down, 1)} at 90% of spot, ${pct(atm, 1)} at the money (forward), ${pct(up, 1)} at 110% of spot`}>
+        <line x1={X(fwd)} x2={X(fwd)} y1={PAD.t} y2={H - PAD.b} stroke="var(--line-2)" strokeDasharray="3 3" />
+        <text x={X(fwd) + 4} y={PAD.t + 8} className={b.smileTick}>ATM</text>
         <path d={d} fill="none" stroke="var(--amber-2)" strokeWidth={1.6} />
         {strikes.map(l => (
           <circle key={l.id} cx={X(l.K / m.S)} cy={Y(legSigma(m, l.K, T))} r={3}
@@ -45,7 +47,7 @@ export const SmileChart = memo(function SmileChart({ market: m, legs }: { market
       </svg>
       <figcaption className={b.smileCap}>
         {m.smile
-          ? `σ by strike at ${days(T)}d: ${pct(down, 1)} · ${pct(atm, 1)} · ${pct(up, 1)} at 90 · 100 · 110% of spot`
+          ? `σ by strike at ${days(T)}d: ${pct(down, 1)} at 90% of spot · ${pct(atm, 1)} at the money (forward) · ${pct(up, 1)} at 110%`
           : `Flat: every strike priced at σ ${pct(m.sigma, 1)}`}
       </figcaption>
     </figure>
