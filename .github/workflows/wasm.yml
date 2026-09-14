@@ -1,0 +1,42 @@
+name: wasm
+
+# Rebuilds the C++ → WebAssembly module with the Emscripten version recorded in its
+# manifest and fails if the result differs from the committed file — so the module the
+# hosted terminal runs is shown to be built from this repository's C++ sources.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'core/**'
+      - 'bindings/quantcore_wasm.cpp'
+      - 'scripts/build-wasm.sh'
+      - 'dashboard/public/wasm/**'
+      - '.github/workflows/wasm.yml'
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'bindings/quantcore_wasm.cpp'
+      - 'scripts/build-wasm.sh'
+      - 'dashboard/public/wasm/**'
+      - '.github/workflows/wasm.yml'
+
+jobs:
+  reproducible-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Emscripten version from the manifest
+        id: emsdk
+        run: echo "version=$(node -p 'require("./dashboard/public/wasm/quantcore.json").emscripten')" >> "$GITHUB_OUTPUT"
+      - name: Install Emscripten ${{ steps.emsdk.outputs.version }}
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install "${{ steps.emsdk.outputs.version }}"
+          "$RUNNER_TEMP/emsdk/emsdk" activate "${{ steps.emsdk.outputs.version }}"
+      - name: Rebuild the module
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          ./scripts/build-wasm.sh
+      - name: Committed module must be byte-identical to the rebuild
+        run: git diff --exit-code --stat -- dashboard/public/wasm

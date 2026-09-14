@@ -1,0 +1,45 @@
+{
+  "abi": 1,
+  "emscripten": "6.0.9",
+  "flags": [
+    "-std=c++17",
+    "-O3",
+    "-msimd128",
+    "-fno-exceptions",
+    "-fno-rtti",
+    "-Wall",
+    "-Wextra",
+    "-Wpedantic",
+    "-Werror",
+    "--no-entry",
+    "-sSTANDALONE_WASM",
+    "-sFILESYSTEM=0",
+    "-sSTACK_SIZE=65536",
+    "-sINITIAL_MEMORY=1048576",
+    "-sALLOW_MEMORY_GROWTH=0"
+  ],
+  "bytes": 10646,
+  "sha256": "4df6a1abeb422df6b8dbd8d1792319afa40992cd01caf31d14e0e59cc7d26ee1",
+  "sources": [
+    {
+      "path": "core/src/black_scholes.cpp",
+      "sha256": "b755a369243746e90989afe0bc817ce1711fdfca29068156a2faaad7957f633c"
+    },
+    {
+      "path": "core/src/monte_carlo.cpp",
+      "sha256": "34c723b2c6a413d91a09817653ec1b3bd8e0b6fdd7d7e1f313f63b17e9c0593d"
+    },
+    {
+      "path": "bindings/quantcore_wasm.cpp",
+      "sha256": "e9ef85eb0cbe2bec0c9273d02656c35c26dad74c22534b754fc9356aba397fd0"
+    },
+    {
+      "path": "core/include/quantcore/black_scholes.hpp",
+      "sha256": "61ab3d2ea2d4bcdb543fa5c4e8d0ebd875d8f1138812c62c9a0a451b1d3b5107"
+    },
+    {
+      "path": "core/include/quantcore/monte_carlo.hpp",
+      "sha256": "15bb8b6d9377ddb7199fb47e9ce594c16b5a760eeb5e5d7a920cd967af7928eb"
+    }
+  ]
+}
