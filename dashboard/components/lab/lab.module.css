@@ -25,7 +25,8 @@
 .swDash { display: inline-block; width: 14px; border-top: 1.5px dashed var(--ink-4); }
 
 .modelName { font-weight: 560; color: var(--ink); }
-.modelDetail { display: block; font-size: 11px; color: var(--ink-3); font-family: var(--mono); }
+/* details wrap within the column, so a long description never pushes |z| and the verdict out of view */
+.modelDetail { display: block; max-width: 36ch; white-space: normal; font-size: 11px; color: var(--ink-3); font-family: var(--mono); }
 .valueMain { font-weight: 600; color: var(--ink); }
 .valueSub { display: block; font-size: 11px; color: var(--ink-3); }
 .engineRow td { background: rgba(114, 169, 251, 0.06); }

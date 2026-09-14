@@ -144,7 +144,7 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
     const z = se > 0 ? Math.abs(value - ref) / se : 0;
     lvRow = { id: 'localvol', model: `Local vol (Dupire) · ${fmtPaths(lv.res.paths)}`,
               detail: lv.res.extrapolated
-                ? `Richardson 2·fine − coarse · ${lv.res.steps} steps · fine-grid bias est. ${usdSigned(lv.res.fineBias ?? 0, 2)} · seed ${lv.res.seed}`
+                ? `Richardson · ${lv.res.steps} steps · fine-grid bias ${usdSigned(lv.res.fineBias ?? 0, 2)} · seed ${lv.res.seed}`
                 : `exact variance steps (no smile) · ${lv.res.steps} steps · seed ${lv.res.seed}`,
               value, se, ms: lv.res.ms, z, verdict: mcVerdict(z), engine: true };
   }
