@@ -7,7 +7,9 @@ import { crrAmericanPrice, crrPrice, CRR_STEPS } from '../quant/binomial';
 import type { SurfaceCalibration, SurfaceSliceInput } from '../quant/calibrate';
 import { calibrateSurface } from '../quant/calibrate';
 import { probItm } from '../quant/blackScholes';
-import { atmVol, atSpot, legSigma } from '../quant/volSurface';
+import { atmVol, atSpot, hasVolSurface, legSigma } from '../quant/volSurface';
+import type { LocalVolMcResult } from '../quant/localVol';
+import { localVol, mcLocalVol, sampleLocalVolPaths } from '../quant/localVol';
 import { smileDistribution } from '../quant/impliedDensity';
 import { mulberry32 } from '../quant/rng';
 import type { McResult, TerminalDistribution } from '../quant/monteCarlo';
@@ -125,7 +127,30 @@ export interface McVizResult {
   expectedPnl: number;               // mean P&L at the first expiry across samples
   forward: number;
   pathSigma: number;                 // volatility of the simulated GBM: the leg's smile vol for one leg, ATM σ otherwise
+  pathModel: 'gbm' | 'local-vol';    // local volatility whenever the market has a smile or term structure
+  localVol: LocalVolView | null;     // with a surface: local against implied volatility at the first expiry
   ms: number;
+}
+
+/** Dupire local volatility against implied volatility across strikes at one expiry. */
+export interface LocalVolView {
+  T: number;
+  moneyness: number[];   // K / S, 70% to 130%
+  local: number[];       // σ_loc at spot K and time T
+  implied: number[];     // implied volatility of strike K at expiry T
+  atm: { local: number; implied: number };    // at K = S
+  down: { local: number; implied: number };   // at K = 90% of S
+}
+
+function localVolView(m: Market, T: number): LocalVolView {
+  const moneyness = Array.from({ length: 61 }, (_, i) => 0.7 + i * 0.01);
+  const at = (x: number) => ({ local: localVol(m, x * m.S, T), implied: legSigma(m, x * m.S, T) });
+  return {
+    T, moneyness,
+    local: moneyness.map(x => localVol(m, x * m.S, T)),
+    implied: moneyness.map(x => legSigma(m, x * m.S, T)),
+    atm: at(1), down: at(0.9),
+  };
 }
 
 export function runMcViz(req: McVizRequest): McVizResult {
@@ -140,7 +165,12 @@ export function runMcViz(req: McVizRequest): McVizResult {
   // price and P(ITM) match), a multi-leg portfolio at the ATM volatility of the first expiry.
   const vm: Market = { S: m.S, sigma: single ? legSigma(m, single.K, single.T) : atmVol(m, firstT), r: m.r, q: m.q };
 
-  const paths = samplePaths(vm, horizonT, req.nPaths, req.nSteps, seed);
+  // With a smile or term structure the paths follow Dupire local volatility built from that surface — the
+  // one diffusion that reprices every option on it — rather than GBM at a single volatility.
+  const surface = hasVolSurface(m);
+  const paths = surface
+    ? sampleLocalVolPaths(m, horizonT, req.nPaths, req.nSteps, seed)
+    : samplePaths(vm, horizonT, req.nPaths, req.nSteps, seed);
 
   let profit = 0, pnlSum = 0;
   const later = legs.some(l => l.T - firstT > 1e-9);
@@ -179,8 +209,23 @@ export function runMcViz(req: McVizRequest): McVizResult {
     expectedPnl: pnlSum / req.histSamples,
     forward: m.S * Math.exp((m.r - m.q) * firstT),
     pathSigma: vm.sigma,
+    pathModel: surface ? 'local-vol' : 'gbm',
+    localVol: surface ? localVolView(m, firstT) : null,
     ms: now() - t0,
   };
+}
+
+// ── Local volatility Monte Carlo ────────────────────────────────────────────
+
+export const LV_PATHS = 100_000;
+export const LV_STEPS_PER_YEAR = 365;
+
+export interface LocalVolRequest { legs: Leg[]; market: Market; seed: number; }
+
+export interface LocalVolResult extends LocalVolMcResult { seed: number; stepsPerYear: number; }
+
+export function runLocalVol({ legs, market, seed }: LocalVolRequest): LocalVolResult {
+  return { ...mcLocalVol(legs, market, LV_PATHS, seed, LV_STEPS_PER_YEAR), seed, stepsPerYear: LV_STEPS_PER_YEAR };
 }
 
 // ── Volatility surface calibration ──────────────────────────────────────────
@@ -219,6 +264,7 @@ export interface TaskMap {
   mcviz: [McVizRequest, McVizResult];
   mcvar: [McVarRequest, McVarResult];
   surface: [SurfaceRequest, SurfaceResult];
+  localvol: [LocalVolRequest, LocalVolResult];
 }
 export type TaskKind = keyof TaskMap;
 
@@ -228,6 +274,7 @@ export function runTask<K extends TaskKind>(kind: K, req: TaskMap[K][0]): TaskMa
     case 'mcviz': return runMcViz(req as McVizRequest) as TaskMap[K][1];
     case 'mcvar': return runMcVar(req as McVarRequest) as TaskMap[K][1];
     case 'surface': return runSurfaceFit(req as SurfaceRequest) as TaskMap[K][1];
+    case 'localvol': return runLocalVol(req as LocalVolRequest) as TaskMap[K][1];
     default: throw new Error(`unknown task ${String(kind)}`);
   }
 }

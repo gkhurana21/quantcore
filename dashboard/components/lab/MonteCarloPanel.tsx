@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useRef, useState } from 'react';
 import type { Leg, Market } from '@/lib/quant/types';
-import type { McVizResult } from '@/lib/compute/tasks';
+import type { LocalVolView, McVizResult } from '@/lib/compute/tasks';
 import { useWorkerTask } from '@/lib/compute/useWorkerTask';
 import { legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
 import { days, num, pct, usdSigned } from '@/lib/format';
@@ -178,6 +178,47 @@ const HistChart = memo(function HistChart({ v, legs }: { v: McVizResult; legs: L
   );
 });
 
+const LocalVolChart = memo(function LocalVolChart({ lv }: { lv: LocalVolView }) {
+  const wrap = useRef<HTMLDivElement | null>(null);
+  const width = useElementWidth(wrap, 640);
+  const height = 220;
+  const pad = { l: 48, r: 16, t: 14, b: 30 };
+  const all = [...lv.local, ...lv.implied];
+  let lo = Math.min(...all), hi = Math.max(...all);
+  const span = hi - lo || hi * 0.2 || 0.05;
+  lo = Math.max(0, lo - span * 0.1);
+  hi += span * 0.1;
+  const x0 = lv.moneyness[0], x1 = lv.moneyness[lv.moneyness.length - 1];
+  const X = linear(x0, x1, pad.l, width - pad.r);
+  const Y = linear(lo, hi, height - pad.b, pad.t);
+  const line = (ys: number[]) => ys.map((y, i) => `${i ? 'L' : 'M'}${X(lv.moneyness[i]).toFixed(1)},${Y(y).toFixed(1)}`).join('');
+
+  return (
+    <div ref={wrap} data-testid="mc-localvol" data-local-atm={lv.atm.local} data-implied-atm={lv.atm.implied}
+         data-local-down={lv.down.local} data-implied-down={lv.down.implied}>
+      <svg className={l.chartSvg} width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img"
+           aria-label={`Local volatility at ${days(lv.T)} days: ${pct(lv.down.local, 1)} at 90% of spot and ${pct(lv.atm.local, 1)} at spot, against implied volatility ${pct(lv.down.implied, 1)} and ${pct(lv.atm.implied, 1)}.`}>
+        {niceTicks(lo, hi, 4).map(t => (
+          <g key={t}>
+            <line x1={pad.l} x2={width - pad.r} y1={Y(t)} y2={Y(t)} stroke="var(--line)" />
+            <text x={pad.l - 8} y={Y(t) + 3.5} textAnchor="end" className={l.axis}>{pct(t, 0)}</text>
+          </g>
+        ))}
+        {[0.8, 0.9, 1, 1.1, 1.2].map(x => (
+          <text key={x} x={X(x)} y={height - 10} textAnchor="middle" className={l.axis}>{x === 1 ? 'spot' : `${Math.round(x * 100)}%`}</text>
+        ))}
+        <line x1={X(1)} x2={X(1)} y1={pad.t} y2={height - pad.b} stroke="var(--blue)" strokeDasharray="2 3" opacity={0.7} />
+        <path d={line(lv.implied)} fill="none" stroke="var(--blue)" strokeWidth={1.5} strokeDasharray="5 3" />
+        <path d={line(lv.local)} fill="none" stroke="var(--amber-2)" strokeWidth={1.8} />
+      </svg>
+      <div className={l.legend} aria-hidden="true">
+        <span><i className={l.sw} style={{ background: 'var(--amber-2)', height: 2 }} />Local volatility σ_loc(S, t)</span>
+        <span><i className={l.swDash} style={{ borderColor: 'var(--blue)' }} />Implied volatility σ(K, T)</span>
+      </div>
+    </div>
+  );
+});
+
 export function MonteCarloPanel({ legs, market, active }: { legs: Leg[]; market: Market; active: boolean }) {
   const [visible, setVisible] = useState(50);
   const [seed, setSeed] = useState(7);
@@ -190,11 +231,15 @@ export function MonteCarloPanel({ legs, market, active }: { legs: Leg[]; market:
 
   return (
     <div>
-      <p className={l.intro}>
-        Risk-neutral geometric Brownian motion, dS = (r − q)·S·dt + σ·S·dW, simulated from today to the last expiry.
-        The histogram is a separate {HIST_SAMPLES.toLocaleString('en-US')}-sample draw of the price at the first expiry,
+      <p className={l.intro} data-testid="mc-intro">
+        {market.smile || market.term
+          ? <>Risk-neutral local-volatility paths, dS = (r − q)·S·dt + σ_loc(S, t)·S·dW, with σ_loc from Dupire’s formula on the
+              arbitrage-free surface — the one diffusion that reprices every option on it — simulated from today to the last expiry.</>
+          : <>Risk-neutral geometric Brownian motion, dS = (r − q)·S·dt + σ·S·dW, simulated from today to the last expiry.</>}
+        {' '}The histogram is a separate {HIST_SAMPLES.toLocaleString('en-US')}-sample draw of the price at the first expiry,
         checked against its analytic {market.smile ? 'smile-implied' : 'lognormal'} density.
-        {market.smile && v && ` With the smile on, that draw comes from the distribution the smile implies (Breeden–Litzenberger), so P(ITM), P(profit) and expected P&L agree with smile prices; the paths are still GBM at ${single ? "this leg's volatility" : 'the at-the-money volatility'}, σ ${pct(v.pathSigma, 1)}.`}
+        {market.smile && v && ' With the smile on, that draw comes from the distribution the smile implies (Breeden–Litzenberger), so P(ITM), P(profit) and expected P&L agree with smile prices.'}
+        {!market.smile && market.term && v && ` Without a smile that distribution is lognormal at the first expiry’s ATM volatility, σ ${pct(v.pathSigma, 1)}.`}
       </p>
       <div className={l.controls}>
         <Segmented size="sm" label="Visible paths" testid="mc-visible" value={visible}
@@ -217,7 +262,9 @@ export function MonteCarloPanel({ legs, market, active }: { legs: Leg[]; market:
             <div className={l.card}>
               <div className={l.cardHead}>
                 <span className={l.cardTitle}>Simulated price paths</span>
-                <span className={l.cardMeta}>{visible} of {N_PATHS} shown · {N_STEPS} steps · seed {seed}</span>
+                <span className={l.cardMeta} data-testid="mc-path-model" data-model={v.pathModel}>
+                  {v.pathModel === 'local-vol' ? 'local volatility' : `GBM σ ${pct(v.pathSigma, 1)}`} · {visible} of {N_PATHS} shown · {N_STEPS} steps · seed {seed}
+                </span>
               </div>
               <PathsChart v={v} legs={legs} visible={visible} replay={replay} />
             </div>
@@ -229,6 +276,21 @@ export function MonteCarloPanel({ legs, market, active }: { legs: Leg[]; market:
               <HistChart v={v} legs={legs} />
             </div>
           </div>
+
+          {v.localVol && (
+            <div className={l.card} style={{ marginTop: 14 }}>
+              <div className={l.cardHead}>
+                <span className={l.cardTitle}>Local volatility (Dupire) at {days(v.localVol.T)}d</span>
+                <span className={l.cardMeta}>σ_loc² = ∂w/∂T ÷ g(k) on the SSVI surface</span>
+              </div>
+              <LocalVolChart lv={v.localVol} />
+              <p className={l.intro} style={{ margin: '8px 0 0' }} data-testid="mc-localvol-note">
+                {market.smile
+                  ? `Between 90% of spot and spot, local volatility moves ${pct(v.localVol.down.local - v.localVol.atm.local, 1)} against ${pct(v.localVol.down.implied - v.localVol.atm.implied, 1)} for implied volatility: an implied volatility averages local volatility along the paths that reach its strike, so the local skew is the steeper one.`
+                  : `Without a smile local volatility depends on time only: the term structure’s forward volatility, ${pct(v.localVol.atm.local, 1)} at ${days(v.localVol.T)} days, against the ${pct(v.localVol.atm.implied, 1)} ATM implied volatility of that expiry.`}
+              </p>
+            </div>
+          )}
 
           <dl className={l.mcStats}>
             <div className={l.mcStat}>

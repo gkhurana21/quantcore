@@ -14,8 +14,8 @@ over WebSocket when it runs locally.
 |---|---|
 | **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA, or any ticker — type a symbol and its price (with the optional data proxy running, any US ticker loads with a live quote, listed expirations and chain strikes). Spot, volatility, rate and dividend-yield inputs, and an arbitrage-free SSVI volatility surface: a smile by strike (flat, equity index, single stock, or custom skew and curvature) and an at-the-money term structure by expiry (flat, upward, inverted or custom) — with live data, fitted to a spread of listed expiries in one step. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
 | **Greeks & payoff** | Price, Δ, Γ, Θ, ν and P&L tiles; exact max profit / max loss and break-evens; an interactive payoff chart with P&L · Δ · Γ · Vega · Θ modes (hover or keyboard crosshair); a full-revaluation spot × vol P&L surface. |
-| **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice. A C++ cross-check simulates the whole portfolio — on the native engine when it is running, otherwise in WebAssembly. |
-| **Monte Carlo** | Animated risk-neutral GBM paths with spot, strike, expiry and in-the-money markers; a 50,000-sample terminal distribution against its analytic lognormal density; simulated P(ITM) vs N(d₂). |
+| **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice. A C++ cross-check simulates the whole portfolio — on the native engine when it is running, otherwise in WebAssembly — and, with a smile or term structure, a local-volatility Monte Carlo reprices it under Dupire's diffusion. |
+| **Monte Carlo** | Animated risk-neutral paths — GBM in a flat market, Dupire local volatility when a smile or term structure is on — with spot, strike, expiry and in-the-money markers; a 50,000-sample terminal distribution against its analytic lognormal or smile-implied density; simulated P(ITM) vs the analytic value; local against implied volatility across strikes. |
 | **Stress Lab** | 2008-style credit crisis, COVID-style crash, volatility spike, rate shock, melt-up / vol crush, or a custom shock. Shows Spot → Vol → Greeks → P&L → VaR, P&L by leg, a P&L-vs-spot ladder and all scenarios side by side; apply a shock to the whole terminal and reset. |
 | **Risk / VaR** | 1-day 95% parametric VaR, plus delta-normal, delta-gamma and Monte Carlo full-revaluation VaR — spot only, and spot with correlated implied-vol shocks — with expected shortfall at 90 / 95 / 99% over 1 / 5 / 10 days, exposures and stated assumptions. |
 | **Portfolio Upload** | CSV, XLSX or XLS, parsed entirely in the browser. Tolerant column names (`option_type`, `cp`, `action`, `strike_price`, `dte`, `expiration`, `contracts`, `fill_price`, …), ISO / US / Excel dates, accounting negatives, a row-by-row preview with errors and warnings, and downloadable samples. |
@@ -92,6 +92,13 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
 - **Smile-implied distribution (Breeden–Litzenberger)**: the density of ln(S_T/F) is g(k)·φ(d₋)/√w, with Durrleman's
   g, and P(S_T > K) = N(d₋) − φ(d₋)·w′/(2√w). It reprices the smile's calls and digitals in the tests, and with a smile
   on it drives the Monte Carlo view's histogram, P(ITM), P(profit) and expected P&L.
+- **Local volatility (Dupire)**: σ_loc²(K, T) = ∂T w(k, T) / g(k) in total variance (Gatheral), with Durrleman's g and
+  ∂T w = ∂θ w·θ′(T) in closed form for SSVI — the forward variance θ′(T) of the term structure when there is no smile.
+  The tests match it to Dupire's formula evaluated by finite differences of the surface's call prices (worst relative
+  error 1e-8 over 300 random surfaces). A log-Euler simulation with daily steps drives the Monte Carlo view's paths
+  and the Pricing Lab's local-vol row, and reprices vanillas across strikes and expiries; its measured bias falls as
+  1/steps, from 7.7% of a far out-of-the-money call's price at 52 steps a year to about 1% at 365. Without a smile each
+  step's variance is integrated exactly, so there is no bias at all.
 - **Cox-Ross-Rubinstein** lattice: u = e^(σ√Δt), p = (e^((r−q)Δt) − d)/(u − d), backward induction; the American
   variant takes the larger of continuation and exercise value at every node.
 - **Implied volatility**: Newton-Raphson on vega inside a shrinking bisection bracket; no solution is reported for
@@ -230,6 +237,10 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
   `tests/alpaca.live.spec.ts` (opt-in, `ALPACA_LIVE=1`) checks it against the running Go proxy with real data.
 - `tests/impliedDensity.spec.ts` — the smile-implied distribution: lognormal without skew, a proper density with the
   forward as its mean under random smiles, repricing the smile's calls and digitals, sampling, and the Monte Carlo view.
+- `tests/localVol.spec.ts` — Dupire local volatility: σ in a flat market and the forward volatility under a term
+  structure alone, agreement with Dupire's formula from finite differences of call prices, a local-volatility Monte
+  Carlo that reprices 40 vanillas across strikes and expiries within 4 SE, exact simulation without a smile, the Monte
+  Carlo view's path model, and finite capped values at the arbitrage-free boundary.
 - `tests/calibrate.spec.ts` — smile and surface calibration: exact recovery of known smiles and of seven-expiry
   surfaces, fit error matching quote noise, the arbitrage-free boundary, calendar arbitrage in the quotes pooled away,
   what γ changes, and quote and expiry selection. `tests/surface.live.spec.ts` (opt-in, `SURFACE_LIVE=1`) fits SPY,
@@ -288,7 +299,9 @@ dashboard/netlify/functions/  The same read-only market-data API as a Netlify Fu
 dashboard/
   app/           Next.js app shell and design tokens
   components/    Terminal views: builder, analytics, lab, stress, risk, io, engine, layout, ui
-  lib/quant/     Normal distribution, Black-Scholes-Merton, CRR lattice, RNG, Monte Carlo
+  lib/quant/     Normal distribution, Black-Scholes-Merton, CRR lattice, RNG, Monte Carlo, SSVI surface and
+                 term structure, calibration, implied density, Dupire local volatility
+  lib/market/    Instruments, data-proxy client, option-chain loading for surface fits, the hosted Alpaca port
   lib/strategy/  Presets, portfolio valuation, payoff analytics
   lib/risk/      VaR, stress scenarios, P&L surface
   lib/io/        CSV / spreadsheet import, samples
@@ -304,8 +317,9 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence)
 - The volatility surface is parametric in strike: one SSVI shape (ρ, η, γ) is shared by every expiry, so a surface fit
   gives up some per-expiry accuracy to stay arbitrage-free (SPY: 1.02 vol pts RMSE across 8 expiries, against
   0.67–1.23 fitting each expiry on its own). Total variance is interpolated linearly between listed expiries, and vol
-  scenarios scale the term structure in proportion rather than reshaping it. The Monte Carlo view's paths are GBM with
-  one volatility; with a smile, its price histogram and probabilities come from the smile-implied distribution.
+  scenarios scale the term structure in proportion rather than reshaping it. Local volatility is simulated with
+  log-Euler steps, which leave a discretisation bias of up to about 1% of price for far out-of-the-money options at
+  daily steps; the Monte Carlo view's histogram and probabilities use the exact smile-implied distribution instead.
 - American early exercise is priced only by the CRR lattice in the Pricing Models Lab; Greeks, charts, stress and VaR treat options as European.
 - Monte Carlo prices European payoffs only. The Metal GPU kernel prices one contract per run; whole portfolios run on
   the multithreaded CPU kernel or in WebAssembly.

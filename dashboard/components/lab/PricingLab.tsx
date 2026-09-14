@@ -1,10 +1,11 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Leg, Market } from '@/lib/quant/types';
 import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
-import type { LabResult } from '@/lib/compute/tasks';
-import { LAB_PATHS } from '@/lib/compute/tasks';
+import { hasVolSurface } from '@/lib/quant/volSurface';
+import type { LabResult, LocalVolRequest, LocalVolResult } from '@/lib/compute/tasks';
+import { LAB_PATHS, LV_PATHS, LV_STEPS_PER_YEAR } from '@/lib/compute/tasks';
 import { useWorkerTask } from '@/lib/compute/useWorkerTask';
 import type { Engine } from '@/lib/engine/useEngine';
 import type { WasmEngine } from '@/lib/engine/useWasmEngine';
@@ -48,6 +49,38 @@ function buildRows(r: LabResult): Row[] {
                value: run.price, se: run.se, ms: run.ms, z, verdict: mcVerdict(z) };
     }),
   ];
+}
+
+/**
+ * Runs the portfolio under Dupire local volatility in its own worker, on request. Mounted only when the market has a
+ * smile or term structure, so a flat market starts no extra worker.
+ */
+function LocalVolCheck({ legs, market, seed, runKey, stale, onResult }: {
+  legs: Leg[]; market: Market; seed: number; runKey: string; stale: boolean;
+  onResult: (key: string, res: LocalVolResult) => void;
+}) {
+  const [job, setJob] = useState<{ id: string; runKey: string; req: LocalVolRequest } | null>(null);
+  const task = useWorkerTask('localvol', job?.req ?? null, job?.id ?? '', 0);
+  useEffect(() => {
+    if (job && task.resultKey === job.id && task.result && !task.error) onResult(job.runKey, task.result);
+  }, [job, task.resultKey, task.result, task.error, onResult]);
+  const busy = !!job && task.resultKey !== job.id;
+
+  return (
+    <div className={l.engineBox} data-testid="lab-localvol">
+      <strong>Local volatility cross-check</strong>
+      <Button size="sm" onClick={() => setJob({ id: `${runKey}|${Date.now()}`, runKey, req: { legs, market, seed } })}
+              disabled={busy} data-testid="lab-localvol-run">
+        {busy ? 'Simulating local-vol paths…' : `Simulate ${fmtPaths(LV_PATHS)} local-volatility paths`}
+      </Button>
+      <span>
+        σ_loc(S, t) from Dupire’s formula on this surface, {LV_STEPS_PER_YEAR} steps a year · one diffusion for every leg, so it must
+        reprice each at its own implied volatility
+      </span>
+      {task.error && job && task.resultKey === job.id && <span className="neg">{task.error}</span>}
+      {stale && !busy && <span>Inputs changed since the last local-vol run.</span>}
+    </div>
+  );
 }
 
 export function PricingLab({ legs, market, engine, wasm, active }: {
@@ -98,7 +131,21 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
                detail: `whole portfolio · ${eng.res.native ? 'CPU multithreaded' : 'single-threaded'}${antithetic ? ' · antithetic' : ''}`,
                value, se, ms: eng.res.ms, z, verdict: mcVerdict(z), engine: true };
   }
-  const allRows = engRow ? [...rows, engRow] : rows;
+
+  // Dupire local volatility: one diffusion for every leg, which must reprice each at its own implied volatility
+  const surface = hasVolSurface(market);
+  const lvKey = `${legsKey}|${marketKeyOf(market)}|${seed}`;
+  const [lv, setLv] = useState<{ key: string; res: LocalVolResult } | null>(null);
+  const onLocalVol = useCallback((key: string, res: LocalVolResult) => setLv({ key, res }), []);
+  let lvRow: Row | null = null;
+  if (surface && lv && lv.key === lvKey && r) {
+    const { price: value, se } = lv.res;
+    const z = se > 0 ? Math.abs(value - ref) / se : 0;
+    lvRow = { id: 'localvol', model: `Local vol (Dupire) · ${fmtPaths(lv.res.paths)}`,
+              detail: `log-Euler · ${lv.res.steps} steps · seed ${lv.res.seed}`,
+              value, se, ms: lv.res.ms, z, verdict: mcVerdict(z), engine: true };
+  }
+  const allRows = [...rows, ...(lvRow ? [lvRow] : []), ...(engRow ? [engRow] : [])];
   const head = rows.find(x => x.id === 'mc200k');
   const final = r ? r.mc[r.mc.length - 1] : null;
 
@@ -283,6 +330,11 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
           </>
         )}
       </div>
+
+      {surface && r && (
+        <LocalVolCheck legs={legs} market={market} seed={seed + 3} runKey={lvKey} onResult={onLocalVol}
+                       stale={!!lv && lv.key !== lvKey} />
+      )}
 
       <details className={l.formulas}>
         <summary>Model formulas and assumptions</summary>

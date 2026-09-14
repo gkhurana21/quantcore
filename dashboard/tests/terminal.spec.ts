@@ -311,6 +311,37 @@ test.describe('QuantCore terminal flows', () => {
     expect(Number(await row.getAttribute('data-z'))).toBeLessThan(4);
   });
 
+  test('16. Local volatility: surface markets simulate Dupire paths, the local skew is steeper, and the Lab reprices the portfolio', async ({ page }) => {
+    test.setTimeout(90_000);
+    await open(page);
+    await page.getByTestId('preset-iron-condor').click();
+    await page.getByTestId('smile-Equity index').click();
+    await page.getByTestId('term-Upward').click();
+
+    // Pricing Lab: the local-vol diffusion reprices the condor within its standard error
+    await page.getByTestId('lab-row-mc200k').waitFor();
+    await page.getByTestId('lab-localvol-run').click();
+    const row = page.getByTestId('lab-row-localvol');
+    await expect(row).toContainText('Local vol (Dupire) · 100k', { timeout: 60_000 });
+    expect(Number(await row.getAttribute('data-z'))).toBeLessThan(4);
+
+    await page.getByTestId('tab-mc').click();
+    const model = page.getByTestId('mc-path-model');
+    await expect(model).toHaveAttribute('data-model', 'local-vol', { timeout: 20_000 });
+    await expect(page.getByTestId('mc-intro')).toContainText('Dupire');
+    const lv = page.getByTestId('mc-localvol');
+    const n = async (a: string) => Number(await lv.getAttribute(a));
+    expect(await n('data-local-down') - await n('data-local-atm')).toBeGreaterThan(await n('data-implied-down') - await n('data-implied-atm'));
+
+    // flat again: GBM paths and no local-vol card; the Lab's local-vol check disappears with the surface
+    await page.getByTestId('smile-Flat').click();
+    await page.getByTestId('term-Flat').click();
+    await expect(model).toHaveAttribute('data-model', 'gbm', { timeout: 20_000 });
+    await expect(lv).toHaveCount(0);
+    await page.getByTestId('tab-lab').click();
+    await expect(page.getByTestId('lab-localvol')).toHaveCount(0);
+  });
+
   test('15. ATM term structure: each expiry reads its own ATM vol, σ stays the 30-day level, Flat restores', async ({ page }) => {
     await open(page);
     const chart = page.getByTestId('term-chart');
