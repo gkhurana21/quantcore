@@ -4,7 +4,7 @@ import { defineConfig } from '@playwright/test';
 // the Playwright test runner (Node) and need no browser or dev server.
 export default defineConfig({
   testDir: './tests',
-  testMatch: /(quant|properties|marketData|wasm|volSurface|alpaca|alpaca\.live|calibrate|impliedDensity|surface\.live|localVol)\.spec\.ts$/,
+  testMatch: /(quant|properties|marketData|wasm|volSurface|alpaca|alpaca\.live|calibrate|impliedDensity|surface\.live|localVol|exotics)\.spec\.ts$/,
   timeout: 60_000,
   retries: 0,
   reporter: [['list']],

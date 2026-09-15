@@ -356,6 +356,56 @@ test.describe('QuantCore terminal flows', () => {
     await expect(page.getByTestId('lab-localvol')).toHaveCount(0);
   });
 
+  test('17. Exotics in WebAssembly: bridge and Asian Monte Carlo match the closed forms; local vol reprices the vanilla and moves the barrier', async ({ page }) => {
+    test.setTimeout(150_000);
+    await page.routeWebSocket('ws://localhost:8765/ws', ws => ws.close({ code: 1000, reason: 'no native engine' }));
+    await open(page);
+    await page.getByTestId('tab-exotics').click();
+    await expect(page.getByTestId('exo-backend')).toContainText('WebAssembly', { timeout: 15_000 });
+
+    // flat market: the Brownian-bridge Monte Carlo matches Reiner–Rubinstein at every level; no local-vol row
+    const flat = page.getByTestId('exo-row-mc-flat');
+    await expect(flat).toHaveAttribute('data-z', /\d/, { timeout: 30_000 });
+    expect(Number(await flat.getAttribute('data-z'))).toBeLessThan(4);
+    await expect(flat).toContainText('C++ WebAssembly');
+    await expect(page.getByTestId('exo-row-local')).toHaveCount(0);
+    await expect(page.getByTestId('exo-flat-note')).toBeVisible();
+    const chart = page.getByTestId('exo-chart');
+    expect(Number(await chart.getAttribute('data-points'))).toBe(Number(await chart.getAttribute('data-levels')));
+    expect(Number(await chart.getAttribute('data-levels'))).toBeGreaterThan(10);
+
+    // equity skew: local vol reprices the vanilla on its own paths and cheapens the down-and-out call
+    await page.getByTestId('smile-Equity index').click();
+    const local = page.getByTestId('exo-row-local');
+    await expect(local).toHaveAttribute('data-z', /\d/, { timeout: 90_000 });
+    expect(Number(await local.getAttribute('data-z'))).toBeLessThan(4);
+    await expect(local).toContainText('Richardson');
+    expect(Number(await local.getAttribute('data-gap-z'))).toBeLessThan(-3);
+    await expect(page.getByTestId('exo-row-bs-h')).toBeVisible();
+
+    // Asian: the geometric average matches its closed form and, as a control variate, cuts the standard error
+    await page.getByTestId('exo-product-asian').click();
+    const asian = page.getByTestId('exo-row-mc-flat');
+    await expect(asian).toHaveAttribute('data-cv-se', /\d/, { timeout: 30_000 });
+    expect(Number(await asian.getAttribute('data-z'))).toBeLessThan(4);
+    expect(Number(await asian.getAttribute('data-cv-se'))).toBeLessThan(Number(await asian.getAttribute('data-arith-se')) / 5);
+    await expect(local).toHaveAttribute('data-z', /\d/, { timeout: 90_000 });
+    expect(Number(await local.getAttribute('data-z'))).toBeLessThan(4);
+  });
+
+  test('18. With the native engine, exotics simulate over protocol v7', async ({ page }) => {
+    test.setTimeout(90_000);
+    await open(page);
+    await page.getByTestId('tab-exotics').click();
+    await expect(page.getByTestId('exo-backend')).toContainText('native C++ engine', { timeout: 15_000 });
+    await page.getByTestId('term-Upward').click();
+    const local = page.getByTestId('exo-row-local');
+    await expect(local).toHaveAttribute('data-z', /\d/, { timeout: 60_000 });
+    await expect(local).toContainText('C++ native · 1M paths');
+    expect(Number(await local.getAttribute('data-z'))).toBeLessThan(4);
+    expect(Number(await page.getByTestId('exo-row-mc-flat').getAttribute('data-z'))).toBeLessThan(4);
+  });
+
   test('15. ATM term structure: each expiry reads its own ATM vol, σ stays the 30-day level, Flat restores', async ({ page }) => {
     await open(page);
     const chart = page.getByTestId('term-chart');
@@ -404,7 +454,7 @@ test.describe('QuantCore terminal flows', () => {
 
   test('9. Risk / VaR: headline, confidence and horizon scaling, Monte Carlo VaR', async ({ page }) => {
     await open(page);
-    await page.keyboard.press('4');                                // keyboard shortcut → Risk tab
+    await page.keyboard.press('5');                                // keyboard shortcut → Risk tab
     await expect(page.getByTestId('tab-risk')).toHaveAttribute('aria-selected', 'true');
     const headline = await value(page.getByTestId('var-95'));
     expect(headline).toBeGreaterThan(0);

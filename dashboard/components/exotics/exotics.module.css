@@ -1,0 +1,13 @@
+.pickers { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; }
+.inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 22px; max-width: 940px; margin-bottom: 14px; }
+.dash { color: var(--ink-4); }
+/* the model name and its run details stay readable next to four value columns; narrower screens scroll the table */
+.modelCol { min-width: 210px; }
+.pending { font-size: 11px; color: var(--ink-3); font-style: italic; white-space: nowrap; }
+.note { font-size: 12px; color: var(--ink-3); margin: 8px 0 0; line-height: 1.5; max-width: 860px; }
+.ring { display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 1.3px solid var(--blue); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--amber-2); }
+
+@media (max-width: 760px) {
+  .inputs { grid-template-columns: minmax(0, 1fr); }
+}

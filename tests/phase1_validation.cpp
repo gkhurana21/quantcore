@@ -14,6 +14,7 @@
 #include "quantcore/monte_carlo_mt.hpp"
 #include "quantcore/monte_carlo_portfolio.hpp"
 #include "quantcore/local_vol.hpp"
+#include "quantcore/exotics.hpp"
 #include "quantcore/ziggurat.hpp"
 
 #include <algorithm>
@@ -509,6 +510,122 @@ static void section_local_vol() {
     printf("\n  %-22s  %s\n", "Local volatility:", all_ok ? "ALL PASS" : "FAIL");
 }
 
+// ── Section 7: Exotics ───────────────────────────────────────────────────────
+//
+// Barrier options (continuous monitoring through Brownian-bridge survival weights) and Asian options, against the
+// closed forms under flat volatility, then under local volatility. Several z-scores are checked per case, so the
+// bound is 4 standard errors, fixed in advance.
+
+static double zscore(double v, double ref, double se) {
+    return se > 0.0 ? std::fabs(v - ref) / se : (std::fabs(v - ref) < 1e-12 ? 0.0 : INFINITY);
+}
+
+static void section_exotics() {
+    banner("7. EXOTICS  (barrier and Asian options: closed forms, bridge Monte Carlo, local volatility)");
+    bool all_ok = true;
+    using clk = std::chrono::steady_clock;
+
+    // flat GBM: the bridge weight is exact, so one step per half year is enough
+    VolSurface flat;
+    flat.S = 100.0; flat.r = 0.08; flat.q = 0.04; flat.sigma = 0.25;
+    struct Case { OptionType type; bool up; double K; double levels[3]; const char* name; };
+    const Case cases[] = {
+        { OptionType::Call, false, 100.0, { 85.0, 92.0, 97.0 }, "down call" },
+        { OptionType::Put,  true,  100.0, { 103.0, 108.0, 115.0 }, "up put" },
+        { OptionType::Call, true,   95.0, { 105.0, 115.0, 130.0 }, "up call" },
+        { OptionType::Put,  false, 105.0, { 80.0, 90.0, 98.0 }, "down put" },
+    };
+    double worst = 0.0;
+    for (const Case& c : cases) {
+        ExoticSpec e;
+        e.kind = ExoticKind::Barrier; e.type = c.type; e.K = c.K; e.T = 0.5; e.up = c.up; e.n_levels = 3;
+        std::copy(c.levels, c.levels + 3, e.levels);
+        const ExoticResult r = mc_exotic(e, flat, 400'000, 21, 2.0, true);
+        for (int j = 0; j < 3; ++j) {
+            const BarrierPrices cf = barrier_prices(c.type, c.up, 100.0, c.K, c.levels[j], 0.5, 0.25, 0.08, 0.04);
+            worst = std::max({ worst, zscore(r.out[j], cf.out, r.out_se[j]), zscore(r.in[j], cf.in, r.in_se[j]) });
+        }
+        worst = std::max(worst, zscore(r.vanilla, bsm_price(c.type, 100.0, c.K, 0.08, 0.25, 0.5, 0.04), r.vanilla_se));
+    }
+    const bool bridge_ok = worst < 4.0;
+    all_ok = all_ok && bridge_ok;
+    printf("  flat GBM, 4 barrier types x 3 levels, knock-out and knock-in (1 step): worst |z| vs closed form %.2f  %s\n",
+           worst, bridge_ok ? "OK" : "*** FAIL ***");
+
+    // exact monitoring: one step and daily steps price the same barrier
+    ExoticSpec d;
+    d.kind = ExoticKind::Barrier; d.type = OptionType::Call; d.K = 100.0; d.T = 0.5; d.n_levels = 1; d.levels[0] = 92.0;
+    const ExoticResult d1 = mc_exotic(d, flat, 400'000, 5, 2.0, true), d365 = mc_exotic(d, flat, 400'000, 6, 365.0, true);
+    const double zd = std::fabs(d1.out[0] - d365.out[0]) / std::hypot(d1.out_se[0], d365.out_se[0]);
+    const bool steps_ok = zd < 4.0 && d365.steps == 183;
+    all_ok = all_ok && steps_ok;
+    printf("  down-and-out call H=92: 1 step %.4f ± %.4f · 183 steps %.4f ± %.4f (|z| %.2f)  %s\n",
+           d1.out[0], d1.out_se[0], d365.out[0], d365.out_se[0], zd, steps_ok ? "OK" : "*** FAIL ***");
+
+    // Asian under flat GBM: geometric vs closed form, arithmetic ≥ geometric, geometric control variate
+    ExoticSpec a;
+    a.kind = ExoticKind::Asian; a.type = OptionType::Call; a.K = 100.0; a.T = 1.0; a.n_fixings = 12;
+    const ExoticResult ra = mc_exotic(a, flat, 400'000, 7, 12.0, true);
+    const double gcf = geometric_asian_price(OptionType::Call, 100.0, 100.0, 1.0, 12, 0.25, 0.08, 0.04);
+    const double N = static_cast<double>(ra.paths);
+    const double var_a = ra.arith_se * ra.arith_se * N, var_g = ra.geo_se * ra.geo_se * N;
+    const double beta = ra.arith_geo_cov / var_g;
+    const double cv = ra.arith - beta * (ra.geo - gcf);
+    const double se_cv = std::sqrt(std::max(var_a - ra.arith_geo_cov * ra.arith_geo_cov / var_g, 0.0) / N);
+    const double zg = zscore(ra.geo, gcf, ra.geo_se);
+    const bool asian_ok = zg < 4.0 && ra.arith >= ra.geo && ra.arith_se / se_cv > 5.0 && ra.steps == 12;
+    all_ok = all_ok && asian_ok;
+    printf("  Asian call, 12 fixings: geometric %.4f ± %.4f vs %.4f (|z| %.2f) · arithmetic %.4f ± %.4f → with control variate %.4f ± %.5f (SE %.0fx smaller)  %s\n",
+           ra.geo, ra.geo_se, gcf, zg, ra.arith, ra.arith_se, cv, se_cv, ra.arith_se / se_cv, asian_ok ? "OK" : "*** FAIL ***");
+
+    // local volatility: the vanilla on the same paths reprices at σ(K, T); the barrier does not match flat vol at σ(K, T)
+    VolSurface lv;
+    lv.S = 756.48; lv.r = 0.045; lv.q = 0.0; lv.sigma = 0.138;
+    lv.smile = true; lv.rho = -0.7; lv.eta = 1.0; lv.gamma = 0.45;
+    lv.term = TermKind::Curve; lv.ratio = 0.5; lv.half_life = 0.15;
+    ExoticSpec b;
+    b.kind = ExoticKind::Barrier; b.type = OptionType::Call; b.K = 755.0; b.T = 0.25; b.n_levels = 3;
+    b.levels[0] = 680.0; b.levels[1] = 700.0; b.levels[2] = 720.0;
+    auto t0 = clk::now();
+    const ExoticResult rl = mc_exotic(b, lv, 400'000, 9, 365.0, true);
+    const double ms_lv = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+    const double vol_k = implied_vol(lv, 755.0, 0.25);
+    const double bs_van = bsm_price(OptionType::Call, lv.S, 755.0, lv.r, vol_k, 0.25, lv.q);
+    const double zv = (rl.vanilla - bs_van) / rl.vanilla_se;
+    const bool lv_ok = std::fabs(zv) < 4.0 && rl.steps == 184;
+    all_ok = all_ok && lv_ok;
+    printf("  local vol (equity smile, upward term), 755 call 91d: vanilla %.4f ± %.4f vs BS at σ(K) %.2f%% %.4f (z %+.2f), %lld steps, %.0f ms  %s\n",
+           rl.vanilla, rl.vanilla_se, vol_k * 100, bs_van, zv, rl.steps, ms_lv, lv_ok ? "OK" : "*** FAIL ***");
+    for (int j = 0; j < 3; ++j) {
+        const BarrierPrices cf = barrier_prices(OptionType::Call, false, lv.S, 755.0, b.levels[j], 0.25, vol_k, lv.r, lv.q);
+        printf("    down-and-out H=%.0f: local vol %.4f ± %.4f vs flat σ(K) %.4f — %+.1f SE (fine-grid bias %+.4f)\n",
+               b.levels[j], rl.out[j], rl.out_se[j], cf.out, (rl.out[j] - cf.out) / rl.out_se[j], rl.out_fine_bias[j]);
+    }
+
+    // threads: one thread reproduces the scalar kernel exactly
+    const ExoticResult one = mc_exotic(b, lv, 20'000, 3, 365.0, true);
+    const ExoticResult mt1 = mc_exotic_mt(b, lv, 20'000, 3, 365.0, true, 1);
+    t0 = clk::now();
+    const ExoticResult mt = mc_exotic_mt(b, lv, 2'000'000, 3, 365.0, true, -1);
+    const double ms_mt = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+    const bool same = one.vanilla == mt1.vanilla && one.out[1] == mt1.out[1] && one.out_se[1] == mt1.out_se[1] &&
+                      one.in[2] == mt1.in[2];
+    const bool mt_ok = same && std::fabs((mt.vanilla - bs_van) / mt.vanilla_se) < 4.0;
+    all_ok = all_ok && mt_ok;
+    printf("  multithreaded: one thread %s the scalar kernel · 2M paths in %.0f ms, vanilla z %+.2f  %s\n",
+           same ? "reproduces" : "DIFFERS FROM", ms_mt, (mt.vanilla - bs_van) / mt.vanilla_se, mt_ok ? "OK" : "*** FAIL ***");
+
+    // invalid specifications are rejected
+    ExoticSpec bad_levels = b; bad_levels.n_levels = 0;
+    ExoticSpec bad_fix = a; bad_fix.n_fixings = 0;
+    const bool invalid_ok = std::isnan(mc_exotic(bad_levels, lv, 100, 1, 365.0, true).vanilla) &&
+                            std::isnan(mc_exotic(bad_fix, flat, 100, 1, 12.0, true).arith);
+    all_ok = all_ok && invalid_ok;
+    printf("  no barrier levels, no fixings → NaN  %s\n", invalid_ok ? "OK" : "*** FAIL ***");
+
+    printf("\n  %-22s  %s\n", "Exotics:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -522,6 +639,7 @@ int main() {
     section_dividend_yield();
     section_portfolio_mc();
     section_local_vol();
+    section_exotics();
 
     banner("End of Phase 1 report");
     return 0;

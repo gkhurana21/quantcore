@@ -9,13 +9,13 @@ import AxeBuilder from '@axe-core/playwright';
 
 test.describe('accessibility (axe-core, WCAG 2.1 A/AA)', () => {
   test('terminal and every research tab have no serious or critical violations', async ({ page }) => {
-    test.setTimeout(90_000);
+    test.setTimeout(120_000);
     await page.goto('/');
     await expect(page.getByTestId('price')).not.toBeEmpty({ timeout: 15_000 });
 
     const serious: string[] = [];
     const all: string[] = [];
-    for (const tab of ['lab', 'mc', 'stress', 'risk', 'engine']) {
+    for (const tab of ['lab', 'mc', 'exotics', 'stress', 'risk', 'engine']) {
       await page.getByTestId(`tab-${tab}`).click();
       await page.waitForTimeout(2500);                 // worker results and draw-in animations settle
       const results = await new AxeBuilder({ page })

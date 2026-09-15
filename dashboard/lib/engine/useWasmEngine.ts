@@ -8,6 +8,7 @@
 // simulations never block the page.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ExoticMcResult, ExoticSpec } from '../quant/exotics';
 import type { Leg, Market } from '../quant/types';
 import type { EngineMcRequest } from './useEngine';
 import type { QuantcoreWasm, WasmManifest } from './wasm';
@@ -18,6 +19,8 @@ export type WasmStatus = 'loading' | 'ready' | 'unavailable';
 export interface WasmMcRun { price: number; stdError: number; paths: number; ms: number; }
 
 export interface WasmLocalVolRun extends WasmMcRun { steps: number; fineBias: number | null; }
+
+export interface WasmExoticRun extends ExoticMcResult { ms: number; }
 
 export interface WasmEngine {
   status: WasmStatus;
@@ -31,9 +34,13 @@ export interface WasmEngine {
   /** The portfolio under the market's Dupire local volatility, in the worker ($ value). */
   runLocalVolMc: (legs: Leg[], market: Market, paths: number, seed: number, stepsPerYear: number,
                   extrapolate: boolean) => Promise<WasmLocalVolRun>;
+  /** A barrier or Asian option under the market's local volatility, in the worker (per unit of underlying). */
+  runExoticMc: (spec: ExoticSpec, market: Market, paths: number, seed: number, stepsPerYear: number,
+                extrapolate: boolean) => Promise<WasmExoticRun>;
 }
 
-type WasmState = Omit<WasmEngine, 'runMc' | 'runPortfolioMc' | 'runLocalVolMc'>;
+type WasmState = Omit<WasmEngine, 'runMc' | 'runPortfolioMc' | 'runLocalVolMc' | 'runExoticMc'>;
+type WorkerKind = 'mc' | 'portfolio' | 'localvol' | 'exotic';
 
 let shared: Promise<{ module: QuantcoreWasm; loadMs: number }> | null = null;
 
@@ -50,7 +57,7 @@ function loadOnce() {
 export function useWasmEngine(): WasmEngine {
   const [state, setState] = useState<WasmState>({ status: 'loading', module: null, manifest: null, loadMs: null, error: null });
   const workerRef = useRef<Worker | null>(null);
-  const pendingRef = useRef(new Map<number, { resolve: (r: WasmLocalVolRun) => void; reject: (e: Error) => void }>());
+  const pendingRef = useRef(new Map<number, { resolve: (r: unknown) => void; reject: (e: Error) => void }>());
   const seqRef = useRef(0);
 
   useEffect(() => {
@@ -79,8 +86,8 @@ export function useWasmEngine(): WasmEngine {
     };
   }, []);
 
-  // local-vol results carry steps and fineBias as well; plain Monte Carlo results simply lack them
-  const call = useCallback((kind: 'mc' | 'portfolio' | 'localvol', req: unknown) => new Promise<WasmLocalVolRun>((resolve, reject) => {
+  // each kind resolves with its own result shape, to which the worker adds the run time in ms
+  const call = useCallback(<T>(kind: WorkerKind, req: unknown) => new Promise<T>((resolve, reject) => {
     const pending = pendingRef.current;
     let w = workerRef.current;
     if (!w) {
@@ -90,11 +97,11 @@ export function useWasmEngine(): WasmEngine {
         reject(err instanceof Error ? err : new Error(String(err)));
         return;
       }
-      w.onmessage = (e: MessageEvent<{ id: number; ok: boolean; result?: WasmLocalVolRun; error?: string }>) => {
+      w.onmessage = (e: MessageEvent<{ id: number; ok: boolean; result?: unknown; error?: string }>) => {
         const p = pending.get(e.data.id);
         if (!p) return;
         pending.delete(e.data.id);
-        if (e.data.ok && e.data.result) p.resolve(e.data.result);
+        if (e.data.ok && e.data.result !== undefined) p.resolve(e.data.result);
         else p.reject(new Error(e.data.error ?? 'WebAssembly Monte Carlo failed'));
       };
       w.onerror = e => {
@@ -107,16 +114,19 @@ export function useWasmEngine(): WasmEngine {
       workerRef.current = w;
     }
     const id = ++seqRef.current;
-    pending.set(id, { resolve, reject });
+    pending.set(id, { resolve: resolve as (r: unknown) => void, reject });
     w.postMessage({ id, url: new URL(WASM_PATH, window.location.href).href, kind, req });
   }), []);
 
-  const runMc = useCallback((req: EngineMcRequest): Promise<WasmMcRun> => call('mc', req), [call]);
-  const runPortfolioMc = useCallback((legs: Leg[], market: Market, paths: number, seed: number, antithetic: boolean): Promise<WasmMcRun> =>
-    call('portfolio', { legs, market, paths, seed, antithetic }), [call]);
+  const runMc = useCallback((req: EngineMcRequest) => call<WasmMcRun>('mc', req), [call]);
+  const runPortfolioMc = useCallback((legs: Leg[], market: Market, paths: number, seed: number, antithetic: boolean) =>
+    call<WasmMcRun>('portfolio', { legs, market, paths, seed, antithetic }), [call]);
   const runLocalVolMc = useCallback((legs: Leg[], market: Market, paths: number, seed: number, stepsPerYear: number,
                                      extrapolate: boolean) =>
-    call('localvol', { legs, market, paths, seed, stepsPerYear, extrapolate }), [call]);
+    call<WasmLocalVolRun>('localvol', { legs, market, paths, seed, stepsPerYear, extrapolate }), [call]);
+  const runExoticMc = useCallback((spec: ExoticSpec, market: Market, paths: number, seed: number, stepsPerYear: number,
+                                   extrapolate: boolean) =>
+    call<WasmExoticRun>('exotic', { spec, market, paths, seed, stepsPerYear, extrapolate }), [call]);
 
-  return { ...state, runMc, runPortfolioMc, runLocalVolMc };
+  return { ...state, runMc, runPortfolioMc, runLocalVolMc, runExoticMc };
 }

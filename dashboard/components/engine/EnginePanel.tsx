@@ -43,7 +43,7 @@ function Architecture({ connected, backend, source }: { connected: boolean; back
         <path d="M95 156 L95 196" className={wasmEdge} />
         <rect x={10} y={196} width={250} height={66} rx={7} className={node(source === 'wasm')} />
         <text x={24} y={220} className={e.nodeTitle}>C++17 core · WebAssembly</text>
-        <text x={24} y={238} className={e.nodeSub}>bsm_full · mc_price (same core/src)</text>
+        <text x={24} y={238} className={e.nodeSub}>BSM · MC · local vol · exotics</text>
         <text x={24} y={254} className={e.nodeSub}>Emscripten · standalone, no JS glue</text>
 
         <path d="M180 119 L290 119" className={edge} />
@@ -52,7 +52,7 @@ function Architecture({ connected, backend, source }: { connected: boolean; back
         <rect x={290} y={82} width={160} height={74} rx={7} className={node(connected)} />
         <text x={304} y={106} className={e.nodeTitle}>FastAPI · uvicorn</text>
         <text x={304} y={124} className={e.nodeSub}>ws_server.py</text>
-        <text x={304} y={141} className={e.nodeSub}>protocol v2</text>
+        <text x={304} y={141} className={e.nodeSub}>protocol v7</text>
 
         <path d="M450 119 L500 119" className={edge} />
 

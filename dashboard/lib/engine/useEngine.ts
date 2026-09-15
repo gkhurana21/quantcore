@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ENGINE_SUBSCRIPTION } from '../market/instruments';
+import type { ExoticMcResult, ExoticSpec } from '../quant/exotics';
 import type { Greeks, Leg, Market } from '../quant/types';
 import { CONTRACT_MULT, signedQty } from '../quant/types';
 import { hasVolSurface, legSigma } from '../quant/volSurface';
@@ -47,6 +48,31 @@ export interface EngineMcResult {
 /** Protocol v6 local-volatility run: time steps per path and, when extrapolating, the fine grid's bias estimate. */
 export interface EngineLocalVolResult extends EngineMcResult { steps: number; fineBias: number | null; }
 
+/** Protocol v7 exotic run, per unit of underlying. */
+export interface EngineExoticResult extends ExoticMcResult { ms: number; backend: string; device: string; rttMs: number; }
+
+/** The market as the browser models see it: the server builds the same SSVI surface from it. */
+const wireMarket = (m: Market) => ({
+  S: m.S, sigma: m.sigma, r: m.r, q: m.q, ...(m.smile ? { smile: m.smile } : {}),
+  ...(m.smileSpot != null ? { smileSpot: m.smileSpot } : {}), ...(m.term ? { term: m.term } : {}),
+});
+
+const numOrNull = (v: unknown): number | null => (v == null ? null : Number(v));
+const numList = (v: unknown): number[] => (Array.isArray(v) ? v.map(Number) : []);
+
+function exoticFromWire(msg: Record<string, unknown>, rttMs: number): EngineExoticResult {
+  return {
+    paths: Number(msg.paths), steps: Number(msg.steps),
+    vanilla: Number(msg.vanilla), vanillaSe: Number(msg.vanilla_se), vanillaFineBias: numOrNull(msg.vanilla_fine_bias),
+    out: numList(msg.out), outSe: numList(msg.out_se),
+    outFineBias: Array.isArray(msg.out_fine_bias) ? msg.out_fine_bias.map(numOrNull) : [],
+    in: numList(msg.in), inSe: numList(msg.in_se),
+    arith: numOrNull(msg.arith), arithSe: numOrNull(msg.arith_se), arithFineBias: numOrNull(msg.arith_fine_bias),
+    geo: numOrNull(msg.geo), geoSe: numOrNull(msg.geo_se), arithGeoCov: numOrNull(msg.arith_geo_cov),
+    ms: Number(msg.ms), backend: String(msg.backend), device: String(msg.device ?? ''), rttMs,
+  };
+}
+
 export interface EngineStats {
   sent: number;
   received: number;
@@ -81,6 +107,9 @@ export interface Engine {
   /** Protocol v6: the portfolio under the market's Dupire local volatility, multithreaded on the CPU. */
   runLocalVolMc: (legs: Leg[], m: Market, paths: number, seed: number, stepsPerYear: number,
                   extrapolate: boolean) => Promise<EngineLocalVolResult>;
+  /** Protocol v7: a barrier or Asian option under the market's local volatility, multithreaded on the CPU. */
+  runExoticMc: (spec: ExoticSpec, m: Market, paths: number, seed: number, stepsPerYear: number,
+                extrapolate: boolean) => Promise<EngineExoticResult>;
   reconnect: () => void;
 }
 
@@ -180,6 +209,7 @@ export function useEngine(): Engine {
         case 'mc_result':
         case 'mc_portfolio_result':
         case 'mc_local_vol_result':
+        case 'mc_exotic_result':
         case 'error': {
           const id = n('id');
           const p = pending.get(id);
@@ -193,6 +223,8 @@ export function useEngine(): Engine {
           } else if (msg.type === 'portfolio_result') {
             counters.lastCalcUs = n('calc_us');
             p.resolve({ legs: msg.legs as Greeks[], calcUs: n('calc_us'), rttMs });
+          } else if (msg.type === 'mc_exotic_result') {
+            p.resolve(exoticFromWire(msg, rttMs));
           } else {
             p.resolve({ price: n('price'), stdError: n('std_error'), paths: n('paths'), ms: n('ms'),
                         backend: String(msg.backend), device: String(msg.device ?? ''), rttMs,
@@ -303,15 +335,18 @@ export function useEngine(): Engine {
   const runLocalVolMc = useCallback((legs: Leg[], m: Market, paths: number, seed: number, stepsPerYear: number,
                                      extrapolate: boolean) =>
     request<EngineLocalVolResult>({
-      type: 'mc_local_vol', paths, seed, steps_per_year: stepsPerYear, extrapolate,
-      // the market as the browser models see it: the server builds the same SSVI surface from it
-      market: { S: m.S, sigma: m.sigma, r: m.r, q: m.q, ...(m.smile ? { smile: m.smile } : {}),
-                ...(m.smileSpot != null ? { smileSpot: m.smileSpot } : {}), ...(m.term ? { term: m.term } : {}) },
+      type: 'mc_local_vol', paths, seed, steps_per_year: stepsPerYear, extrapolate, market: wireMarket(m),
       legs: legs.map(l => ({ call: l.call, K: l.K, T: l.T, weight: signedQty(l) * CONTRACT_MULT })),
+    }, 120_000), [request]);
+
+  const runExoticMc = useCallback((spec: ExoticSpec, m: Market, paths: number, seed: number, stepsPerYear: number,
+                                   extrapolate: boolean) =>
+    request<EngineExoticResult>({
+      type: 'mc_exotic', paths, seed, steps_per_year: stepsPerYear, extrapolate, market: wireMarket(m), spec,
     }, 120_000), [request]);
 
   const reconnect = useCallback(() => connectRef.current(), []);
 
   return { url: ENGINE_URL, status, reason, quote, info, stats, sendUpdate, pricePortfolio, runMc, runPortfolioMc,
-           runLocalVolMc, reconnect };
+           runLocalVolMc, runExoticMc, reconnect };
 }

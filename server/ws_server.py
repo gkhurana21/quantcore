@@ -36,6 +36,12 @@ Server → Client  result:
     {"type":"result","price":...,"delta":...,"gamma":...,"theta":...,
      "vega":...,"pnl":...,"t_ns":<echo>,"calc_us":...}
 
+v7 — mc_exotic {id, market, spec:{kind: "barrier"|"asian", call, K, T, up?, levels?: [...≤ 16], fixings?},
+paths ≤ 10M, seed, steps_per_year?, extrapolate?} → mc_exotic_result {id, paths, steps, vanilla, vanilla_se,
+vanilla_fine_bias, out[], out_se[], out_fine_bias[], in[], in_se[], arith, arith_se, arith_fine_bias, geo, geo_se,
+arith_geo_cov, ms, backend, device}: a continuously monitored barrier (several levels on the same paths) or an
+Asian option under the market's local volatility, values per unit of underlying; info reports "exotics": true.
+
 v6 — mc_local_vol {id, market:{S, sigma, r, q?, smile?, smileSpot?, term?}, legs:[{call, K, T, weight}],
 paths ≤ 10M, seed, steps_per_year?, extrapolate?} → mc_local_vol_result {id, price, std_error, paths,
 steps, fine_bias, ms, backend, device}: the portfolio under the Dupire local volatility of the market's
@@ -99,7 +105,7 @@ import quantcore
 
 app = FastAPI()
 
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7
 MAX_LEGS         = 64
 MAX_PATHS        = 10_000_000
 MAX_LV_WORK      = 4_000_000_000    # paths × coarse steps for one local-vol run
@@ -243,6 +249,32 @@ def run_mc_local_vol(legs: list, market: dict, paths: int, seed: int, steps_per_
     return {**res, "ms": ms, "backend": "cpu-mt", "device": f"CPU · {CPU_THREADS} threads"}
 
 
+def _exotic(raw) -> dict:
+    """An exotic option specification, validated."""
+    if not isinstance(raw, dict) or raw.get("kind") not in ("barrier", "asian"):
+        raise ValueError("spec.kind must be 'barrier' or 'asian'")
+    spec = {"kind": raw["kind"], "call": bool(raw.get("call", True)),
+            "K": _number(raw, "K", 0, lo_open=True), "T": _number(raw, "T", 0, 30, lo_open=True)}
+    if raw["kind"] == "barrier":
+        levels = raw.get("levels")
+        if not isinstance(levels, list) or not 1 <= len(levels) <= 16:
+            raise ValueError("spec.levels must list 1 to 16 barrier levels")
+        spec["up"] = bool(raw.get("up", False))
+        spec["levels"] = [_number({"v": v}, "v", 0, lo_open=True) for v in levels]
+    else:
+        spec["fixings"] = int(_number(raw, "fixings", 1, 2000))
+    return spec
+
+
+def run_mc_exotic(spec: dict, market: dict, paths: int, seed: int, steps_per_year: float, extrapolate: bool) -> dict:
+    t0 = time.perf_counter()
+    res = quantcore.mc_exotic(spec, market, paths, seed, steps_per_year, extrapolate, -1)
+    ms = (time.perf_counter() - t0) * 1e3
+    if res["vanilla"] is None:
+        raise ValueError("exotic inputs are outside the engine's domain (surface, grid or specification)")
+    return {**res, "ms": ms, "backend": "cpu-mt", "device": f"CPU · {CPU_THREADS} threads"}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -273,6 +305,28 @@ async def ws_endpoint(ws: WebSocket):
                         "price": float(res["price"]), "std_error": float(res["std_error"]),
                         "paths": int(res["paths"]), "ms": res["ms"],
                         "backend": res["backend"], "device": res["device"]})
+        except Exception as exc:
+            try:
+                await send({"type": "error", "id": req_id, "msg": str(exc)})
+            except Exception:
+                pass
+
+    async def handle_mc_exotic(msg: dict):
+        req_id = msg.get("id")
+        try:
+            market = _market(msg.get("market"))
+            spec = _exotic(msg.get("spec"))
+            paths = int(_number(msg, "paths", 2, MAX_PATHS))
+            seed  = int(_number(msg, "seed", 0, 2**63 - 1))
+            steps_per_year = _number(msg, "steps_per_year", 1, 100_000) if "steps_per_year" in msg else 365.0
+            extrapolate = bool(msg.get("extrapolate", True))
+            steps = spec["T"] * steps_per_year + spec.get("fixings", 1)
+            levels = len(spec.get("levels", []))
+            evals = paths * steps * (3 if extrapolate and "smile" in market else 1) * (1 + levels / 4)
+            if evals > MAX_LV_WORK:
+                raise ValueError("paths × time steps exceed the engine's limit for one exotic run")
+            res = await asyncio.to_thread(run_mc_exotic, spec, market, paths, seed, steps_per_year, extrapolate)
+            await send({"type": "mc_exotic_result", "id": req_id, **res})
         except Exception as exc:
             try:
                 await send({"type": "error", "id": req_id, "msg": str(exc)})
@@ -407,7 +461,7 @@ async def ws_endpoint(ws: WebSocket):
                 await send({"type": "info", "protocol": PROTOCOL_VERSION,
                             "metal": HAS_METAL, "device": gpu_device(),
                             "cpu_threads": CPU_THREADS, "dividends": True, "leg_sigma": True,
-                            "portfolio_mc": True, "local_vol": True})
+                            "portfolio_mc": True, "local_vol": True, "exotics": True})
 
             # ── v2: portfolio ──────────────────────────────────────────────
             elif msg["type"] == "portfolio":
@@ -449,6 +503,12 @@ async def ws_endpoint(ws: WebSocket):
             # ── v6: local-volatility Monte Carlo (off the event loop) ───────
             elif msg["type"] == "mc_local_vol":
                 task = asyncio.create_task(handle_mc_local_vol(msg))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+
+            # ── v7: exotics under local volatility (off the event loop) ─────
+            elif msg["type"] == "mc_exotic":
+                task = asyncio.create_task(handle_mc_exotic(msg))
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
 

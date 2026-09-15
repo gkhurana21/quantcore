@@ -1,5 +1,5 @@
 {
-  "abi": 3,
+  "abi": 4,
   "emscripten": "6.0.9",
   "flags": [
     "-std=c++17",
@@ -18,8 +18,8 @@
     "-sINITIAL_MEMORY=8388608",
     "-sALLOW_MEMORY_GROWTH=0"
   ],
-  "bytes": 47576,
-  "sha256": "6099a40b9b7e3d6016b7a4dd503ce5a791afc5b0e2ea4f13d77b1e6302ed0504",
+  "bytes": 64235,
+  "sha256": "4be17f3a99c35071e633879b154dbbe7b2676279a8ec4841e4061e3c0e87424a",
   "sources": [
     {
       "path": "core/src/black_scholes.cpp",
@@ -35,11 +35,15 @@
     },
     {
       "path": "core/src/local_vol.cpp",
-      "sha256": "9888f43592653cb89790109779bf9396e1f0d5af31a9e9ed1002bb6401e0a480"
+      "sha256": "181cc4a774323e5b814581d9af5dda55d409d69c46a3b5cb2831ac0b72397ffc"
+    },
+    {
+      "path": "core/src/exotics.cpp",
+      "sha256": "f61b43f5c1966353057889466519e05d2d5f24d1c041aede529797330c0deff0"
     },
     {
       "path": "bindings/quantcore_wasm.cpp",
-      "sha256": "ed25ffbc05b87532dbdd5ab8967b5a3d17ebf4f75f22974e21518352433bc75c"
+      "sha256": "b9ae60823b945fd6ca83cb6928b9568593ece6b0dc0801e389e5857768300993"
     },
     {
       "path": "core/include/quantcore/black_scholes.hpp",
@@ -60,6 +64,10 @@
     {
       "path": "core/include/quantcore/ziggurat.hpp",
       "sha256": "bc409b2155692f4191e482cbffb0695a57cfbc70b456fc6ce798556191d3b4d3"
+    },
+    {
+      "path": "core/include/quantcore/exotics.hpp",
+      "sha256": "df227d7baaf042eb22ab4e0a7475078f31c8bc15d70bb87d0d132488fce03ac5"
     }
   ]
 }

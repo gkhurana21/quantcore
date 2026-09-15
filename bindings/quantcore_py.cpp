@@ -11,6 +11,7 @@
 #include "quantcore/monte_carlo_mt.hpp"
 #include "quantcore/monte_carlo_portfolio.hpp"
 #include "quantcore/local_vol.hpp"
+#include "quantcore/exotics.hpp"
 #ifdef __APPLE__
 #  include "quantcore/monte_carlo_gpu.hpp"
 #endif
@@ -65,6 +66,47 @@ static VolSurface surface_from(const py::dict& m) {
         }
     }
     return s;
+}
+
+// An exotic from {"kind": "barrier"|"asian", "call", "K", "T", "up"?, "levels"?: [...], "fixings"?}
+static ExoticSpec exotic_from(const py::dict& d) {
+    ExoticSpec e;
+    const std::string kind = d["kind"].cast<std::string>();
+    e.type = d["call"].cast<bool>() ? OptionType::Call : OptionType::Put;
+    e.K = d["K"].cast<double>();
+    e.T = d["T"].cast<double>();
+    if (kind == "barrier") {
+        e.kind = ExoticKind::Barrier;
+        e.up = d["up"].cast<bool>();
+        const std::vector<double> levels = d["levels"].cast<std::vector<double>>();
+        if (levels.empty() || levels.size() > kMaxBarrierLevels) throw std::invalid_argument("a barrier needs 1 to 16 levels");
+        e.n_levels = static_cast<int>(levels.size());
+        std::copy(levels.begin(), levels.end(), e.levels);
+    } else if (kind == "asian") {
+        e.kind = ExoticKind::Asian;
+        e.n_fixings = d["fixings"].cast<int>();
+    } else {
+        throw std::invalid_argument("kind must be 'barrier' or 'asian'");
+    }
+    return e;
+}
+
+static py::object finite_or_none(double v) { return std::isnan(v) ? py::object(py::none()) : py::object(py::float_(v)); }
+
+static py::dict exotic_dict(const ExoticResult& r) {
+    py::list out, out_se, out_fb, in, in_se;
+    for (int j = 0; j < r.n_levels; ++j) {
+        out.append(r.out[j]); out_se.append(r.out_se[j]); out_fb.append(finite_or_none(r.out_fine_bias[j]));
+        in.append(r.in[j]); in_se.append(r.in_se[j]);
+    }
+    return py::dict("paths"_a = r.paths, "steps"_a = r.steps,
+                    "vanilla"_a = finite_or_none(r.vanilla), "vanilla_se"_a = finite_or_none(r.vanilla_se),
+                    "vanilla_fine_bias"_a = finite_or_none(r.vanilla_fine_bias),
+                    "out"_a = out, "out_se"_a = out_se, "out_fine_bias"_a = out_fb, "in"_a = in, "in_se"_a = in_se,
+                    "arith"_a = finite_or_none(r.arith), "arith_se"_a = finite_or_none(r.arith_se),
+                    "arith_fine_bias"_a = finite_or_none(r.arith_fine_bias),
+                    "geo"_a = finite_or_none(r.geo), "geo_se"_a = finite_or_none(r.geo_se),
+                    "arith_geo_cov"_a = finite_or_none(r.arith_geo_cov));
 }
 
 static py::dict local_vol_dict(const LocalVolResult& res) {
@@ -326,6 +368,42 @@ PYBIND11_MODULE(quantcore, m) {
           "Monte Carlo $ value of a European portfolio under the market's Dupire local volatility (log-Euler, "
           "optionally with coupled Richardson extrapolation). n_threads=0 runs the scalar kernel; -1 uses every "
           "core (seed + t x golden ratio per thread; one thread equals the scalar kernel).");
+
+    // ── Exotics: barrier and Asian options ─────────────────────────────────────
+    m.def("barrier_prices",
+          [](bool call, bool up, double S, double K, double H, double T, double sigma, double r, double q) {
+              const BarrierPrices p = barrier_prices(call ? OptionType::Call : OptionType::Put, up, S, K, H, T, sigma, r, q);
+              return py::dict("out"_a = p.out, "in"_a = p.in, "vanilla"_a = p.vanilla);
+          },
+          py::arg("call"), py::arg("up"), py::arg("S"), py::arg("K"), py::arg("H"), py::arg("T"), py::arg("sigma"),
+          py::arg("r"), py::arg("q") = 0.0,
+          "Continuously monitored barrier option without rebate (Reiner & Rubinstein): knock-out, knock-in, vanilla.");
+
+    m.def("geometric_asian_price",
+          [](bool call, double S, double K, double T, int n_fixings, double sigma, double r, double q) {
+              return geometric_asian_price(call ? OptionType::Call : OptionType::Put, S, K, T, n_fixings, sigma, r, q);
+          },
+          py::arg("call"), py::arg("S"), py::arg("K"), py::arg("T"), py::arg("n_fixings"), py::arg("sigma"),
+          py::arg("r"), py::arg("q") = 0.0,
+          "Geometric-average Asian option on n equally spaced fixings, flat volatility.");
+
+    m.def("mc_exotic",
+          [](const py::dict& spec, const py::dict& market, long long paths, uint64_t seed, double steps_per_year,
+             bool extrapolate, int n_threads) {
+              const ExoticSpec e = exotic_from(spec);
+              const VolSurface s = surface_from(market);
+              ExoticResult res;
+              {
+                  py::gil_scoped_release release;
+                  res = n_threads == 0 ? mc_exotic(e, s, paths, seed, steps_per_year, extrapolate)
+                                       : mc_exotic_mt(e, s, paths, seed, steps_per_year, extrapolate, n_threads);
+              }
+              return exotic_dict(res);
+          },
+          py::arg("spec"), py::arg("market"), py::arg("paths") = 400000LL, py::arg("seed") = 42ULL,
+          py::arg("steps_per_year") = 365.0, py::arg("extrapolate") = true, py::arg("n_threads") = 0,
+          "Barrier (Brownian-bridge monitoring, several levels on the same paths) or Asian option under the market's "
+          "local volatility; values per unit of underlying.");
 
     m.def("mc_portfolio_mt",
           [](DoubleArray is_call, DoubleArray K, DoubleArray T, DoubleArray sigma, DoubleArray weight,

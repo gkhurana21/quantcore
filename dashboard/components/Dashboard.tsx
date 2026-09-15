@@ -29,6 +29,7 @@ import { StrategyChart } from './analytics/StrategyChart';
 import { PnlSurface } from './analytics/PnlSurface';
 import { PricingLab } from './lab/PricingLab';
 import { MonteCarloPanel } from './lab/MonteCarloPanel';
+import { ExoticsPanel } from './exotics/ExoticsPanel';
 import { StressLab } from './stress/StressLab';
 import { RiskPanel } from './risk/RiskPanel';
 import { EnginePanel } from './engine/EnginePanel';
@@ -295,6 +296,7 @@ export default function Dashboard() {
                    hidden={state.tab !== x.id} className={t.deckPanel} data-testid={`panel-${x.id}`}>
                 {x.id === 'lab' && <PricingLab legs={legs} market={market} engine={engine} wasm={wasm} active={state.tab === 'lab'} />}
                 {x.id === 'mc' && <MonteCarloPanel legs={legs} market={market} active={state.tab === 'mc'} />}
+                {x.id === 'exotics' && <ExoticsPanel market={market} engine={engine} wasm={wasm} active={state.tab === 'exotics'} />}
                 {x.id === 'stress' && (
                   <StressLab legs={legs} market={market} scenarioId={scenarioId} onScenario={setScenarioId}
                              onApply={onStressApply} onRestore={() => dispatch({ type: 'stressRestore' })}

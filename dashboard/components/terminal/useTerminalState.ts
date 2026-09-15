@@ -18,6 +18,7 @@ import {
 export const TABS = [
   { id: 'lab', label: 'Pricing Models Lab' },
   { id: 'mc', label: 'Monte Carlo' },
+  { id: 'exotics', label: 'Exotics' },
   { id: 'stress', label: 'Stress Lab' },
   { id: 'risk', label: 'Risk / VaR' },
   { id: 'engine', label: 'C++ Engine' },

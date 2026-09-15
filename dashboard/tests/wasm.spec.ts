@@ -13,7 +13,9 @@ import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
-import { bsGreeks } from '../lib/quant/blackScholes';
+import { bsGreeks, bsPrice } from '../lib/quant/blackScholes';
+import type { ExoticSpec } from '../lib/quant/exotics';
+import { barrierPrices, controlVariate, geometricAsianPrice } from '../lib/quant/exotics';
 import { localVol, mcLocalVol } from '../lib/quant/localVol';
 import { mulberry32 } from '../lib/quant/rng';
 import type { Leg, Market, Smile, TermStructure } from '../lib/quant/types';
@@ -273,6 +275,115 @@ test.describe('C++ core compiled to WebAssembly', () => {
     expect(w.mcLocalVol(legs, m, 10_000_000, 1, 365, true)).toBeNull();
     const weekly = fittedTerm(Array.from({ length: 40 }, (_, i) => (i + 1) / 52), Array.from({ length: 40 }, (_, i) => (0.04 * (i + 1)) / 52))!;
     expect(w.mcLocalVol(legs, { ...m, sigma: weekly.sigma, term: weekly.term }, 1000, 1, 365, true)).toBeNull();
+  });
+
+  test('exotic closed forms match the TypeScript formulas to 1e-12', () => {
+    const bad: string[] = [];
+    let n = 0, worst = 0;
+    const cmp = (label: string, a: number, b: number) => {
+      worst = Math.max(worst, Math.abs(a - b) / Math.max(Math.abs(b), 1));
+      if (!close(a, b)) bad.push(`${label}: wasm ${a} ts ${b}`);
+      n++;
+    };
+    for (const call of [true, false]) for (const up of [false, true]) for (const K of [80, 100, 120])
+      for (const H of [70, 90, 99, 101, 110, 130]) for (const T of [0.05, 1]) for (const sigma of [0.12, 0.45]) for (const q of [0, 0.03]) {
+        const a = w.barrierPrices(call, up, 100, K, H, T, sigma, 0.045, q), b = barrierPrices(call, up, 100, K, H, T, sigma, 0.045, q);
+        const tag = JSON.stringify({ call, up, K, H, T, sigma, q });
+        if (!a) { bad.push(`null ${tag}`); continue; }
+        cmp(`out ${tag}`, a.out, b.out);
+        cmp(`in ${tag}`, a.in, b.in);
+        cmp(`vanilla ${tag}`, a.vanilla, b.vanilla);
+      }
+    for (const call of [true, false]) for (const fixings of [1, 2, 12, 52, 365]) for (const K of [80, 100, 120]) for (const T of [0.1, 1, 3]) {
+      cmp(`asian ${JSON.stringify({ call, fixings, K, T })}`, w.geometricAsian(call, 100, K, T, fixings, 0.3, 0.045, 0.02) ?? NaN,
+          geometricAsianPrice(call, 100, K, T, fixings, 0.3, 0.045, 0.02));
+    }
+    console.log(`  wasm vs TypeScript exotic closed forms: ${n} values, worst relative difference ${worst.toExponential(1)}`);
+    expect(bad.slice(0, 5)).toEqual([]);
+  });
+
+  test('exotic Monte Carlo reproduces the native C++ result for the same seed', () => {
+    test.skip(!nativeAvailable(), 'native quantcore module not built');
+    const m: Market = { S: 756.48, sigma: 0.138, r: 0.045, q: 0.01, smile: SMILE_PRESETS['Equity index'], term: TERM_PRESETS.Upward };
+    const specs: ExoticSpec[] = [
+      { kind: 'barrier', call: true, K: 756, T: 0.25, up: false, levels: [640, 680, 700, 720, 740] },
+      { kind: 'barrier', call: false, K: 740, T: 0.4, up: true, levels: [780, 820] },
+      { kind: 'asian', call: true, K: 750, T: 0.5, fixings: 26 },
+    ];
+    interface NativeExotic {
+      steps: number; vanilla: number; vanilla_se: number; vanilla_fine_bias: number | null;
+      out: number[]; out_se: number[]; out_fine_bias: (number | null)[]; in: number[]; in_se: number[];
+      arith: number | null; arith_se: number | null; arith_fine_bias: number | null;
+      geo: number | null; geo_se: number | null; arith_geo_cov: number | null;
+    }
+    // same mt19937_64 stream, ziggurat tables and algorithm; only exp/log/pow rounding and FMA contraction differ
+    const near = (a: number | null | undefined, b: number | null) =>
+      a == null || b === null ? a === b : Math.abs(a - b) <= 1e-12 * Math.abs(b) + 1e-9;
+    let compared = 0;
+    for (const spec of specs) for (const extrapolate of [false, true]) {
+      const a = w.mcExotic(spec, m, 50_000, 13, 365, extrapolate)!;
+      const ref = native<NativeExotic>('quantcore.mc_exotic(x["spec"], x["market"], x["paths"], x["seed"], x["spy"], x["extrapolate"], 0)',
+                                       { spec, market: m, paths: 50_000, seed: 13, spy: 365, extrapolate });
+      expect(a.steps).toBe(ref.steps);
+      expect(a.out.length).toBe(ref.out.length);
+      const pairs: [string, number | null | undefined, number | null][] = [
+        ['vanilla', a.vanilla, ref.vanilla], ['vanilla_se', a.vanillaSe, ref.vanilla_se],
+        ['vanilla_fine_bias', a.vanillaFineBias, ref.vanilla_fine_bias],
+        ['arith', a.arith, ref.arith], ['arith_se', a.arithSe, ref.arith_se], ['arith_fine_bias', a.arithFineBias, ref.arith_fine_bias],
+        ['geo', a.geo, ref.geo], ['geo_se', a.geoSe, ref.geo_se], ['arith_geo_cov', a.arithGeoCov, ref.arith_geo_cov],
+        ...ref.out.flatMap((_, j): [string, number | null | undefined, number | null][] => [
+          [`out[${j}]`, a.out[j], ref.out[j]], [`out_se[${j}]`, a.outSe[j], ref.out_se[j]],
+          [`out_fine_bias[${j}]`, a.outFineBias[j], ref.out_fine_bias[j]], [`in[${j}]`, a.in[j], ref.in[j]], [`in_se[${j}]`, a.inSe[j], ref.in_se[j]],
+        ]),
+      ];
+      const bad = pairs.filter(([, x, y]) => !near(x, y)).map(([k, x, y]) => `${spec.kind} extrapolate=${extrapolate} ${k}: wasm ${x} native ${y}`);
+      expect(bad).toEqual([]);
+      compared += pairs.length;
+    }
+    console.log(`  wasm vs native mc_exotic: ${compared} values agree (barrier and Asian, with and without Richardson)`);
+  });
+
+  test('exotic Monte Carlo agrees with the closed forms under flat volatility and reprices the vanilla under local vol; domain checks', () => {
+    test.setTimeout(120_000);
+    const flat: Market = { S: 100, sigma: 0.25, r: 0.08, q: 0.04 };
+    const zs: number[] = [];
+    for (const call of [true, false]) for (const up of [false, true]) {
+      const levels = up ? [106, 112, 120] : [80, 88, 94];
+      const a = w.mcExotic({ kind: 'barrier', call, K: 100, T: 0.5, up, levels }, flat, 400_000, zs.length + 1, 1, false)!;
+      expect(a.steps).toBe(1);                                   // the bridge is exact under flat volatility: one step
+      levels.forEach((H, j) => {
+        const cf = barrierPrices(call, up, 100, 100, H, 0.5, 0.25, 0.08, 0.04);
+        zs.push(Math.abs(a.out[j] - cf.out) / a.outSe[j], Math.abs(a.in[j] - cf.in) / a.inSe[j]);
+        expect(Math.abs(a.out[j] + a.in[j] - a.vanilla)).toBeLessThan(1e-9);   // in-out parity, path by path
+      });
+    }
+    const asian = w.mcExotic({ kind: 'asian', call: true, K: 100, T: 1, fixings: 12 }, { S: 100, sigma: 0.3, r: 0.05, q: 0 }, 400_000, 7, 1, false)!;
+    const geoCf = geometricAsianPrice(true, 100, 100, 1, 12, 0.3, 0.05, 0);
+    const cv = controlVariate(asian, geoCf)!;
+    zs.push(Math.abs(asian.geo! - geoCf) / asian.geoSe!);
+    console.log(`  flat barriers and geometric Asian: worst |z| ${Math.max(...zs).toFixed(2)} over ${zs.length} prices · arithmetic ` +
+                `${asian.arith!.toFixed(4)} ± ${asian.arithSe!.toFixed(4)} → control variate ${cv.value.toFixed(4)} ± ${cv.se.toFixed(5)}`);
+    expect(Math.max(...zs)).toBeLessThan(4);
+    expect(asian.arith!).toBeGreaterThan(asian.geo!);
+    expect(cv.se).toBeLessThan(asian.arithSe! / 10);
+    expect(Math.abs(cv.value - asian.arith!) / asian.arithSe!).toBeLessThan(4);
+
+    // local volatility: the vanilla simulated on the barrier's own paths reprices at the surface's implied volatility
+    const m: Market = { S: 756.48, sigma: 0.138, r: 0.045, q: 0.01, smile: SMILE_PRESETS['Equity index'], term: TERM_PRESETS.Upward };
+    const lv = w.mcExotic({ kind: 'barrier', call: true, K: 756, T: 0.25, up: false, levels: [700] }, m, 150_000, 17, 365, true)!;
+    const bs = bsPrice(true, 756.48, 756, 0.25, legSigma(m, 756, 0.25), 0.045, 0.01);
+    expect(Math.abs(lv.vanilla - bs) / lv.vanillaSe).toBeLessThan(4);
+    expect(lv.out[0]).toBeLessThan(lv.vanilla);
+    expect(lv.vanillaFineBias).not.toBeNull();
+
+    // domain: no levels, too many, a negative level, fixings outside 1..2000, too much work for one run
+    const base = { kind: 'barrier', call: true, K: 100, T: 0.5, up: false } as const;
+    expect(w.mcExotic({ ...base, levels: [] }, flat, 1000, 1, 1, false)).toBeNull();
+    expect(w.mcExotic({ ...base, levels: Array.from({ length: 17 }, (_, i) => 60 + i) }, flat, 1000, 1, 1, false)).toBeNull();
+    expect(w.mcExotic({ ...base, levels: [-90] }, flat, 1000, 1, 1, false)).toBeNull();
+    expect(w.mcExotic({ kind: 'asian', call: true, K: 100, T: 1, fixings: 0 }, flat, 1000, 1, 1, false)).toBeNull();
+    expect(w.mcExotic({ kind: 'asian', call: true, K: 100, T: 1, fixings: 2001 }, flat, 1000, 1, 1, false)).toBeNull();
+    expect(w.mcExotic({ ...base, levels: [90] }, m, 10_000_000, 1, 365, true)).toBeNull();
   });
 
   test('inputs outside the model domain are rejected, never priced', () => {

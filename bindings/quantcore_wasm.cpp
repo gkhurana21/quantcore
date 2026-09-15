@@ -10,6 +10,7 @@
 #include <emscripten/emscripten.h>
 
 #include "quantcore/black_scholes.hpp"
+#include "quantcore/exotics.hpp"
 #include "quantcore/local_vol.hpp"
 #include "quantcore/monte_carlo.hpp"
 #include "quantcore/monte_carlo_portfolio.hpp"
@@ -25,6 +26,14 @@ double g_legs[kMaxLegs * 5];   // portfolio input: [call (0/1), K, T, sigma, wei
 // surface input: S, r, q, sigma, smile (0/1), rho, eta, gamma, smile_spot, term (0 flat, 1 curve, 2 fitted),
 // ratio, half_life, n_pillars, pillar T × 32, pillar w × 32
 double g_surface[kSurfaceSize];
+constexpr int kLevels = static_cast<int>(quantcore::kMaxBarrierLevels);
+// exotic input: kind (0 barrier, 1 asian), call (0/1), K, T, up (0/1), n_levels, levels × 16, n_fixings
+constexpr int kExoticSpecSize = 7 + kLevels;
+double g_exotic_spec[kExoticSpecSize];
+// exotic output: paths, steps, vanilla, vanilla_se, vanilla_fine_bias, n_levels, out × 16, out_se × 16,
+// out_fine_bias × 16, in × 16, in_se × 16, arith, arith_se, arith_fine_bias, geo, geo_se, arith_geo_cov
+constexpr int kExoticOutSize = 6 + 5 * kLevels + 6;
+double g_exotic_out[kExoticOutSize];
 
 quantcore::VolSurface read_surface() {
     const double* v = g_surface;
@@ -49,7 +58,7 @@ quantcore::VolSurface read_surface() {
 extern "C" {
 
 // Bumped whenever a signature or the output layout changes.
-EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 3; }
+EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 4; }
 
 EMSCRIPTEN_KEEPALIVE double* qc_out() { return g_out; }
 
@@ -121,6 +130,63 @@ EMSCRIPTEN_KEEPALIVE void qc_mc_local_vol(int n, double paths, double seed, doub
     g_out[2] = static_cast<double>(res.paths);
     g_out[3] = static_cast<double>(res.steps);
     g_out[4] = res.fine_bias;
+}
+
+EMSCRIPTEN_KEEPALIVE double* qc_exotic_spec() { return g_exotic_spec; }
+EMSCRIPTEN_KEEPALIVE int qc_exotic_spec_size() { return kExoticSpecSize; }
+EMSCRIPTEN_KEEPALIVE double* qc_exotic_out() { return g_exotic_out; }
+EMSCRIPTEN_KEEPALIVE int qc_exotic_out_size() { return kExoticOutSize; }
+
+// out: knock-out, knock-in, vanilla
+EMSCRIPTEN_KEEPALIVE void qc_barrier_prices(int call, int up, double S, double K, double H, double T,
+                                            double sigma, double r, double q) {
+    const quantcore::BarrierPrices p =
+        quantcore::barrier_prices(call ? OptionType::Call : OptionType::Put, up != 0, S, K, H, T, sigma, r, q);
+    g_out[0] = p.out;
+    g_out[1] = p.in;
+    g_out[2] = p.vanilla;
+}
+
+EMSCRIPTEN_KEEPALIVE double qc_geometric_asian(int call, double S, double K, double T, int n, double sigma, double r, double q) {
+    return quantcore::geometric_asian_price(call ? OptionType::Call : OptionType::Put, S, K, T, n, sigma, r, q);
+}
+
+// The exotic in qc_exotic_spec() on the surface in qc_surface(); results in qc_exotic_out().
+EMSCRIPTEN_KEEPALIVE void qc_mc_exotic(double paths, double seed, double steps_per_year, int extrapolate) {
+    const double* v = g_exotic_spec;
+    quantcore::ExoticSpec e;
+    e.kind = v[0] == 1.0 ? quantcore::ExoticKind::Asian : quantcore::ExoticKind::Barrier;
+    e.type = v[1] != 0.0 ? OptionType::Call : OptionType::Put;
+    e.K = v[2];
+    e.T = v[3];
+    e.up = v[4] != 0.0;
+    const int n_levels = static_cast<int>(v[5]);
+    e.n_levels = n_levels < 0 ? 0 : (n_levels > kLevels ? kLevels + 1 : n_levels);   // more than 16 fails validation
+    for (int j = 0; j < kLevels; ++j) e.levels[j] = v[6 + j];
+    e.n_fixings = static_cast<int>(v[6 + kLevels]);
+    const quantcore::ExoticResult r =
+        quantcore::mc_exotic(e, read_surface(), static_cast<long long>(paths), static_cast<uint64_t>(seed), steps_per_year, extrapolate != 0);
+    double* o = g_exotic_out;
+    o[0] = static_cast<double>(r.paths);
+    o[1] = static_cast<double>(r.steps);
+    o[2] = r.vanilla;
+    o[3] = r.vanilla_se;
+    o[4] = r.vanilla_fine_bias;
+    o[5] = r.n_levels;
+    for (int j = 0; j < kLevels; ++j) {
+        o[6 + j] = r.out[j];
+        o[6 + kLevels + j] = r.out_se[j];
+        o[6 + 2 * kLevels + j] = r.out_fine_bias[j];
+        o[6 + 3 * kLevels + j] = r.in[j];
+        o[6 + 4 * kLevels + j] = r.in_se[j];
+    }
+    const int k = 6 + 5 * kLevels;
+    o[k] = r.arith;
+    o[k + 1] = r.arith_se;
+    o[k + 2] = r.arith_fine_bias;
+    o[k + 3] = r.geo;
+    o[k + 4] = r.geo_se;
+    o[k + 5] = r.arith_geo_cov;
 }
 
 }  // extern "C"

@@ -54,9 +54,9 @@ async def main():
         pong = await rpc(ws, {"type": "ping", "t_ns": 987654321}, "pong")
         check("ping → pong echo", pong.get("t_ns") == 987654321)
         info = await rpc(ws, {"type": "info"}, "info")
-        check("info (protocol 6, dividends, per-leg sigma, portfolio MC, local vol)",
-              info.get("protocol") == 6 and info.get("dividends") is True and info.get("leg_sigma") is True
-              and info.get("portfolio_mc") is True and info.get("local_vol") is True,
+        check("info (protocol 7, dividends, per-leg sigma, portfolio MC, local vol, exotics)",
+              info.get("protocol") == 7 and info.get("dividends") is True and info.get("leg_sigma") is True
+              and info.get("portfolio_mc") is True and info.get("local_vol") is True and info.get("exotics") is True,
               json.dumps(info))
 
         # v2 portfolio (mixed calls/puts, one expired leg)
@@ -189,6 +189,40 @@ async def main():
                            "mc_local_vol_result")
         check("mc_local_vol with an invalid smile → error with id", bad_lv["type"] == "error" and bad_lv.get("id") == 18,
               bad_lv.get("msg", ""))
+
+        # v7 exotics: barrier levels under flat volatility against the closed forms, and the wire result equals the bindings
+        flat_m = {"S": 100.0, "sigma": 0.25, "r": 0.08, "q": 0.04}
+        spec = {"kind": "barrier", "call": True, "K": 100.0, "T": 0.5, "up": False, "levels": [85.0, 92.0, 97.0]}
+        exr = await rpc(ws, {"type": "mc_exotic", "id": 19, "market": flat_m, "spec": spec, "paths": 1_000_000,
+                             "seed": 3, "steps_per_year": 2, "extrapolate": True}, "mc_exotic_result")
+        if exr["type"] == "mc_exotic_result":
+            cf = [quantcore.barrier_prices(True, False, 100.0, 100.0, h, 0.5, 0.25, 0.08, 0.04) for h in spec["levels"]]
+            zs = [abs(exr["out"][j] - cf[j]["out"]) / exr["out_se"][j] for j in range(3)] + \
+                 [abs(exr["in"][j] - cf[j]["in"]) / exr["in_se"][j] for j in range(3)]
+            check("mc_exotic barrier levels within 4 SE of the closed forms (knock-out and knock-in)", max(zs) < 4,
+                  f"worst |z| {max(zs):.2f}, out {[round(v, 4) for v in exr['out']]} vs {[round(c['out'], 4) for c in cf]}, "
+                  f"{exr['ms']:.0f} ms")
+            direct = quantcore.mc_exotic(spec, flat_m, 1_000_000, 3, 2.0, True, -1)
+            check("mc_exotic id echo, and the wire result equals the bindings",
+                  exr.get("id") == 19 and exr["out"] == direct["out"] and exr["in"] == direct["in"] and exr["paths"] == 1_000_000)
+        else:
+            check("mc_exotic", False, exr.get("msg", ""))
+        asian = {"kind": "asian", "call": True, "K": 756.0, "T": 0.25, "fixings": 13}
+        asr = await rpc(ws, {"type": "mc_exotic", "id": 20, "market": lv_market, "spec": asian, "paths": 200_000,
+                             "seed": 4, "steps_per_year": 365, "extrapolate": True}, "mc_exotic_result")
+        if asr["type"] == "mc_exotic_result":
+            van = quantcore.bs_full(0, 756.48, 756.0, 0.045, quantcore.implied_vol(lv_market, 756.0, 0.25), 0.25, 0.01)["price"]
+            zv = abs(asr["vanilla"] - van) / asr["vanilla_se"]
+            check("mc_exotic Asian under local vol: arithmetic ≥ geometric, vanilla on the same paths within 4 SE",
+                  asr["arith"] >= asr["geo"] and zv < 4,
+                  f"arith {asr['arith']:.4f} geo {asr['geo']:.4f} vanilla {asr['vanilla']:.4f} vs {van:.4f} (|z| {zv:.2f}), "
+                  f"{asr['steps']} steps, {asr['ms']:.0f} ms")
+        else:
+            check("mc_exotic asian", False, asr.get("msg", ""))
+        bad_ex = await rpc(ws, {"type": "mc_exotic", "id": 21, "market": flat_m, "paths": 1000, "seed": 1,
+                                "spec": {**spec, "levels": []}}, "mc_exotic_result")
+        check("mc_exotic without barrier levels → error with id", bad_ex["type"] == "error" and bad_ex.get("id") == 21,
+              bad_ex.get("msg", ""))
 
         # errors keep the connection open
         err = await rpc(ws, {"type": "portfolio", "id": 9, "S": -1, "sigma": 0.2, "r": 0.04, "legs": legs}, "portfolio_result")

@@ -1,4 +1,5 @@
 #include "quantcore/local_vol.hpp"
+#include "quantcore/exotics.hpp"
 #include "quantcore/ziggurat.hpp"
 
 #include <algorithm>
@@ -142,67 +143,59 @@ inline double lvar(double rho, double omr2, const Slice& c, double x) {
     return v < kMaxVar ? (v > 0 ? v : (v <= 0 ? 0 : kMaxVar)) : kMaxVar;   // NaN → the cap
 }
 
-// ── simulation plan ──────────────────────────────────────────────────────────
+// ── time grid ────────────────────────────────────────────────────────────────
 
-struct Plan {
-    double*       block = nullptr;   // one allocation for every per-step array
+// Every per-step array of a simulation, for a set of anchor times (expiries, fixings) the grid must land on.
+struct Grid {
+    double*       block = nullptr;   // one allocation for all of it
     std::size_t   n = 0;             // coarse steps
+    std::size_t   n_anchor = 0;
     const double* times = nullptr;   // n + 1
     const double* dt = nullptr, * sqdt = nullptr, * hdt = nullptr, * sqhdt = nullptr;   // n each
     const double* var_inc = nullptr; // n: exact integrated variance (no smile)
+    const double* anchor_step = nullptr;   // n_anchor: step index of each anchor
     const Slice*  mid = nullptr;     // n, at 0.5·(t_i + t_{i+1})       — plain log-Euler
     const Slice*  coarse = nullptr;  // n, at t_i + Δt/2                 — Richardson
     const Slice*  fine = nullptr;    // 2n, at t_i + Δt/4, t_i + 3Δt/4   — Richardson
     bool          smile = false;
     double        rho = 0.0, omr2 = 1.0, carry = 0.0, x0 = 0.0;
-    // the log price is recorded at t = 0 (expired legs) and at every leg expiry
-    std::size_t   n_rec = 0;
-    std::size_t   rec_step[kPortfolioMaxLegs + 1] = {};
-    std::size_t   n_legs = 0;
-    std::size_t   leg_rec[kPortfolioMaxLegs] = {};
-    double        weight[kPortfolioMaxLegs] = {};
-    double        strike[kPortfolioMaxLegs] = {};
-    bool          is_call[kPortfolioMaxLegs] = {};
 };
 
-// Coarse step count of timeGrid(): every expiry, at most 1/steps_per_year apart. 0 when too long.
-std::size_t grid_steps(const double* expiries, std::size_t n_exp, double spy) {
+// Coarse step count of timeGrid(): every anchor, at most 1/steps_per_year apart. 0 when too long.
+std::size_t grid_steps(const double* anchors, std::size_t n_anchor, double spy) {
     double prev = 0.0;
     std::size_t total = 0;
-    for (std::size_t e = 0; e < n_exp; ++e) {
-        const double raw = std::ceil((expiries[e] - prev) * spy - 1e-9);
+    for (std::size_t e = 0; e < n_anchor; ++e) {
+        const double raw = std::ceil((anchors[e] - prev) * spy - 1e-9);
         if (!(raw <= static_cast<double>(kMaxLocalVolSteps))) return 0;
         total += static_cast<std::size_t>(std::max(1.0, raw));
         if (total > kMaxLocalVolSteps) return 0;
-        prev = expiries[e];
+        prev = anchors[e];
     }
     return total;
 }
 
-bool build_plan(Plan& p, const PortfolioLeg* legs, std::size_t n_legs, const VolSurface& s, double spy, bool richardson) {
-    double expiries[kPortfolioMaxLegs];
-    std::size_t n_exp = 0;
-    for (std::size_t j = 0; j < n_legs; ++j) if (legs[j].T > 0.0) expiries[n_exp++] = legs[j].T;
-    std::sort(expiries, expiries + n_exp);
-    n_exp = static_cast<std::size_t>(std::unique(expiries, expiries + n_exp) - expiries);
-
-    const std::size_t n = n_exp ? grid_steps(expiries, n_exp, spy) : 0;
-    if (n_exp && n == 0) return false;
+// anchors: strictly increasing positive times.
+bool build_grid(Grid& g, const double* anchors, std::size_t n_anchor, const VolSurface& s, double spy, bool richardson) {
+    const std::size_t n = n_anchor ? grid_steps(anchors, n_anchor, spy) : 0;
+    if (n_anchor && n == 0) return false;
     const std::size_t n_slices = richardson ? 3 * n : n;
-    const std::size_t doubles = (n + 1) + 5 * n + n_slices * (sizeof(Slice) / sizeof(double));
-    p.block = static_cast<double*>(std::calloc(doubles, sizeof(double)));
-    if (!p.block) return false;
-    double* times = p.block;
+    const std::size_t doubles = (n + 1) + 5 * n + n_anchor + n_slices * (sizeof(Slice) / sizeof(double));
+    g.block = static_cast<double*>(std::calloc(doubles, sizeof(double)));
+    if (!g.block) return false;
+    double* times = g.block;
     double* dt = times + (n + 1), * sqdt = dt + n, * hdt = sqdt + n, * sqhdt = hdt + n, * var_inc = sqhdt + n;
-    Slice* slices = reinterpret_cast<Slice*>(var_inc + n);
+    double* anchor_step = var_inc + n;
+    Slice* slices = reinterpret_cast<Slice*>(anchor_step + n_anchor);
 
     std::size_t k = 0;
     times[0] = 0.0;
-    for (std::size_t e = 0; e < n_exp; ++e) {
-        const double prev = times[k], T = expiries[e];
+    for (std::size_t e = 0; e < n_anchor; ++e) {
+        const double prev = times[k], T = anchors[e];
         const std::size_t m = static_cast<std::size_t>(std::max(1.0, std::ceil((T - prev) * spy - 1e-9)));
         for (std::size_t i = 1; i < m; ++i) times[++k] = prev + ((T - prev) * static_cast<double>(i)) / static_cast<double>(m);
         times[++k] = T;
+        anchor_step[e] = static_cast<double>(k);
     }
 
     const bool surface = has_surface(s);
@@ -220,26 +213,51 @@ bool build_plan(Plan& p, const PortfolioLeg* legs, std::size_t n_legs, const Vol
             slices[i] = make_slice(s, 0.5 * (times[i] + times[i + 1]));
         }
     }
-    p.n = n;
-    p.times = times; p.dt = dt; p.sqdt = sqdt; p.hdt = hdt; p.sqhdt = sqhdt; p.var_inc = var_inc;
-    p.mid = richardson ? nullptr : slices;
-    p.coarse = richardson ? slices : nullptr;
-    p.fine = richardson ? slices + n : nullptr;
-    p.smile = s.smile;
-    p.rho = s.smile ? s.rho : 0.0;
-    p.omr2 = 1 - p.rho * p.rho;
-    p.carry = s.r - s.q;
-    p.x0 = std::log(s.S);
+    g.n = n;
+    g.n_anchor = n_anchor;
+    g.times = times; g.dt = dt; g.sqdt = sqdt; g.hdt = hdt; g.sqhdt = sqhdt; g.var_inc = var_inc;
+    g.anchor_step = anchor_step;
+    g.mid = richardson ? nullptr : slices;
+    g.coarse = richardson ? slices : nullptr;
+    g.fine = richardson ? slices + n : nullptr;
+    g.smile = s.smile;
+    g.rho = s.smile ? s.rho : 0.0;
+    g.omr2 = 1 - g.rho * g.rho;
+    g.carry = s.r - s.q;
+    g.x0 = std::log(s.S);
+    return true;
+}
 
-    // recorded steps: 0 and each expiry, in increasing order (a step index per distinct expiry)
+// ── portfolio of European legs ───────────────────────────────────────────────
+
+struct Plan {
+    Grid          g;
+    // the log price is recorded at t = 0 (expired legs) and at every leg expiry
+    std::size_t   n_rec = 0;
+    std::size_t   rec_step[kPortfolioMaxLegs + 1] = {};
+    std::size_t   n_legs = 0;
+    std::size_t   leg_rec[kPortfolioMaxLegs] = {};
+    double        weight[kPortfolioMaxLegs] = {};
+    double        strike[kPortfolioMaxLegs] = {};
+    bool          is_call[kPortfolioMaxLegs] = {};
+};
+
+bool build_plan(Plan& p, const PortfolioLeg* legs, std::size_t n_legs, const VolSurface& s, double spy, bool richardson) {
+    double expiries[kPortfolioMaxLegs];
+    std::size_t n_exp = 0;
+    for (std::size_t j = 0; j < n_legs; ++j) if (legs[j].T > 0.0) expiries[n_exp++] = legs[j].T;
+    std::sort(expiries, expiries + n_exp);
+    n_exp = static_cast<std::size_t>(std::unique(expiries, expiries + n_exp) - expiries);
+    if (!build_grid(p.g, expiries, n_exp, s, spy, richardson)) return false;
+    const Grid& g = p.g;
+
     p.n_rec = 0;
     p.rec_step[p.n_rec++] = 0;
-    for (std::size_t e = 0; e < n_exp; ++e)
-        p.rec_step[p.n_rec++] = static_cast<std::size_t>(std::lower_bound(times, times + n + 1, expiries[e]) - times);
+    for (std::size_t e = 0; e < n_exp; ++e) p.rec_step[p.n_rec++] = static_cast<std::size_t>(g.anchor_step[e]);
     p.n_legs = n_legs;
     for (std::size_t j = 0; j < n_legs; ++j) {
         const double T = legs[j].T;
-        const std::size_t step = T > 0.0 ? static_cast<std::size_t>(std::lower_bound(times, times + n + 1, T) - times) : 0;
+        const std::size_t step = T > 0.0 ? static_cast<std::size_t>(std::lower_bound(g.times, g.times + g.n + 1, T) - g.times) : 0;
         p.leg_rec[j] = static_cast<std::size_t>(std::lower_bound(p.rec_step, p.rec_step + p.n_rec, step) - p.rec_step);
         p.weight[j] = std::exp(-s.r * std::max(0.0, T)) * legs[j].weight;
         p.strike[j] = legs[j].K;
@@ -269,28 +287,29 @@ inline void record(double* rec, std::size_t r, const double* x, std::size_t B) {
 
 // Plain log-Euler (exact variance steps without a smile), a block of paths per time step.
 Sums simulate_plain(const Plan& p, long long paths, uint64_t seed) {
+    const Grid& g = p.g;
     Sums out;
     double* rec = static_cast<double*>(std::calloc(p.n_rec * kBlock, sizeof(double)));
     if (!rec) { out.ok = false; return out; }
     std::mt19937_64 rng(seed);
     double x[kBlock], z[kBlock];
-    const double rho = p.rho, omr2 = p.omr2, carry = p.carry;
+    const double rho = g.rho, omr2 = g.omr2, carry = g.carry;
     for (long long done = 0; done < paths;) {
         const std::size_t B = static_cast<std::size_t>(std::min<long long>(static_cast<long long>(kBlock), paths - done));
-        std::fill(x, x + B, p.x0);
+        std::fill(x, x + B, g.x0);
         record(rec, 0, x, B);
         std::size_t r = 1;
-        for (std::size_t i = 0; i < p.n; ++i) {
+        for (std::size_t i = 0; i < g.n; ++i) {
             for (std::size_t b = 0; b < B; ++b) z[b] = normal_ziggurat(rng);
-            const double dt = p.dt[i], sq = p.sqdt[i];
-            if (p.smile) {
-                const Slice& c = p.mid[i];
+            const double dt = g.dt[i], sq = g.sqdt[i];
+            if (g.smile) {
+                const Slice& c = g.mid[i];
                 for (std::size_t b = 0; b < B; ++b) {
                     const double v = lvar(rho, omr2, c, x[b]);
                     x[b] += (carry - 0.5 * v) * dt + std::sqrt(v) * sq * z[b];
                 }
             } else {
-                const double dv = p.var_inc[i], drift = carry * dt - 0.5 * dv, sd = std::sqrt(dv);
+                const double dv = g.var_inc[i], drift = carry * dt - 0.5 * dv, sd = std::sqrt(dv);
                 for (std::size_t b = 0; b < B; ++b) x[b] += drift + sd * z[b];
             }
             if (r < p.n_rec && p.rec_step[r] == i + 1) record(rec, r++, x, B);
@@ -308,27 +327,28 @@ Sums simulate_plain(const Plan& p, long long paths, uint64_t seed) {
 
 // Coupled Richardson: fine and coarse grids on the same Brownian increments; 2·fine − coarse per path.
 Sums simulate_richardson(const Plan& p, long long paths, uint64_t seed) {
+    const Grid& g = p.g;
     Sums out;
     double* recf = static_cast<double*>(std::calloc(2 * p.n_rec * kBlock, sizeof(double)));
     if (!recf) { out.ok = false; return out; }
     double* recc = recf + p.n_rec * kBlock;
     std::mt19937_64 rng(seed);
     double f[kBlock], c[kBlock], z1[kBlock], z2[kBlock];
-    const double rho = p.rho, omr2 = p.omr2, carry = p.carry;
+    const double rho = g.rho, omr2 = g.omr2, carry = g.carry;
     for (long long done = 0; done < paths;) {
         const std::size_t B = static_cast<std::size_t>(std::min<long long>(static_cast<long long>(kBlock), paths - done));
-        std::fill(f, f + B, p.x0);
-        std::fill(c, c + B, p.x0);
+        std::fill(f, f + B, g.x0);
+        std::fill(c, c + B, g.x0);
         record(recf, 0, f, B);
         record(recc, 0, c, B);
         std::size_t r = 1;
-        for (std::size_t i = 0; i < p.n; ++i) {
+        for (std::size_t i = 0; i < g.n; ++i) {
             for (std::size_t b = 0; b < B; ++b) {
                 z1[b] = normal_ziggurat(rng);
                 z2[b] = normal_ziggurat(rng);
             }
-            const Slice& f0 = p.fine[2 * i], & f1 = p.fine[2 * i + 1], & c0 = p.coarse[i];
-            const double dt = p.dt[i], hdt = p.hdt[i], sq = p.sqhdt[i];
+            const Slice& f0 = g.fine[2 * i], & f1 = g.fine[2 * i + 1], & c0 = g.coarse[i];
+            const double dt = g.dt[i], hdt = g.hdt[i], sq = g.sqhdt[i];
             for (std::size_t b = 0; b < B; ++b) {
                 const double v = lvar(rho, omr2, f0, f[b]);
                 f[b] += (carry - 0.5 * v) * hdt + std::sqrt(v) * sq * z1[b];
@@ -366,7 +386,7 @@ LocalVolResult finish(const Sums& s, long long paths, const Plan& p, bool richar
     const double N = static_cast<double>(paths);
     const double mean = s.sum / N;
     const double se = std::sqrt(std::max(s.sum_sq / N - mean * mean, 0.0) / N);
-    return LocalVolResult{mean, se, paths, static_cast<long long>(richardson ? 2 * p.n : p.n),
+    return LocalVolResult{mean, se, paths, static_cast<long long>(richardson ? 2 * p.g.n : p.g.n),
                           richardson ? s.sum_gap / N : kNaN};
 }
 
@@ -375,6 +395,247 @@ bool valid_inputs(const PortfolioLeg* legs, std::size_t n_legs, const VolSurface
     for (std::size_t j = 0; j < n_legs; ++j)
         if (!(legs[j].K > 0.0) || !std::isfinite(legs[j].T) || !std::isfinite(legs[j].weight)) return false;
     return true;
+}
+
+// ── exotics: barriers (Brownian-bridge survival) and Asian averages ──────────
+
+struct ExoticPlan {
+    Grid   g;
+    bool   barrier = false, call = true, up = false;
+    std::size_t M = 0;                        // barrier levels
+    double h[kMaxBarrierLevels] = {};         // log barriers
+    std::size_t n_fix = 0;
+    double K = 0.0, df = 1.0;
+};
+
+bool valid_exotic(const ExoticSpec& e, const VolSurface& s, long long paths, double spy) {
+    if (paths < 1 || !(spy > 0.0) || !std::isfinite(spy) || !valid_surface(s)) return false;
+    if (!(e.K > 0.0) || !std::isfinite(e.K) || !(e.T > 0.0) || !(e.T <= 30.0)) return false;
+    if (e.kind == ExoticKind::Barrier) {
+        if (e.n_levels < 1 || e.n_levels > static_cast<int>(kMaxBarrierLevels)) return false;
+        for (int j = 0; j < e.n_levels; ++j) if (!(e.levels[j] > 0.0) || !std::isfinite(e.levels[j])) return false;
+        return true;
+    }
+    return e.kind == ExoticKind::Asian && e.n_fixings >= 1 && e.n_fixings <= static_cast<int>(kMaxAsianFixings);
+}
+
+bool build_exotic_plan(ExoticPlan& p, const ExoticSpec& e, const VolSurface& s, double spy, bool richardson) {
+    p.barrier = e.kind == ExoticKind::Barrier;
+    p.call = e.type == OptionType::Call;
+    p.up = e.up;
+    p.K = e.K;
+    p.df = std::exp(-s.r * e.T);
+    if (p.barrier) {
+        p.M = static_cast<std::size_t>(e.n_levels);
+        for (std::size_t j = 0; j < p.M; ++j) p.h[j] = std::log(e.levels[j]);
+        const double T = e.T;
+        return build_grid(p.g, &T, 1, s, spy, richardson);
+    }
+    p.n_fix = static_cast<std::size_t>(e.n_fixings);
+    double* anchors = static_cast<double*>(std::calloc(p.n_fix, sizeof(double)));
+    if (!anchors) return false;
+    for (std::size_t i = 0; i < p.n_fix; ++i) anchors[i] = (e.T * static_cast<double>(i + 1)) / static_cast<double>(p.n_fix);
+    anchors[p.n_fix - 1] = e.T;   // exactly on the expiry
+    const bool ok = build_grid(p.g, anchors, p.n_fix, s, spy, richardson);
+    std::free(anchors);
+    return ok;
+}
+
+struct ExoticSums {
+    double van = 0.0, van2 = 0.0, van_gap = 0.0;
+    double out[kMaxBarrierLevels] = {}, out2[kMaxBarrierLevels] = {}, out_gap[kMaxBarrierLevels] = {};
+    double in[kMaxBarrierLevels] = {}, in2[kMaxBarrierLevels] = {};
+    double ar = 0.0, ar2 = 0.0, ar_gap = 0.0, ge = 0.0, ge2 = 0.0, ag = 0.0;
+    bool   ok = true;
+
+    void add(const ExoticSums& o) {
+        van += o.van; van2 += o.van2; van_gap += o.van_gap;
+        for (std::size_t j = 0; j < kMaxBarrierLevels; ++j) {
+            out[j] += o.out[j]; out2[j] += o.out2[j]; out_gap[j] += o.out_gap[j];
+            in[j] += o.in[j]; in2[j] += o.in2[j];
+        }
+        ar += o.ar; ar2 += o.ar2; ar_gap += o.ar_gap; ge += o.ge; ge2 += o.ge2; ag += o.ag;
+        ok = ok && o.ok;
+    }
+};
+
+// One grid's state for a block of paths: log price, survival per level (sv[j·kBlock + b]), running average sums.
+struct PathState { double* x; double* sv; double* asum; double* gsum; };
+
+ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, bool richardson) {
+    const Grid& g = p.g;
+    ExoticSums out;
+    const std::size_t M = p.M;
+    const std::size_t per = kBlock * (3 + M);
+    const std::size_t grids = richardson ? 2 : 1;
+    double* mem = static_cast<double*>(std::calloc(grids * per + 2 * kBlock, sizeof(double)));
+    if (!mem) { out.ok = false; return out; }
+    auto state = [&](std::size_t k) {
+        double* base = mem + k * per;
+        return PathState{base, base + kBlock, base + kBlock * (1 + M), base + kBlock * (2 + M)};
+    };
+    const PathState F = state(0);
+    const PathState C = richardson ? state(1) : PathState{nullptr, nullptr, nullptr, nullptr};
+    double* z1 = mem + grids * per, * z2 = z1 + kBlock;
+
+    std::mt19937_64 rng(seed);
+    const double rho = g.rho, omr2 = g.omr2, carry = g.carry;
+    const double inv_n = p.n_fix ? 1.0 / static_cast<double>(p.n_fix) : 0.0;
+    const bool up = p.up;
+
+    const double kInf = std::numeric_limits<double>::infinity();
+    double xn[kBlock], inv_var[kBlock];
+    // Barrier survival over a step from st.x to xn: a Brownian bridge with step variance 1/inv_var stays on the far side
+    // of the log barrier h with probability 1 − exp(−2(x₀ − h)(x₁ − h)/v). One level at a time over the block, so the
+    // loop is a plain pass the compiler can vectorise; the exponential is skipped once it is below e^−40.
+    auto bridge = [&](const PathState& st, std::size_t B) {
+        for (std::size_t j = 0; j < M; ++j) {
+            const double h = p.h[j];
+            double* sv = st.sv + j * kBlock;
+            for (std::size_t b = 0; b < B; ++b) {
+                const double a = up ? h - st.x[b] : st.x[b] - h, c = up ? h - xn[b] : xn[b] - h;
+                if (!(a > 0.0) || !(c > 0.0)) { sv[b] = 0.0; continue; }
+                const double e = 2.0 * a * c * inv_var[b];
+                if (e <= 40.0) sv[b] *= -std::expm1(-e);
+            }
+        }
+    };
+    // one grid's paths by one log-Euler step at the local variance, then the bridge
+    auto step_smile = [&](const PathState& st, std::size_t B, const Slice& sl, double h_dt, double sq, const double* z) {
+        for (std::size_t b = 0; b < B; ++b) {
+            const double v = lvar(rho, omr2, sl, st.x[b]);
+            xn[b] = st.x[b] + (carry - 0.5 * v) * h_dt + std::sqrt(v) * sq * z[b];
+            const double var = v * h_dt;
+            inv_var[b] = var > 0.0 ? 1.0 / var : kInf;
+        }
+        if (M) bridge(st, B);
+        std::copy(xn, xn + B, st.x);
+    };
+
+    for (long long done = 0; done < paths;) {
+        const std::size_t B = static_cast<std::size_t>(std::min<long long>(static_cast<long long>(kBlock), paths - done));
+        for (std::size_t k = 0; k < grids; ++k) {
+            const PathState st = k ? C : F;
+            std::fill(st.x, st.x + B, g.x0);
+            for (std::size_t j = 0; j < M; ++j) std::fill(st.sv + j * kBlock, st.sv + j * kBlock + B, 1.0);
+            std::fill(st.asum, st.asum + B, 0.0);
+            std::fill(st.gsum, st.gsum + B, 0.0);
+        }
+        std::size_t r = 0;   // next fixing
+        for (std::size_t i = 0; i < g.n; ++i) {
+            if (richardson) {
+                for (std::size_t b = 0; b < B; ++b) {
+                    z1[b] = normal_ziggurat(rng);
+                    z2[b] = normal_ziggurat(rng);
+                }
+                const double dt = g.dt[i], hdt = g.hdt[i], sq = g.sqhdt[i];
+                step_smile(F, B, g.fine[2 * i], hdt, sq, z1);
+                step_smile(F, B, g.fine[2 * i + 1], hdt, sq, z2);
+                for (std::size_t b = 0; b < B; ++b) z2[b] += z1[b];   // the coarse step's increment
+                step_smile(C, B, g.coarse[i], dt, sq, z2);
+            } else {
+                for (std::size_t b = 0; b < B; ++b) z1[b] = normal_ziggurat(rng);
+                if (g.smile) {
+                    step_smile(F, B, g.mid[i], g.dt[i], g.sqdt[i], z1);
+                } else {
+                    // no smile: the step's variance is exact, so the bridge weight is too
+                    const double dv = g.var_inc[i], drift = carry * g.dt[i] - 0.5 * dv, sd = std::sqrt(dv);
+                    const double inv = dv > 0.0 ? 1.0 / dv : kInf;
+                    for (std::size_t b = 0; b < B; ++b) {
+                        xn[b] = F.x[b] + drift + sd * z1[b];
+                        inv_var[b] = inv;
+                    }
+                    if (M) bridge(F, B);
+                    std::copy(xn, xn + B, F.x);
+                }
+            }
+            if (p.n_fix && r < g.n_anchor && static_cast<std::size_t>(g.anchor_step[r]) == i + 1) {
+                for (std::size_t k = 0; k < grids; ++k) {
+                    const PathState st = k ? C : F;
+                    for (std::size_t b = 0; b < B; ++b) {
+                        st.asum[b] += std::exp(st.x[b]);
+                        st.gsum[b] += st.x[b];
+                    }
+                }
+                ++r;
+            }
+        }
+
+        const double df = p.df, K = p.K;
+        const bool call = p.call;
+        auto pay = [call, K, df](double s) { return df * std::max(call ? s - K : K - s, 0.0); };
+        for (std::size_t b = 0; b < B; ++b) {
+            const double vf = pay(std::exp(F.x[b]));
+            const double vc = richardson ? pay(std::exp(C.x[b])) : 0.0;
+            const double van = richardson ? 2 * vf - vc : vf;
+            out.van += van;
+            out.van2 += van * van;
+            out.van_gap += vc - vf;
+            for (std::size_t j = 0; j < M; ++j) {
+                const double of = F.sv[j * kBlock + b] * vf;
+                const double oc = richardson ? C.sv[j * kBlock + b] * vc : 0.0;
+                const double o = richardson ? 2 * of - oc : of;
+                const double kin = van - o;
+                out.out[j] += o;
+                out.out2[j] += o * o;
+                out.out_gap[j] += oc - of;
+                out.in[j] += kin;
+                out.in2[j] += kin * kin;
+            }
+            if (p.n_fix) {
+                const double af = pay(F.asum[b] * inv_n), gf = pay(std::exp(F.gsum[b] * inv_n));
+                const double ac = richardson ? pay(C.asum[b] * inv_n) : 0.0;
+                const double gc = richardson ? pay(std::exp(C.gsum[b] * inv_n)) : 0.0;
+                const double a = richardson ? 2 * af - ac : af, ge = richardson ? 2 * gf - gc : gf;
+                out.ar += a;
+                out.ar2 += a * a;
+                out.ar_gap += ac - af;
+                out.ge += ge;
+                out.ge2 += ge * ge;
+                out.ag += a * ge;
+            }
+        }
+        done += static_cast<long long>(B);
+    }
+    std::free(mem);
+    return out;
+}
+
+ExoticResult invalid_exotic() {
+    ExoticResult r;
+    r.vanilla = r.vanilla_se = r.vanilla_fine_bias = kNaN;
+    r.arith = r.arith_se = r.arith_fine_bias = r.geo = r.geo_se = r.arith_geo_cov = kNaN;
+    for (std::size_t j = 0; j < kMaxBarrierLevels; ++j) r.out[j] = r.out_se[j] = r.out_fine_bias[j] = r.in[j] = r.in_se[j] = kNaN;
+    return r;
+}
+
+ExoticResult finish_exotic(const ExoticSums& s, long long paths, const ExoticPlan& p, bool richardson) {
+    const double N = static_cast<double>(paths);
+    auto mean = [N](double sum) { return sum / N; };
+    auto se = [N](double sum, double sq) { const double m = sum / N; return std::sqrt(std::max(sq / N - m * m, 0.0) / N); };
+    ExoticResult r = invalid_exotic();
+    r.paths = paths;
+    r.steps = static_cast<long long>(richardson ? 2 * p.g.n : p.g.n);
+    r.vanilla = mean(s.van);
+    r.vanilla_se = se(s.van, s.van2);
+    r.vanilla_fine_bias = richardson ? mean(s.van_gap) : kNaN;
+    r.n_levels = static_cast<int>(p.M);
+    for (std::size_t j = 0; j < p.M; ++j) {
+        r.out[j] = mean(s.out[j]);
+        r.out_se[j] = se(s.out[j], s.out2[j]);
+        r.out_fine_bias[j] = richardson ? mean(s.out_gap[j]) : kNaN;
+        r.in[j] = mean(s.in[j]);
+        r.in_se[j] = se(s.in[j], s.in2[j]);
+    }
+    if (p.n_fix) {
+        r.arith = mean(s.ar);
+        r.arith_se = se(s.ar, s.ar2);
+        r.arith_fine_bias = richardson ? mean(s.ar_gap) : kNaN;
+        r.geo = mean(s.ge);
+        r.geo_se = se(s.ge, s.ge2);
+        r.arith_geo_cov = s.ag / N - r.arith * r.geo;
+    }
+    return r;
 }
 
 } // namespace
@@ -411,10 +672,22 @@ LocalVolResult mc_local_vol(const PortfolioLeg* legs, std::size_t n_legs, const 
     if (!valid_inputs(legs, n_legs, s, paths, steps_per_year)) return invalid();
     const bool richardson = extrapolate && s.smile;
     Plan p;
-    if (!build_plan(p, legs, n_legs, s, steps_per_year, richardson)) { std::free(p.block); return invalid(); }
+    if (!build_plan(p, legs, n_legs, s, steps_per_year, richardson)) { std::free(p.g.block); return invalid(); }
     const Sums sums = richardson ? simulate_richardson(p, paths, seed) : simulate_plain(p, paths, seed);
     const LocalVolResult res = sums.ok ? finish(sums, paths, p, richardson) : invalid();
-    std::free(p.block);
+    std::free(p.g.block);
+    return res;
+}
+
+ExoticResult mc_exotic(const ExoticSpec& e, const VolSurface& s, long long paths, uint64_t seed,
+                       double steps_per_year, bool extrapolate) {
+    if (!valid_exotic(e, s, paths, steps_per_year)) return invalid_exotic();
+    const bool richardson = extrapolate && s.smile;
+    ExoticPlan p;
+    if (!build_exotic_plan(p, e, s, steps_per_year, richardson)) { std::free(p.g.block); return invalid_exotic(); }
+    const ExoticSums sums = simulate_exotic(p, paths, seed, richardson);
+    const ExoticResult res = sums.ok ? finish_exotic(sums, paths, p, richardson) : invalid_exotic();
+    std::free(p.g.block);
     return res;
 }
 
@@ -427,7 +700,7 @@ LocalVolResult mc_local_vol_mt(const PortfolioLeg* legs, std::size_t n_legs, con
     n_threads = static_cast<int>(std::max(1LL, std::min<long long>(n_threads, paths)));
     const bool richardson = extrapolate && s.smile;
     Plan p;
-    if (!build_plan(p, legs, n_legs, s, steps_per_year, richardson)) { std::free(p.block); return invalid(); }
+    if (!build_plan(p, legs, n_legs, s, steps_per_year, richardson)) { std::free(p.g.block); return invalid(); }
 
     std::vector<Sums> parts(static_cast<std::size_t>(n_threads));
     std::vector<std::thread> threads;
@@ -450,7 +723,36 @@ LocalVolResult mc_local_vol_mt(const PortfolioLeg* legs, std::size_t n_legs, con
         total.ok = total.ok && part.ok;
     }
     const LocalVolResult res = total.ok ? finish(total, paths, p, richardson) : invalid();
-    std::free(p.block);
+    std::free(p.g.block);
+    return res;
+}
+
+ExoticResult mc_exotic_mt(const ExoticSpec& e, const VolSurface& s, long long paths, uint64_t seed,
+                          double steps_per_year, bool extrapolate, int n_threads) {
+    if (!valid_exotic(e, s, paths, steps_per_year)) return invalid_exotic();
+    if (n_threads <= 0) n_threads = static_cast<int>(std::thread::hardware_concurrency());
+    n_threads = static_cast<int>(std::max(1LL, std::min<long long>(n_threads, paths)));
+    const bool richardson = extrapolate && s.smile;
+    ExoticPlan p;
+    if (!build_exotic_plan(p, e, s, steps_per_year, richardson)) { std::free(p.g.block); return invalid_exotic(); }
+
+    std::vector<ExoticSums> parts(static_cast<std::size_t>(n_threads));
+    std::vector<std::thread> threads;
+    threads.reserve(parts.size());
+    const long long base = paths / n_threads, extra = paths % n_threads;
+    for (int t = 0; t < n_threads; ++t) {
+        const long long n = base + (t < extra ? 1 : 0);
+        const uint64_t tseed = seed + static_cast<uint64_t>(t) * 0x9e3779b97f4a7c15ULL;
+        threads.emplace_back([&p, &parts, t, n, tseed, richardson] {
+            parts[static_cast<std::size_t>(t)] = simulate_exotic(p, n, tseed, richardson);
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    ExoticSums total;
+    for (const ExoticSums& part : parts) total.add(part);
+    const ExoticResult res = total.ok ? finish_exotic(total, paths, p, richardson) : invalid_exotic();
+    std::free(p.g.block);
     return res;
 }
 #endif
