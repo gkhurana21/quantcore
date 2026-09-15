@@ -12,6 +12,7 @@
 #include "quantcore/monte_carlo_portfolio.hpp"
 #include "quantcore/local_vol.hpp"
 #include "quantcore/exotics.hpp"
+#include "quantcore/pde.hpp"
 #ifdef __APPLE__
 #  include "quantcore/monte_carlo_gpu.hpp"
 #endif
@@ -107,6 +108,24 @@ static py::dict exotic_dict(const ExoticResult& r) {
                     "arith_fine_bias"_a = finite_or_none(r.arith_fine_bias),
                     "geo"_a = finite_or_none(r.geo), "geo_se"_a = finite_or_none(r.geo_se),
                     "arith_geo_cov"_a = finite_or_none(r.arith_geo_cov));
+}
+
+// A finite-difference option from {"kind": "european"|"american"|"knockout", "call", "K", "T", "H"?, "up"?}
+static PdeSpec pde_from(const py::dict& d) {
+    PdeSpec p;
+    const std::string kind = d["kind"].cast<std::string>();
+    if (kind == "european") p.kind = PdeKind::European;
+    else if (kind == "american") p.kind = PdeKind::American;
+    else if (kind == "knockout") p.kind = PdeKind::KnockOut;
+    else throw std::invalid_argument("kind must be 'european', 'american' or 'knockout'");
+    p.type = d["call"].cast<bool>() ? OptionType::Call : OptionType::Put;
+    p.K = d["K"].cast<double>();
+    p.T = d["T"].cast<double>();
+    if (p.kind == PdeKind::KnockOut) {
+        p.H = d["H"].cast<double>();
+        p.up = d["up"].cast<bool>();
+    }
+    return p;
 }
 
 static py::dict local_vol_dict(const LocalVolResult& res) {
@@ -404,6 +423,29 @@ PYBIND11_MODULE(quantcore, m) {
           py::arg("steps_per_year") = 365.0, py::arg("extrapolate") = true, py::arg("n_threads") = 0,
           "Barrier (Brownian-bridge monitoring, several levels on the same paths) or Asian option under the market's "
           "local volatility; values per unit of underlying.");
+
+    m.def("pde_price",
+          [](const py::dict& spec, const py::dict& market, int nodes, int steps) {
+              const PdeSpec p = pde_from(spec);
+              const VolSurface s = surface_from(market);
+              PdeResult r;
+              {
+                  py::gil_scoped_release release;
+                  r = pde_price(p, s, nodes, steps);
+              }
+              py::list tau, spot;
+              for (int j = 0; j < r.n_boundary; ++j) {
+                  tau.append(r.boundary_tau[j]);
+                  spot.append(finite_or_none(r.boundary_S[j]));
+              }
+              return py::dict("price"_a = finite_or_none(r.price), "delta"_a = finite_or_none(r.delta),
+                              "gamma"_a = finite_or_none(r.gamma), "theta"_a = finite_or_none(r.theta),
+                              "nodes"_a = r.nodes, "steps"_a = r.steps, "lcp_iterations"_a = r.lcp_iterations,
+                              "boundary_tau"_a = tau, "boundary_S"_a = spot);
+          },
+          py::arg("spec"), py::arg("market"), py::arg("nodes") = 801, py::arg("steps") = 800,
+          "European, American or knock-out option under the market's local volatility by Crank-Nicolson finite "
+          "differences: price, grid Greeks and the early-exercise boundary; values per unit of underlying.");
 
     m.def("mc_portfolio_mt",
           [](DoubleArray is_call, DoubleArray K, DoubleArray T, DoubleArray sigma, DoubleArray weight,

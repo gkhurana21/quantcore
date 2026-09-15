@@ -18,10 +18,10 @@ command -v em++ >/dev/null || { echo "em++ not found — run: source ~/emsdk/ems
 
 OUT_DIR=dashboard/public/wasm
 SOURCES=(core/src/black_scholes.cpp core/src/monte_carlo.cpp core/src/monte_carlo_portfolio.cpp core/src/local_vol.cpp
-         core/src/exotics.cpp bindings/quantcore_wasm.cpp)
+         core/src/exotics.cpp core/src/pde.cpp bindings/quantcore_wasm.cpp)
 HEADERS=(core/include/quantcore/black_scholes.hpp core/include/quantcore/monte_carlo.hpp
          core/include/quantcore/monte_carlo_portfolio.hpp core/include/quantcore/local_vol.hpp
-         core/include/quantcore/ziggurat.hpp core/include/quantcore/exotics.hpp)
+         core/include/quantcore/ziggurat.hpp core/include/quantcore/exotics.hpp core/include/quantcore/pde.hpp)
 # 8 MB of fixed memory: a local-vol plan for the longest grid (10,000 coarse steps) needs about 3.3 MB
 FLAGS=(-std=c++17 -O3 -msimd128 -fno-exceptions -fno-rtti -Wall -Wextra -Wpedantic -Werror
        --no-entry -sSTANDALONE_WASM -sFILESYSTEM=0 -sSTACK_SIZE=65536 -sINITIAL_MEMORY=8388608
@@ -38,7 +38,7 @@ const [outDir, emscripten, flags, ...files] = process.argv.slice(2);
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 const wasm = readFileSync(`${outDir}/quantcore.wasm`);
 const manifest = {
-  abi: 4,
+  abi: 5,
   emscripten,
   flags: flags.split(' '),
   bytes: wasm.length,

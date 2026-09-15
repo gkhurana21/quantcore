@@ -406,6 +406,43 @@ test.describe('QuantCore terminal flows', () => {
     expect(Number(await page.getByTestId('exo-row-mc-flat').getAttribute('data-z'))).toBeLessThan(4);
   });
 
+  test('19. Finite differences: American puts under the surface, the exercise boundary, and the barrier PDE against Monte Carlo', async ({ page }) => {
+    test.setTimeout(150_000);
+    await page.routeWebSocket('ws://localhost:8765/ws', ws => ws.close({ code: 1000, reason: 'no native engine' }));
+    await open(page);
+    await page.getByTestId('preset-long-put').click();
+    await page.getByTestId('lab-row-mc200k').waitFor();
+
+    // flat market: American above the closed-form European, on the 512-step lattice, and a boundary below the strike
+    const row = page.getByTestId('lab-pde-row-0');
+    await expect(row).toHaveAttribute('data-crr', /\d/, { timeout: 30_000 });
+    const n = async (a: string) => Number(await row.getAttribute(a));
+    expect(await n('data-am-flat')).toBeGreaterThan(await n('data-bs'));
+    // early-exercise premium against the lattice's (American − European on the lattice cancels its own bias)
+    expect(Math.abs((await n('data-am-flat') - await n('data-bs')) - (await n('data-crr') - await n('data-crr-eu')))).toBeLessThan(0.005);
+    const chart = page.getByTestId('lab-pde-boundary');
+    expect(Number(await chart.getAttribute('data-flat-today'))).toBeLessThan(755);
+    expect(Number(await chart.getAttribute('data-points'))).toBeGreaterThan(30);
+
+    // equity skew: the European under local volatility reprices the implied volatility; early exercise is worth less
+    await page.getByTestId('smile-Equity index').click();
+    await page.getByTestId('lab-row-mc200k').waitFor();
+    await expect(row).toHaveAttribute('data-am-lv', /\d/, { timeout: 30_000 });
+    expect(Math.abs(await n('data-eu-lv') - await n('data-bs')) / await n('data-bs')).toBeLessThan(2e-3);
+    expect(await n('data-am-lv')).toBeGreaterThan(await n('data-eu-lv'));
+    const headline = page.getByTestId('lab-pde-headline');
+    expect(Number(await headline.getAttribute('data-eep-lv'))).toBeGreaterThan(0);
+    expect(Number(await chart.getAttribute('data-lv-today'))).toBeLessThan(Number(await chart.getAttribute('data-flat-today')));
+
+    // barrier: the PDE knock-out on the surface agrees with the local-vol Monte Carlo, and draws its curve
+    await page.getByTestId('tab-exotics').click();
+    const pdeRow = page.getByTestId('exo-row-pde');
+    await expect(page.getByTestId('exo-row-local')).toHaveAttribute('data-z', /\d/, { timeout: 90_000 });
+    await expect(pdeRow).toHaveAttribute('data-mc-z', /\d/, { timeout: 30_000 });
+    expect(Number(await pdeRow.getAttribute('data-mc-z'))).toBeLessThan(4);
+    expect(Number(await page.getByTestId('exo-chart').getAttribute('data-pde-points'))).toBeGreaterThan(10);
+  });
+
   test('15. ATM term structure: each expiry reads its own ATM vol, σ stays the 30-day level, Flat restores', async ({ page }) => {
     await open(page);
     const chart = page.getByTestId('term-chart');

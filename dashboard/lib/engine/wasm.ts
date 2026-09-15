@@ -14,7 +14,7 @@ import { legSigma } from '../quant/volSurface';
 
 export const WASM_PATH = '/wasm/quantcore.wasm';
 export const WASM_MANIFEST_PATH = '/wasm/quantcore.json';
-export const WASM_ABI = 4;
+export const WASM_ABI = 5;
 export const MAX_WASM_PATHS = 50_000_000;
 /** Cap on paths × legs for one portfolio run, so a single-threaded run stays within seconds. */
 export const MAX_WASM_PORTFOLIO_WORK = 64_000_000;
@@ -26,6 +26,24 @@ const SURFACE_SIZE = 13 + 2 * WASM_TERM_PILLARS;
 // exotic input: kind, call, K, T, up, n_levels, levels × 16, n_fixings; output: see bindings/quantcore_wasm.cpp
 const EXOTIC_SPEC_SIZE = 7 + MAX_BARRIER_LEVELS;
 const EXOTIC_OUT_SIZE = 6 + 5 * MAX_BARRIER_LEVELS + 6;
+
+// PDE output: price, delta, gamma, theta, nodes, steps, n_boundary, boundary τ × 64, boundary S × 64
+const PDE_BOUNDARY_POINTS = 64;
+const PDE_OUT_SIZE = 7 + 2 * PDE_BOUNDARY_POINTS;
+/** Default finite-difference grid: log-spot nodes × time steps (second order; ~7e-6 relative on a 1y vanilla). */
+export const PDE_GRID = { nodes: 801, steps: 800 } as const;
+
+export type PdeKind = 'european' | 'american' | 'knockout';
+
+/** An option for the finite-difference solver; H and up for a knock-out (continuously monitored, no rebate). */
+export interface PdeSpec { kind: PdeKind; call: boolean; K: number; T: number; H?: number; up?: boolean; }
+
+/** Per unit of underlying; theta is ∂V/∂t per year. The boundary is an American option's exercise spot by time to expiry. */
+export interface PdeResult {
+  price: number; delta: number; gamma: number; theta: number;
+  nodes: number; steps: number;
+  boundary: { tau: number; S: number | null }[];
+}
 
 /** Evaluations for one exotic path as the engines count them: time steps (fixings add steps) × three a step with Richardson × barrier levels. */
 export function exoticWorkPerPath(spec: ExoticSpec, m: Market, stepsPerYear: number, extrapolate: boolean): number {
@@ -75,6 +93,11 @@ export interface QuantcoreWasm {
    * volatility, per unit of underlying: log-Euler, optionally with coupled Richardson extrapolation.
    */
   mcExotic(spec: ExoticSpec, m: Market, paths: number, seed: number, stepsPerYear: number, extrapolate: boolean): ExoticMcResult | null;
+  /**
+   * A European, American or knock-out option under the market's local volatility by Crank–Nicolson finite differences
+   * (core/src/pde.cpp): price, grid Greeks and the early-exercise boundary. Deterministic; milliseconds.
+   */
+  pde(spec: PdeSpec, m: Market, nodes?: number, steps?: number): PdeResult | null;
 }
 
 /** The module's surface buffer for a market: S, r, q, σ, smile, centre, term kind and parameters, pillars. */
@@ -118,6 +141,9 @@ interface Exports {
   qc_barrier_prices(call: number, up: number, S: number, K: number, H: number, T: number, sigma: number, r: number, q: number): void;
   qc_geometric_asian(call: number, S: number, K: number, T: number, n: number, sigma: number, r: number, q: number): number;
   qc_mc_exotic(paths: number, seed: number, stepsPerYear: number, extrapolate: number): void;
+  qc_pde_out(): number;
+  qc_pde_out_size(): number;
+  qc_pde(kind: number, call: number, K: number, T: number, H: number, up: number, nodes: number, steps: number): void;
 }
 
 const positive = (v: number) => Number.isFinite(v) && v > 0;
@@ -144,6 +170,7 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
   if (ex.qc_exotic_spec_size() !== EXOTIC_SPEC_SIZE || ex.qc_exotic_out_size() !== EXOTIC_OUT_SIZE) {
     throw new Error(`quantcore.wasm exotic buffers ${ex.qc_exotic_spec_size()}/${ex.qc_exotic_out_size()}, expected ${EXOTIC_SPEC_SIZE}/${EXOTIC_OUT_SIZE}`);
   }
+  if (ex.qc_pde_out_size() !== PDE_OUT_SIZE) throw new Error(`quantcore.wasm PDE buffer ${ex.qc_pde_out_size()}, expected ${PDE_OUT_SIZE}`);
 
   let view = new Float64Array(ex.memory.buffer, ex.qc_out(), 8);
   const out = () => (view.buffer === ex.memory.buffer ? view : (view = new Float64Array(ex.memory.buffer, ex.qc_out(), 8)));
@@ -257,6 +284,18 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
         arith: finiteOrNull(o[k]), arithSe: finiteOrNull(o[k + 1]), arithFineBias: finiteOrNull(o[k + 2]),
         geo: finiteOrNull(o[k + 3]), geoSe: finiteOrNull(o[k + 4]), arithGeoCov: finiteOrNull(o[k + 5]),
       };
+    },
+    pde(spec, m, nodes = PDE_GRID.nodes, steps = PDE_GRID.steps) {
+      const knock = spec.kind === 'knockout';
+      if (!positive(spec.K) || !positive(spec.T) || (knock && !positive(spec.H ?? NaN)) ||
+          !Number.isInteger(nodes) || nodes < 21 || nodes > 4001 || !Number.isInteger(steps) || steps < 4 || steps > 20_000 ||
+          !setSurface(m)) return null;
+      ex.qc_pde(spec.kind === 'american' ? 1 : knock ? 2 : 0, spec.call ? 1 : 0, spec.K, spec.T, knock ? spec.H! : 0,
+                spec.up ? 1 : 0, nodes, steps);
+      const o = new Float64Array(ex.memory.buffer, ex.qc_pde_out(), PDE_OUT_SIZE);
+      if (!Number.isFinite(o[0]) || !Number.isFinite(o[1]) || !Number.isFinite(o[2]) || !Number.isFinite(o[3])) return null;
+      const boundary = Array.from({ length: o[6] }, (_, j) => ({ tau: o[7 + j], S: finiteOrNull(o[7 + PDE_BOUNDARY_POINTS + j]) }));
+      return { price: o[0], delta: o[1], gamma: o[2], theta: o[3], nodes: o[4], steps: o[5], boundary };
     },
   };
 }

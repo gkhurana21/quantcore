@@ -14,17 +14,17 @@ over WebSocket when it runs locally.
 |---|---|
 | **Strategy Builder** | SPY, QQQ, AAPL, NVDA, TSLA, or any ticker — type a symbol and its price (with the optional data proxy running, any US ticker loads with a live quote, listed expirations and chain strikes). Spot, volatility, rate and dividend-yield inputs, and an arbitrage-free SSVI volatility surface: a smile by strike (flat, equity index, single stock, or custom skew and curvature) and an at-the-money term structure by expiry (flat, upward, inverted or custom) — with live data, fitted to a spread of listed expiries in one step. Nine presets (long/short call and put, straddle, strangle, bull call spread, bear put spread, iron condor) or up to eight custom legs with call/put, buy/sell, strike, quantity, expiry and entry premium — each leg shows the implied volatility of its entry premium. |
 | **Greeks & payoff** | Price, Δ, Γ, Θ, ν and P&L tiles; exact max profit / max loss and break-evens; an interactive payoff chart with P&L · Δ · Γ · Vega · Θ modes (hover or keyboard crosshair); a full-revaluation spot × vol P&L surface. |
-| **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice. A C++ cross-check simulates the whole portfolio — on the native engine when it is running, otherwise in WebAssembly — and, with a smile or term structure, a local-volatility Monte Carlo reprices it under Dupire's diffusion. |
+| **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice — and, by finite differences in C++, each leg's American value under the volatility surface's local volatility against its implied volatility, with the early-exercise boundary. A C++ cross-check simulates the whole portfolio — on the native engine when it is running, otherwise in WebAssembly — and, with a smile or term structure, a local-volatility Monte Carlo reprices it under Dupire's diffusion. |
 | **Monte Carlo** | Animated risk-neutral paths — GBM in a flat market, Dupire local volatility when a smile or term structure is on — with spot, strike, expiry and in-the-money markers; a 50,000-sample terminal distribution against its analytic lognormal or smile-implied density; simulated P(ITM) vs the analytic value; local against implied volatility across strikes. |
-| **Exotics** | Continuously monitored barrier options (down- and up-and-out, knock-in by parity) and arithmetic and geometric Asian options on the terminal's market. Reiner–Rubinstein and geometric-average closed forms under flat volatility; the C++ Monte Carlo kernel — Brownian-bridge monitoring, up to 16 barrier levels on the same paths — under that volatility as a check, and under the surface's Dupire local volatility, with the vanilla on the same paths as a repricing check. A knock-out-vs-barrier chart, the geometric control variate for arithmetic averages and fine-grid bias estimates; on the native engine or in WebAssembly. |
+| **Exotics** | Continuously monitored barrier options (down- and up-and-out, knock-in by parity) and arithmetic and geometric Asian options on the terminal's market. Reiner–Rubinstein and geometric-average closed forms under flat volatility; the C++ Monte Carlo kernel — Brownian-bridge monitoring, up to 16 barrier levels on the same paths — under that volatility as a check, and under the surface's Dupire local volatility, with the vanilla on the same paths as a repricing check, and barriers also solved as a PDE (a second method, with its Greeks). A knock-out-vs-barrier chart, the geometric control variate for arithmetic averages and fine-grid bias estimates; on the native engine or in WebAssembly. |
 | **Stress Lab** | 2008-style credit crisis, COVID-style crash, volatility spike, rate shock, melt-up / vol crush, or a custom shock. Shows Spot → Vol → Greeks → P&L → VaR, P&L by leg, a P&L-vs-spot ladder and all scenarios side by side; apply a shock to the whole terminal and reset. |
 | **Risk / VaR** | 1-day 95% parametric VaR, plus delta-normal, delta-gamma and Monte Carlo full-revaluation VaR — spot only, and spot with correlated implied-vol shocks — with expected shortfall at 90 / 95 / 99% over 1 / 5 / 10 days, exposures and stated assumptions. |
 | **Portfolio Upload** | CSV, XLSX or XLS, parsed entirely in the browser. Tolerant column names (`option_type`, `cp`, `action`, `strike_price`, `dte`, `expiration`, `contracts`, `fill_price`, …), ISO / US / Excel dates, accounting negatives, a row-by-row preview with errors and warnings, and downloadable samples. |
 | **C++ Engine** | The C++ core compiled to WebAssembly runs in every browser: build facts, agreement with the TypeScript models and Monte Carlo in a worker. The native engine adds live status, measured round-trip latency, engine-vs-browser agreement and 100k–10M-path Monte Carlo on Metal. Every tile says which engine produced the number and why. |
 
 **How the hosted demo computes.** The public site has no server, so it runs the C++ pricing core itself:
-`core/src/black_scholes.cpp`, `monte_carlo.cpp`, `monte_carlo_portfolio.cpp`, `local_vol.cpp` and `exotics.cpp` compiled with Emscripten into a 64 KB WebAssembly module. The
-Greeks tiles are priced by it (labelled *C++ · WebAssembly*), and its Monte Carlo — including the Exotics tab's — runs in a Web Worker. Charts,
+`core/src/black_scholes.cpp`, `monte_carlo.cpp`, `monte_carlo_portfolio.cpp`, `local_vol.cpp`, `exotics.cpp` and `pde.cpp` compiled with Emscripten into a 76 KB WebAssembly module. The
+Greeks tiles are priced by it (labelled *C++ · WebAssembly*), and its Monte Carlo and finite-difference solves run in a Web Worker. Charts,
 stress, VaR and the Pricing Lab use TypeScript implementations of the same models, which the unit tests hold to
 1e-12 of the C++ results. Run the native engine locally and its badge turns *Connected*: the tiles are then priced
 by the native C++ build — the default SPY contract as a stream, any other portfolio as one batch call — and the C++
@@ -119,6 +119,23 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   arithmetic Asian's standard error 29×. Under the equity-index smile with the upward term structure, a 91-day
   755-strike SPY down-and-out call with its barrier at 700 is worth $28.86 against $30.32 at the strike's implied
   volatility — 27 standard errors lower — while the vanilla on the same paths reprices within 0.07 standard errors.
+- **Finite differences (local-volatility PDE)**: V_τ = ½σ²V_xx + (r − q − ½σ²)V_x − rV in log spot with σ² the surface's
+  local variance (`core/src/pde.cpp`, native and WebAssembly) — European, American and continuously monitored knock-out
+  options, with grid Greeks (Δ, Γ, Θ) and the early-exercise boundary. A uniform log-spot grid with the payoff averaged
+  over each cell; calendar time graded towards today (t = T·u²), two implicit Euler steps, then variable-step BDF2; the
+  American constraint solved exactly at every step by policy iteration. Three choices were forced by measurements. On
+  uniform time steps the Greeks of a one-year put under the equity smile converged at roughly order 0.55 (Γ still moving
+  10% between 800 and 3,200 steps), because SSVI's power-law smile makes local variance singular as t → 0; the graded grid
+  settles them by 800 steps. Crank–Nicolson left the stiff high-volatility wings oscillating; BDF2 is L-stable. And
+  Brennan–Schwartz, which assumes the exercise region is one interval from the grid's edge, gave that put a price that
+  moved with the grid's width (53.28 at the default width, 51.06 at twice it); policy iteration gives 51.06 at every width,
+  in at most three iterations a step. In the C++ gate: European options converge at second order (worst relative error
+  1.1e-4 → 2.7e-5 → 6.7e-6 as the grid doubles) with Greeks within 1e-5 of Black-Scholes; Hull's American put is 4.2841
+  against a 20,000-step lattice's 4.2842; knock-outs match Reiner–Rubinstein within 5e-5; under the smile the PDE reprices
+  12 vanillas at their implied volatilities within 3.8e-4 and the local-vol knock-outs agree with the Monte Carlo kernel
+  within |z| 0.66. The one-year at-the-money SPY put's early exercise is worth 1.92 under local volatility against 3.44 at
+  its implied volatility, and today's exercise boundary sits at 374 against 587: the deep in-the-money spots where a put
+  would be exercised carry far higher local volatility under an equity skew, so holding is worth more there.
 - **Cox-Ross-Rubinstein** lattice: u = e^(σ√Δt), p = (e^((r−q)Δt) − d)/(u − d), backward induction; the American
   variant takes the larger of continuation and exercise value at every node.
 - **Implied volatility**: Newton-Raphson on vega inside a shrinking bisection bracket; no solution is reported for
@@ -286,11 +303,14 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
   no imports, and agrees with the native build to 1e-12 on 960 contracts (most values bit-identical) and with the
   TypeScript models, including the barrier and Asian closed forms; same-seed Monte Carlo — one contract, portfolios,
   local volatility and exotics — reproduces the native result to 1e-12, and the exotic kernel matches the closed forms
-  under flat volatility and reprices the vanilla under local volatility.
+  under flat volatility and reprices the vanilla under local volatility. The finite-difference solver matches the native
+  build on a local-volatility surface (European, American, both knock-out types) and, under flat volatility, the closed
+  forms, the Greeks and a 4,000-step American lattice.
 - `tests/marketData.spec.ts` — the data-proxy client with a stubbed fetch: opt-in gating, health probe, failures.
 - `tests/terminal.spec.ts` — preset, instrument switch, any-ticker entry, Pricing Lab, Monte Carlo view, chart modes,
   CSV upload, XLSX and XLS upload, Stress Lab, Risk / VaR, volatility smile, ATM term structure, the WebAssembly
-  portfolio cross-check, local volatility, and exotics in WebAssembly and on the native engine.
+  portfolio cross-check, local volatility, exotics in WebAssembly and on the native engine, and finite differences
+  (American puts under the surface, the exercise boundary, the barrier PDE against Monte Carlo).
 - `tests/robustness.spec.ts` — seeded random walks through the whole UI (desktop and 375 px mobile) with invalid and
   extreme inputs, failing on any console error, NaN/undefined/Infinity on screen or horizontal overflow; malformed
   uploads; stacked stress scenarios; the engine crashing mid-session and recovering; an engine that never answers.
@@ -321,7 +341,8 @@ market-data requests at all.
 
 ```
 core/          C++17 pricing library — Black-Scholes, Greeks, Monte Carlo (one contract, portfolios, local volatility
-               on the SSVI surface, barrier and Asian options, ziggurat normals), exotic closed forms;
+               on the SSVI surface, barrier and Asian options, ziggurat normals), exotic closed forms, the
+               local-volatility finite-difference solver;
                Metal GPU kernel in core/src/monte_carlo_gpu.mm
 bindings/      pybind11 bindings (GIL released around C++ compute); quantcore_wasm.cpp WebAssembly entry points
 scripts/       build-wasm.sh — C++ core → dashboard/public/wasm (module + manifest)
@@ -342,7 +363,7 @@ dashboard/
   lib/compute/   Web Worker tasks and the worker hook
   workers/       Worker entry point
   tests/         Playwright unit, flow and engine tests
-tests/         C++ acceptance gate (BS prices, Greeks, MC convergence, portfolio MC, local volatility, exotics)
+tests/         C++ acceptance gate (BS prices, Greeks, MC convergence, portfolio MC, local volatility, exotics, PDE)
 ```
 
 ## Limitations
@@ -354,7 +375,9 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence, portfolio
   paths use plain log-Euler steps (for display — its histogram and probabilities use the exact smile-implied
   distribution); the Pricing Lab's local-vol price is Richardson-extrapolated, which leaves a residual bias of order Δt²
   (mean z −0.4 over 40 vanillas at two steps a week).
-- American early exercise is priced only by the CRR lattice in the Pricing Models Lab; Greeks, charts, stress and VaR treat options as European.
+- American early exercise is priced only in the Pricing Models Lab — the CRR lattice at each leg's implied volatility and
+  finite differences under the surface; the Greeks tiles, charts, stress and VaR treat options as European. Close to today
+  the local-volatility exercise boundary inherits the power-law smile's very high short-dated wing volatility.
 - Path-dependent payoffs are limited to continuously monitored barriers without rebates and Asian options on equally
   spaced fixings, priced one at a time in the Exotics tab; strategies, the payoff chart, stress and VaR hold European
   options. Under local volatility the barrier bridge uses each step's local variance, an approximation whose error

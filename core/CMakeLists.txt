@@ -6,6 +6,7 @@ set(CORE_SOURCES
     src/monte_carlo_portfolio.cpp
     src/local_vol.cpp
     src/exotics.cpp
+    src/pde.cpp
 )
 
 if(APPLE)

@@ -13,6 +13,7 @@
 #include "quantcore/exotics.hpp"
 #include "quantcore/local_vol.hpp"
 #include "quantcore/monte_carlo.hpp"
+#include "quantcore/pde.hpp"
 #include "quantcore/monte_carlo_portfolio.hpp"
 
 using quantcore::OptionType;
@@ -34,6 +35,10 @@ double g_exotic_spec[kExoticSpecSize];
 // out_fine_bias × 16, in × 16, in_se × 16, arith, arith_se, arith_fine_bias, geo, geo_se, arith_geo_cov
 constexpr int kExoticOutSize = 6 + 5 * kLevels + 6;
 double g_exotic_out[kExoticOutSize];
+constexpr int kPdePoints = static_cast<int>(quantcore::kPdeBoundaryPoints);
+// PDE output: price, delta, gamma, theta, nodes, steps, n_boundary, boundary_tau × 64, boundary_S × 64
+constexpr int kPdeOutSize = 7 + 2 * kPdePoints;
+double g_pde_out[kPdeOutSize];
 
 quantcore::VolSurface read_surface() {
     const double* v = g_surface;
@@ -58,7 +63,7 @@ quantcore::VolSurface read_surface() {
 extern "C" {
 
 // Bumped whenever a signature or the output layout changes.
-EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 4; }
+EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 5; }
 
 EMSCRIPTEN_KEEPALIVE double* qc_out() { return g_out; }
 
@@ -187,6 +192,33 @@ EMSCRIPTEN_KEEPALIVE void qc_mc_exotic(double paths, double seed, double steps_p
     o[k + 3] = r.geo;
     o[k + 4] = r.geo_se;
     o[k + 5] = r.arith_geo_cov;
+}
+
+EMSCRIPTEN_KEEPALIVE double* qc_pde_out() { return g_pde_out; }
+EMSCRIPTEN_KEEPALIVE int qc_pde_out_size() { return kPdeOutSize; }
+
+// Finite differences on the surface in qc_surface(). kind: 0 European, 1 American, 2 knock-out. Results in qc_pde_out().
+EMSCRIPTEN_KEEPALIVE void qc_pde(int kind, int call, double K, double T, double H, int up, int nodes, int steps) {
+    quantcore::PdeSpec p;
+    p.kind = kind == 1 ? quantcore::PdeKind::American : kind == 2 ? quantcore::PdeKind::KnockOut : quantcore::PdeKind::European;
+    p.type = call ? OptionType::Call : OptionType::Put;
+    p.K = K;
+    p.T = T;
+    p.H = H;
+    p.up = up != 0;
+    const quantcore::PdeResult r = quantcore::pde_price(p, read_surface(), nodes, steps);
+    double* o = g_pde_out;
+    o[0] = r.price;
+    o[1] = r.delta;
+    o[2] = r.gamma;
+    o[3] = r.theta;
+    o[4] = r.nodes;
+    o[5] = r.steps;
+    o[6] = r.n_boundary;
+    for (int j = 0; j < kPdePoints; ++j) {
+        o[7 + j] = r.boundary_tau[j];
+        o[7 + kPdePoints + j] = r.boundary_S[j];
+    }
 }
 
 }  // extern "C"

@@ -18,6 +18,9 @@ import {
 import { LV_MIN_STEPS, LV_STEPS_PER_YEAR, LV_WASM_WORK } from '@/lib/compute/tasks';
 import type { Engine } from '@/lib/engine/useEngine';
 import type { WasmEngine } from '@/lib/engine/useWasmEngine';
+import type { PdeItem } from '@/lib/engine/usePdeBatch';
+import { usePdeBatch } from '@/lib/engine/usePdeBatch';
+import type { PdeResult } from '@/lib/engine/wasm';
 import { exoticWorkPerPath } from '@/lib/engine/wasm';
 import { marketKeyOf } from '@/lib/strategy/labels';
 import { num, pct, signed, usd } from '@/lib/format';
@@ -60,6 +63,9 @@ interface Setup {
 }
 
 interface Results { key: string; setup: Setup; flat: Run | null; local: Run | null; error: string | null; }
+
+/** Finite differences for a barrier setup: results[0] the vanilla, results[1 + j] the knock-out at levels[j]. */
+interface PdeView { results: (PdeResult | null)[]; ms: number; }
 
 interface Verdict { tone: Tone; text: string; }
 
@@ -192,7 +198,9 @@ function Stat({ label, value, sub }: { label: string; value: ReactNode; sub: Rea
 
 // ── Barrier ─────────────────────────────────────────────────────────────────
 
-const BarrierChart = memo(function BarrierChart({ setup: s, flat, local }: { setup: Setup; flat: Run | null; local: Run | null }) {
+const BarrierChart = memo(function BarrierChart({ setup: s, flat, local, pde }: {
+  setup: Setup; flat: Run | null; local: Run | null; pde: PdeView | null;
+}) {
   const wrap = useRef<HTMLDivElement | null>(null);
   const width = useElementWidth(wrap, 640);
   const height = 240;
@@ -211,14 +219,19 @@ const BarrierChart = memo(function BarrierChart({ setup: s, flat, local }: { set
   const vanilla = bsPrice(s.call, s.S, s.K, s.T, s.sigmaK, s.r, s.q);
   const points = (run: Run | null) => (run ? s.levels.map((H, j) => ({ H, v: run.out[j], se: run.outSe[j] })) : []);
   const flatPts = points(flat), localPts = points(local);
-  const top = (Math.max(vanilla, ...curves.atK, ...curves.atH, ...[...flatPts, ...localPts].map(p => p.v + Z95 * p.se)) * 1.08) || 1;
+  const pdePts = s.surface && pde
+    ? s.levels.flatMap((H, j) => { const v = pde.results[j + 1]?.price; return v != null && Number.isFinite(v) ? [{ H, v }] : []; })
+    : [];
+  const top = (Math.max(vanilla, ...curves.atK, ...curves.atH, ...pdePts.map(p => p.v),
+                        ...[...flatPts, ...localPts].map(p => p.v + Z95 * p.se)) * 1.08) || 1;
   const X = linear(lo, hi, pad.l, width - pad.r);
   const Y = linear(0, top, height - pad.b, pad.t);
   const path = (ys: number[]) => ys.map((y, i) => `${i ? 'L' : 'M'}${X(curves.hs[i]).toFixed(1)},${Y(y).toFixed(1)}`).join('');
   const name = `${s.up ? 'up' : 'down'}-and-out ${s.call ? 'call' : 'put'}`;
 
   return (
-    <div ref={wrap} data-testid="exo-chart" data-levels={s.levels.length} data-points={(local ?? flat)?.out.length ?? 0}>
+    <div ref={wrap} data-testid="exo-chart" data-levels={s.levels.length} data-points={(local ?? flat)?.out.length ?? 0}
+         data-pde-points={pdePts.length}>
       <svg className={l.chartSvg} width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img"
            aria-label={`Knock-out value per share of a ${name} struck at ${pct(s.K / s.S, 1)} of spot against the barrier level, from ${pct(lo / s.S, 1)} to ${pct(hi / s.S, 1)} of spot: the closed form at the strike’s implied volatility${s.surface ? ' and at each barrier’s implied volatility' : ''}, and Monte Carlo ${local ? 'under flat and local volatility' : 'under flat volatility'}.`}>
         {niceTicks(0, top, 4).map(t => (
@@ -235,6 +248,10 @@ const BarrierChart = memo(function BarrierChart({ setup: s, flat, local }: { set
         <line x1={X(s.H)} x2={X(s.H)} y1={pad.t} y2={height - pad.b} stroke="var(--amber)" strokeDasharray="3 3" opacity={0.7} />
         {s.surface && <path d={path(curves.atH)} fill="none" stroke="var(--blue)" strokeWidth={1.2} strokeDasharray="5 3" opacity={0.85} />}
         <path d={path(curves.atK)} fill="none" stroke="var(--blue)" strokeWidth={1.6} />
+        {pdePts.length > 1 && (
+          <path d={pdePts.map((p, i) => `${i ? 'L' : 'M'}${X(p.H).toFixed(1)},${Y(p.v).toFixed(1)}`).join('')}
+                fill="none" stroke="var(--amber)" strokeWidth={1.4} strokeDasharray="4 3" />
+        )}
         {flatPts.map(p => (
           <circle key={`f${p.H}`} cx={X(p.H)} cy={Y(p.v)} r={3} fill="var(--bg-raise)" stroke="var(--blue)" strokeWidth={1.3} />
         ))}
@@ -250,13 +267,14 @@ const BarrierChart = memo(function BarrierChart({ setup: s, flat, local }: { set
         {s.surface && <span><i className={l.swDash} style={{ borderColor: 'var(--blue)' }} />Closed form at σ(H)</span>}
         <span><i className={css.ring} />Monte Carlo · flat σ(K)</span>
         {s.surface && <span><i className={css.dot} />Local vol · 95% CI</span>}
+        {pdePts.length > 1 && <span><i className={l.swDash} style={{ borderColor: 'var(--amber)' }} />PDE · local vol</span>}
         <span><i className={l.swDash} />Vanilla at σ(K)</span>
       </div>
     </div>
   );
 });
 
-function BarrierView({ view, pendingText }: { view: Results; pendingText: string }) {
+function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pendingText: string; pde: PdeView | null; pdeStatus: string }) {
   const { setup: s, flat, local } = view;
   const j = s.hIndex;
   const name = `${s.up ? 'up' : 'down'}-and-out ${s.call ? 'call' : 'put'}`;
@@ -305,6 +323,7 @@ function BarrierView({ view, pendingText }: { view: Results; pendingText: string
         the strike’s implied volatility:{' '}
         <b className="mono" data-testid="exo-gap" data-value={d} data-z={dz}>{signed(d, 4)}</b> ({signed(dz, 1)} standard errors),
         while its vanilla on the same paths reprices within {z.toFixed(2)} standard errors.
+        {pde?.results[j + 1] && <> The PDE on the same surface gives {usd(pde.results[j + 1]!.price, 4)}.</>}
       </span>
     );
   } else if (s.surface) {
@@ -317,6 +336,21 @@ function BarrierView({ view, pendingText }: { view: Results; pendingText: string
       </span>
     );
   }
+  // the same barrier by finite differences on the same market: a second method that shares only the local variance
+  const pdeOut = pde?.results[j + 1] ?? null, pdeVan = pde?.results[0] ?? null;
+  const mcSame = s.surface ? local : flat;
+  let pdeZ: number | null = null;
+  if (pdeOut && pdeVan) {
+    pdeZ = mcSame ? zOf(mcSame.out[j], pdeOut.price, mcSame.outSe[j]) : null;
+    rows.push({ id: 'pde', model: `PDE · ${s.surface ? 'local vol' : 'flat σ(K)'}`,
+                detail: `finite differences, BDF2 · ${pdeOut.nodes} × ${pdeOut.steps} · ${s.levels.length + 1} solves in ${fmtMs(pde!.ms)}`,
+                cells: [<Price key="out" v={pdeOut.price} />, <Price key="in" v={pdeVan.price - pdeOut.price} />,
+                        <Price key="van" v={pdeVan.price} />, gap(pdeOut.price, null)],
+                z: pdeZ, ms: pde!.ms, verdict: pdeZ == null ? { tone: 'muted', text: 'Deterministic' } : agreement(pdeZ),
+                local: s.surface, attrs: { 'data-pde-out': pdeOut.price, 'data-mc-z': pdeZ ?? undefined } });
+  } else {
+    rows.push(pendingRow('pde', `PDE · ${s.surface ? 'local vol' : 'flat σ(K)'}`, pdeStatus, 4, s.surface));
+  }
   const shown = local ?? flat;
   const bias = local?.outFineBias[j];
 
@@ -326,7 +360,7 @@ function BarrierView({ view, pendingText }: { view: Results; pendingText: string
       <ResultTable testid="exo-table" rows={rows}
                    head={[{ label: 'Knock-out' }, { label: 'Knock-in' }, { label: 'Vanilla' },
                           { label: 'Knock-out vs σ(K)', tip: 'Difference from the closed form at the strike’s implied volatility; for Monte Carlo rows also in standard errors.' }]}
-                   zTip="Flat Monte Carlo: distance from the closed form in standard errors, the larger of knock-out and knock-in. Local vol: its vanilla on the same paths against Black-Scholes at σ(K) — a local-volatility model must reprice vanillas." />
+                   zTip="Flat Monte Carlo: distance from the closed form in standard errors, the larger of knock-out and knock-in. Local vol: its vanilla on the same paths against Black-Scholes at σ(K) — a local-volatility model must reprice vanillas. PDE: the Monte Carlo knock-out on the same market against the PDE's." />
       {!s.surface && (
         <p className={css.note} data-testid="exo-flat-note">
           With flat volatility, local volatility is σ everywhere and the closed form is the answer. Choose a smile or term
@@ -338,7 +372,7 @@ function BarrierView({ view, pendingText }: { view: Results; pendingText: string
           <span className={l.cardTitle}>Knock-out value against the barrier level</span>
           <span className={l.cardMeta}>{s.levels.length} levels on the same paths · per share</span>
         </div>
-        <BarrierChart setup={s} flat={flat} local={local} />
+        <BarrierChart setup={s} flat={flat} local={local} pde={pde} />
       </div>
       <dl className={l.mcStats}>
         <Stat label="Barrier" value={usd(s.H, 2)} sub={`${num(s.hPct, 1)}% of spot · ${s.up ? 'above' : 'below'}`} />
@@ -347,6 +381,8 @@ function BarrierView({ view, pendingText }: { view: Results; pendingText: string
               sub={shown ? `${shown.steps} step${shown.steps === 1 ? '' : 's'} · ${BACKEND_LABEL[shown.backend]}` : pendingText} />
         <Stat label="Fine-grid bias" value={bias != null ? signed(bias, 4) : '—'}
               sub={bias != null ? 'coarse − fine, knock-out' : s.surface ? 'no smile: exact variance steps' : 'exact bridge under flat σ'} />
+        <Stat label="PDE Greeks · knock-out" value={pdeOut ? `Δ ${num(pdeOut.delta, 4)}` : '—'}
+              sub={pdeOut ? `Γ ${num(pdeOut.gamma, 5)} · Θ ${signed(pdeOut.theta / 365, 4)}/day` : pdeStatus} />
       </dl>
     </>
   );
@@ -501,6 +537,20 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
 
   const shown = results && results.setup.product === setup.product ? results : null;
   const view: Results = shown ?? { key, setup, flat: null, local: null, error: null };
+
+  // barrier: the vanilla and every knock-out level by finite differences, in the WebAssembly worker
+  const pdeItems = useMemo((): PdeItem[] => {
+    if (setup.product !== 'barrier') return [];
+    const m = setup.surface ? setup.market : setup.flatMarket;
+    return [
+      { spec: { kind: 'european', call: setup.call, K: setup.K, T: setup.T }, market: m },
+      ...setup.levels.map((H): PdeItem => ({ spec: { kind: 'knockout', call: setup.call, K: setup.K, T: setup.T, H, up: setup.up }, market: m })),
+    ];
+  }, [setup]);
+  const pde = usePdeBatch(wasm, active && product === 'barrier' ? pdeItems : null, setup.key);
+  const pdeView: PdeView | null = pde.result && pde.result.key === view.setup.key ? { results: pde.result.results, ms: pde.result.ms } : null;
+  const pdeStatus = pde.error ? 'failed' : wasm.status === 'loading' ? 'loading WebAssembly…'
+    : wasm.status === 'unavailable' ? 'needs WebAssembly' : 'solving…';
   const stale = !!shown && shown.key !== key;
   const pendingText = backend ? 'simulating…' : wasm.status === 'loading' ? 'loading WebAssembly…' : 'no Monte Carlo engine';
   const total = (view.flat?.ms ?? 0) + (view.local?.ms ?? 0);
@@ -569,7 +619,7 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
 
       <div className={cx(stale && l.stale)} data-testid="exo-results" data-stale={stale}>
         {view.setup.product === 'barrier'
-          ? <BarrierView view={view} pendingText={pendingText} />
+          ? <BarrierView view={view} pendingText={pendingText} pde={pdeView} pdeStatus={pdeStatus} />
           : <AsianView view={view} pendingText={pendingText} />}
       </div>
 
@@ -615,6 +665,8 @@ V = 2·V_fine − V_coarse (same Brownian increments)`}</pre>
             <p>
               Log-Euler at {LV_STEPS_PER_YEAR} steps a year (at least {LV_MIN_STEPS}), with every barrier level and fixing on the same
               paths; without a smile each step’s variance is exact. The coarse − fine gap estimates the fine grid’s own bias.
+              Barriers are also solved as a PDE with an absorbing boundary at H (BDF2 on a time grid graded towards today) — a
+              second method that shares only the local variance with the simulation.
             </p>
           </div>
         </div>

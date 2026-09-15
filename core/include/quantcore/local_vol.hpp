@@ -48,6 +48,12 @@ double implied_vol(const VolSurface& s, double K, double T);
 /** Dupire local volatility at spot S and time t (localVol in the browser); σ when the surface is flat. */
 double local_vol(const VolSurface& s, double spot, double t);
 
+/** σ_loc² at time t for n log spots — the simulation's own evaluation, capped at 500% volatility; σ² when flat. */
+void local_variance_row(const VolSurface& s, double t, const double* log_spots, std::size_t n, double* out);
+
+/** Whether the surface's parameters are usable (positive S and σ, the SSVI region, a valid term structure). */
+bool vol_surface_valid(const VolSurface& s);
+
 struct LocalVolResult {
     double    price;      // $ value of the portfolio
     double    std_error;

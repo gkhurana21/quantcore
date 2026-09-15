@@ -667,6 +667,22 @@ double local_vol(const VolSurface& s, double spot, double t) {
     return std::sqrt(v);
 }
 
+void local_variance_row(const VolSurface& s, double t, const double* log_spots, std::size_t n, double* out) {
+    if (!has_surface(s)) {
+        std::fill(out, out + n, s.sigma * s.sigma);
+        return;
+    }
+    const Slice c = make_slice(s, t);
+    if (!s.smile) {
+        std::fill(out, out + n, std::min(c.dTheta, kMaxVar));
+        return;
+    }
+    const double omr2 = 1.0 - s.rho * s.rho;
+    for (std::size_t i = 0; i < n; ++i) out[i] = lvar(s.rho, omr2, c, log_spots[i]);
+}
+
+bool vol_surface_valid(const VolSurface& s) { return valid_surface(s); }
+
 LocalVolResult mc_local_vol(const PortfolioLeg* legs, std::size_t n_legs, const VolSurface& s,
                             long long paths, uint64_t seed, double steps_per_year, bool extrapolate) {
     if (!valid_inputs(legs, n_legs, s, paths, steps_per_year)) return invalid();

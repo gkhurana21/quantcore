@@ -30,7 +30,8 @@ function condorWithCalendar(): Leg[] {
   return [leg('p1', false, 'buy', 715), leg('p2', false, 'sell', 735), leg('c1', true, 'sell', 775),
           leg('c2', true, 'buy', 795), leg('cal', true, 'buy', 760, 0.5, 5)];
 }
-import type { QuantcoreWasm, WasmManifest } from '../lib/engine/wasm';
+import { crrAmericanPrice } from '../lib/quant/binomial';
+import type { PdeSpec, QuantcoreWasm, WasmManifest } from '../lib/engine/wasm';
 import { instantiateQuantcore, MAX_WASM_PATHS, WASM_ABI } from '../lib/engine/wasm';
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -384,6 +385,72 @@ test.describe('C++ core compiled to WebAssembly', () => {
     expect(w.mcExotic({ kind: 'asian', call: true, K: 100, T: 1, fixings: 0 }, flat, 1000, 1, 1, false)).toBeNull();
     expect(w.mcExotic({ kind: 'asian', call: true, K: 100, T: 1, fixings: 2001 }, flat, 1000, 1, 1, false)).toBeNull();
     expect(w.mcExotic({ ...base, levels: [90] }, m, 10_000_000, 1, 365, true)).toBeNull();
+  });
+
+  test('finite-difference PDE agrees with the closed forms and a binomial lattice under flat volatility', () => {
+    test.setTimeout(120_000);
+    const flat: Market = { S: 100, sigma: 0.25, r: 0.05, q: 0.02 };
+    let euro = 0;
+    for (const call of [true, false]) for (const K of [90, 100, 110]) {
+      const p = w.pde({ kind: 'european', call, K, T: 1 }, flat)!;
+      const g = bsGreeks(call, 100, K, 1, 0.25, 0.05, 0.02);
+      euro = Math.max(euro, Math.abs(p.price - g.price) / g.price);
+      expect(Math.abs(p.delta - g.delta)).toBeLessThan(1e-4);
+      expect(Math.abs(p.gamma - g.gamma) / g.gamma).toBeLessThan(1e-3);
+      expect(Math.abs(p.theta - g.theta) / Math.abs(g.theta)).toBeLessThan(1e-3);
+      expect(p.boundary).toEqual([]);
+    }
+    const barrierM: Market = { S: 100, sigma: 0.25, r: 0.08, q: 0.04 };
+    let knock = 0;
+    for (const [call, up, K, H] of [[true, false, 100, 92], [false, true, 100, 108], [true, true, 95, 115], [false, false, 105, 90]] as const) {
+      const p = w.pde({ kind: 'knockout', call, K, T: 0.5, H, up }, barrierM)!;
+      knock = Math.max(knock, Math.abs(p.price - barrierPrices(call, up, 100, K, H, 0.5, 0.25, 0.08, 0.04).out));
+    }
+    // Hull's American put against a 4,000-step lattice (odd and even step counts averaged)
+    const hull: Market = { S: 50, sigma: 0.4, r: 0.1, q: 0 };
+    const am = w.pde({ kind: 'american', call: false, K: 50, T: 5 / 12 }, hull)!;
+    const crr = 0.5 * (crrAmericanPrice(false, 50, 50, 5 / 12, 0.4, 0.1, 0, 4000) + crrAmericanPrice(false, 50, 50, 5 / 12, 0.4, 0.1, 0, 4001));
+    console.log(`  PDE: European worst relative error ${euro.toExponential(1)}, knock-outs worst |diff| ${knock.toExponential(1)}, ` +
+                `American put ${am.price.toFixed(4)} vs lattice ${crr.toFixed(4)}, boundary ${am.boundary[0].S?.toFixed(2)} → ${am.boundary[am.boundary.length - 1].S?.toFixed(2)}`);
+    expect(euro).toBeLessThan(2e-4);
+    expect(knock).toBeLessThan(2e-3);
+    expect(Math.abs(am.price - crr)).toBeLessThan(2e-3);
+    expect(am.boundary.length).toBe(64);
+    expect(am.boundary.every((b, j) => b.S != null && b.S < 50 && (j === 0 || b.S <= am.boundary[j - 1].S!))).toBe(true);
+
+    // domain: no strike, no expiry, a knock-out without a barrier, too few nodes, an invalid surface
+    expect(w.pde({ kind: 'european', call: true, K: 0, T: 1 }, flat)).toBeNull();
+    expect(w.pde({ kind: 'european', call: true, K: 100, T: 0 }, flat)).toBeNull();
+    expect(w.pde({ kind: 'knockout', call: true, K: 100, T: 1, up: false }, flat)).toBeNull();
+    expect(w.pde({ kind: 'european', call: true, K: 100, T: 1 }, flat, 11, 100)).toBeNull();
+    expect(w.pde({ kind: 'european', call: true, K: 100, T: 1 }, { ...flat, smile: { rho: 0.2, eta: -1, gamma: 0.4 } })).toBeNull();
+  });
+
+  test('finite-difference PDE reproduces the native C++ result on a local-volatility surface', () => {
+    test.skip(!nativeAvailable(), 'native quantcore module not built');
+    const m: Market = { S: 756.48, sigma: 0.138, r: 0.045, q: 0.01, smile: SMILE_PRESETS['Equity index'], term: TERM_PRESETS.Upward };
+    const specs: PdeSpec[] = [
+      { kind: 'european', call: true, K: 760, T: 0.25 },
+      { kind: 'american', call: false, K: 740, T: 0.5 },
+      { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false },
+      { kind: 'knockout', call: false, K: 740, T: 0.4, H: 800, up: true },
+    ];
+    interface NativePde { price: number; delta: number; gamma: number; theta: number; nodes: number; steps: number;
+                          boundary_tau: number[]; boundary_S: (number | null)[]; }
+    const near = (a: number | null, b: number | null) => (a === null || b === null ? a === b : Math.abs(a - b) <= 1e-12 * Math.abs(b) + 1e-9);
+    const bad: string[] = [];
+    for (const spec of specs) {
+      const a = w.pde(spec, m, 401, 400)!;
+      const ref = native<NativePde>('quantcore.pde_price(x["spec"], x["market"], 401, 400)', { spec, market: m });
+      const pairs: [string, number | null, number | null][] = [
+        ['price', a.price, ref.price], ['delta', a.delta, ref.delta], ['gamma', a.gamma, ref.gamma], ['theta', a.theta, ref.theta],
+        ['nodes', a.nodes, ref.nodes], ['steps', a.steps, ref.steps], ['boundary length', a.boundary.length, ref.boundary_tau.length],
+        ...a.boundary.flatMap((b, j): [string, number | null, number | null][] =>
+          [[`tau[${j}]`, b.tau, ref.boundary_tau[j]], [`S[${j}]`, b.S, ref.boundary_S[j]]]),
+      ];
+      bad.push(...pairs.filter(([, x, y]) => !near(x, y)).map(([k, x, y]) => `${spec.kind} ${k}: wasm ${x} native ${y}`));
+    }
+    expect(bad).toEqual([]);
   });
 
   test('inputs outside the model domain are rejected, never priced', () => {

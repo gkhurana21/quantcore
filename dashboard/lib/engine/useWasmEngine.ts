@@ -11,8 +11,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ExoticMcResult, ExoticSpec } from '../quant/exotics';
 import type { Leg, Market } from '../quant/types';
 import type { EngineMcRequest } from './useEngine';
-import type { QuantcoreWasm, WasmManifest } from './wasm';
-import { loadQuantcore, WASM_MANIFEST_PATH, WASM_PATH } from './wasm';
+import type { PdeResult, PdeSpec, QuantcoreWasm, WasmManifest } from './wasm';
+import { loadQuantcore, PDE_GRID, WASM_MANIFEST_PATH, WASM_PATH } from './wasm';
 
 export type WasmStatus = 'loading' | 'ready' | 'unavailable';
 
@@ -21,6 +21,9 @@ export interface WasmMcRun { price: number; stdError: number; paths: number; ms:
 export interface WasmLocalVolRun extends WasmMcRun { steps: number; fineBias: number | null; }
 
 export interface WasmExoticRun extends ExoticMcResult { ms: number; }
+
+/** One result per requested option, null where the inputs are outside the solver's domain; ms for the whole batch. */
+export interface WasmPdeRun { results: (PdeResult | null)[]; ms: number; }
 
 export interface WasmEngine {
   status: WasmStatus;
@@ -37,10 +40,12 @@ export interface WasmEngine {
   /** A barrier or Asian option under the market's local volatility, in the worker (per unit of underlying). */
   runExoticMc: (spec: ExoticSpec, market: Market, paths: number, seed: number, stepsPerYear: number,
                 extrapolate: boolean) => Promise<WasmExoticRun>;
+  /** Finite-difference solves (European, American, knock-out) under each item's market, in the worker. */
+  runPde: (items: { spec: PdeSpec; market: Market }[], nodes?: number, steps?: number) => Promise<WasmPdeRun>;
 }
 
-type WasmState = Omit<WasmEngine, 'runMc' | 'runPortfolioMc' | 'runLocalVolMc' | 'runExoticMc'>;
-type WorkerKind = 'mc' | 'portfolio' | 'localvol' | 'exotic';
+type WasmState = Omit<WasmEngine, 'runMc' | 'runPortfolioMc' | 'runLocalVolMc' | 'runExoticMc' | 'runPde'>;
+type WorkerKind = 'mc' | 'portfolio' | 'localvol' | 'exotic' | 'pde';
 
 let shared: Promise<{ module: QuantcoreWasm; loadMs: number }> | null = null;
 
@@ -127,6 +132,9 @@ export function useWasmEngine(): WasmEngine {
   const runExoticMc = useCallback((spec: ExoticSpec, market: Market, paths: number, seed: number, stepsPerYear: number,
                                    extrapolate: boolean) =>
     call<WasmExoticRun>('exotic', { spec, market, paths, seed, stepsPerYear, extrapolate }), [call]);
+  const runPde = useCallback((items: { spec: PdeSpec; market: Market }[], nodes: number = PDE_GRID.nodes,
+                              steps: number = PDE_GRID.steps) =>
+    call<WasmPdeRun>('pde', { items, nodes, steps }), [call]);
 
-  return { ...state, runMc, runPortfolioMc, runLocalVolMc, runExoticMc };
+  return { ...state, runMc, runPortfolioMc, runLocalVolMc, runExoticMc, runPde };
 }

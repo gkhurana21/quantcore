@@ -15,9 +15,11 @@
 #include "quantcore/monte_carlo_portfolio.hpp"
 #include "quantcore/local_vol.hpp"
 #include "quantcore/exotics.hpp"
+#include "quantcore/pde.hpp"
 #include "quantcore/ziggurat.hpp"
 
 #include <algorithm>
+#include <vector>
 #include <random>
 #include <chrono>
 #include <cmath>
@@ -626,6 +628,213 @@ static void section_exotics() {
     printf("\n  %-22s  %s\n", "Exotics:", all_ok ? "ALL PASS" : "FAIL");
 }
 
+// ── Section 8: local-volatility PDE ─────────────────────────────────────────
+//
+// Finite differences on the local-volatility PDE against the closed forms and a 20,000-step binomial lattice under flat
+// volatility; Dupire consistency under the smile (a local-volatility model must reprice its surface's vanillas —
+// here with no Monte Carlo noise to hide behind); and the barrier Monte Carlo kernel under local volatility.
+// Tolerances fixed before the first run.
+
+// American option on a Cox-Ross-Rubinstein lattice, an independent reference for the PDE's early exercise.
+static double crr_american(OptionType type, double S, double K, double T, double sigma, double r, double q, int n) {
+    const double dt = T / n, lnu = sigma * std::sqrt(dt), u = std::exp(lnu), d = 1.0 / u;
+    const double p = (std::exp((r - q) * dt) - d) / (u - d), disc = std::exp(-r * dt);
+    const double pu = disc * p, pd = disc * (1.0 - p);
+    auto exercise = [type, K](double spot) { return type == OptionType::Call ? std::max(spot - K, 0.0) : std::max(K - spot, 0.0); };
+    std::vector<double> level(2 * static_cast<std::size_t>(n) + 1), v(static_cast<std::size_t>(n) + 1);
+    for (int k = -n; k <= n; ++k) level[static_cast<std::size_t>(k + n)] = S * std::exp(k * lnu);
+    for (int i = 0; i <= n; ++i) v[static_cast<std::size_t>(i)] = exercise(level[static_cast<std::size_t>(2 * n - 2 * i)]);
+    for (int step = n - 1; step >= 0; --step) {
+        for (int i = 0; i <= step; ++i) {
+            const double cont = pu * v[static_cast<std::size_t>(i)] + pd * v[static_cast<std::size_t>(i + 1)];
+            v[static_cast<std::size_t>(i)] = std::max(cont, exercise(level[static_cast<std::size_t>(step - 2 * i + n)]));
+        }
+    }
+    return v[0];
+}
+
+static void section_pde() {
+    banner("8. LOCAL-VOLATILITY PDE  (graded BDF2, policy iteration: European, American, knock-out, grid Greeks)");
+    bool all_ok = true;
+    using clk = std::chrono::steady_clock;
+
+    // European vs Black-Scholes: relative error at three grids (second order: each doubling divides it by ~4), Greeks
+    VolSurface flat;
+    flat.S = 100.0; flat.r = 0.05; flat.q = 0.02; flat.sigma = 0.25;
+    const int grids[3][2] = { { 201, 200 }, { 401, 400 }, { 801, 800 } };
+    double err[3] = { 0.0, 0.0, 0.0 }, d_err = 0.0, g_err = 0.0, t_err = 0.0;
+    for (OptionType type : { OptionType::Call, OptionType::Put }) {
+        for (double K : { 90.0, 100.0, 110.0 }) {
+            PdeSpec e;
+            e.type = type; e.K = K; e.T = 1.0;
+            const BSMResult bs = bsm_full(type, 100.0, K, 0.05, 0.25, 1.0, 0.02);
+            for (int g = 0; g < 3; ++g) {
+                const PdeResult p = pde_price(e, flat, grids[g][0], grids[g][1]);
+                err[g] = std::max(err[g], std::fabs(p.price - bs.price) / bs.price);
+                if (g == 2) {
+                    d_err = std::max(d_err, std::fabs(p.delta - bs.greeks.delta));
+                    g_err = std::max(g_err, std::fabs(p.gamma - bs.greeks.gamma) / bs.greeks.gamma);
+                    t_err = std::max(t_err, std::fabs(p.theta - bs.greeks.theta) / std::fabs(bs.greeks.theta));
+                }
+            }
+        }
+    }
+    const bool euro_ok = err[2] < 2e-4 && err[1] / err[2] > 3.0 && err[0] / err[1] > 3.0;
+    const bool greeks_ok = d_err < 1e-4 && g_err < 1e-3 && t_err < 1e-3;
+    all_ok = all_ok && euro_ok && greeks_ok;
+    printf("  European calls and puts K 90/100/110, 1y: worst relative error %.2e (201) → %.2e (401) → %.2e (801), ratios %.1f, %.1f  %s\n",
+           err[0], err[1], err[2], err[0] / err[1], err[1] / err[2], euro_ok ? "OK" : "*** FAIL ***");
+    printf("  grid Greeks at 801 × 800: |Δ − Δ_BS| %.1e, Γ relative %.1e, Θ relative %.1e  %s\n",
+           d_err, g_err, t_err, greeks_ok ? "OK" : "*** FAIL ***");
+
+    // American put, Hull's example (S = K = 50, r = 10%, σ = 40%, 5 months), against a 20,000-step lattice
+    VolSurface hull;
+    hull.S = 50.0; hull.r = 0.10; hull.q = 0.0; hull.sigma = 0.40;
+    PdeSpec am;
+    am.kind = PdeKind::American; am.type = OptionType::Put; am.K = 50.0; am.T = 5.0 / 12.0;
+    auto t0 = clk::now();
+    const PdeResult pa = pde_price(am, hull, 801, 800);
+    const double ms_am = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+    const double crr = 0.5 * (crr_american(OptionType::Put, 50.0, 50.0, 5.0 / 12.0, 0.40, 0.10, 0.0, 20000) +
+                              crr_american(OptionType::Put, 50.0, 50.0, 5.0 / 12.0, 0.40, 0.10, 0.0, 20001));
+    PdeSpec eu = am;
+    eu.kind = PdeKind::European;
+    const PdeResult pe = pde_price(eu, hull, 801, 800);
+    bool boundary_ok = pa.n_boundary == 64;
+    for (int j = 0; j < pa.n_boundary; ++j) {
+        boundary_ok = boundary_ok && pa.boundary_S[j] < 50.0 && (j == 0 || pa.boundary_S[j] <= pa.boundary_S[j - 1]);
+    }
+    const bool am_ok = std::fabs(pa.price - crr) < 2e-3 && pa.price > pe.price && boundary_ok;
+    all_ok = all_ok && am_ok;
+    printf("  American put (Hull): PDE %.4f vs lattice %.4f (|diff| %.1e) · European %.4f · boundary %.2f (1 step) → %.2f (5 months), %d samples · %.1f ms  %s\n",
+           pa.price, crr, std::fabs(pa.price - crr), pe.price, pa.boundary_S[0], pa.boundary_S[pa.n_boundary - 1],
+           pa.n_boundary, ms_am, am_ok ? "OK" : "*** FAIL ***");
+
+    // American calls: no dividends → never exercised (equals European); an 8% yield → exercised, above the strike
+    PdeSpec ac;
+    ac.kind = PdeKind::American; ac.type = OptionType::Call; ac.K = 100.0; ac.T = 1.0;
+    PdeSpec ec = ac;
+    ec.kind = PdeKind::European;
+    VolSurface nodiv = flat, div = flat;
+    nodiv.q = 0.0; div.q = 0.08;
+    const PdeResult c0 = pde_price(ac, nodiv, 801, 800), e0 = pde_price(ec, nodiv, 801, 800);
+    const PdeResult c8 = pde_price(ac, div, 801, 800), e8 = pde_price(ec, div, 801, 800);
+    const double crr8 = 0.5 * (crr_american(OptionType::Call, 100.0, 100.0, 1.0, 0.25, 0.05, 0.08, 20000) +
+                               crr_american(OptionType::Call, 100.0, 100.0, 1.0, 0.25, 0.05, 0.08, 20001));
+    const bool calls_ok = std::fabs(c0.price - e0.price) <= 1e-9 * e0.price && c8.price > e8.price &&
+                          std::fabs(c8.price - crr8) < 2e-3 && c8.boundary_S[c8.n_boundary - 1] > 100.0;
+    all_ok = all_ok && calls_ok;
+    printf("  American call: q = 0 %.6f = European %.6f · q = 8%% %.4f vs lattice %.4f, European %.4f, exercised above %.2f  %s\n",
+           c0.price, e0.price, c8.price, crr8, e8.price, c8.boundary_S[c8.n_boundary - 1], calls_ok ? "OK" : "*** FAIL ***");
+
+    // knock-outs under flat volatility against Reiner–Rubinstein
+    VolSurface kf;
+    kf.S = 100.0; kf.r = 0.08; kf.q = 0.04; kf.sigma = 0.25;
+    struct Case { OptionType type; bool up; double K; double levels[3]; };
+    const Case cases[] = {
+        { OptionType::Call, false, 100.0, { 85.0, 92.0, 97.0 } },
+        { OptionType::Put,  true,  100.0, { 103.0, 108.0, 115.0 } },
+        { OptionType::Call, true,   95.0, { 105.0, 115.0, 130.0 } },
+        { OptionType::Put,  false, 105.0, { 80.0, 90.0, 98.0 } },
+    };
+    double ko_err = 0.0;
+    for (const Case& c : cases) {
+        for (double H : c.levels) {
+            PdeSpec ko;
+            ko.kind = PdeKind::KnockOut; ko.type = c.type; ko.K = c.K; ko.T = 0.5; ko.H = H; ko.up = c.up;
+            ko_err = std::max(ko_err, std::fabs(pde_price(ko, kf, 801, 800).price -
+                                                barrier_prices(c.type, c.up, 100.0, c.K, H, 0.5, 0.25, 0.08, 0.04).out));
+        }
+    }
+    const bool ko_ok = ko_err < 2e-3;
+    all_ok = all_ok && ko_ok;
+    printf("  knock-outs, 4 types x 3 levels vs Reiner–Rubinstein: worst |diff| %.1e  %s\n", ko_err, ko_ok ? "OK" : "*** FAIL ***");
+
+    // Dupire consistency: under the equity smile with the upward term structure, the local-volatility PDE reprices
+    // the surface's vanillas at their implied volatilities
+    VolSurface lv;
+    lv.S = 756.48; lv.r = 0.045; lv.q = 0.0; lv.sigma = 0.138;
+    lv.smile = true; lv.rho = -0.7; lv.eta = 1.0; lv.gamma = 0.45;
+    lv.term = TermKind::Curve; lv.ratio = 0.5; lv.half_life = 0.15;
+    double lv_err[2] = { 0.0, 0.0 };
+    for (double T : { 0.25, 1.0 }) {
+        for (double m : { 0.9, 1.0, 1.1 }) {
+            for (OptionType type : { OptionType::Call, OptionType::Put }) {
+                PdeSpec e;
+                e.type = type; e.K = m * lv.S; e.T = T;
+                const double bs = bsm_price(type, lv.S, e.K, lv.r, implied_vol(lv, e.K, T), T, lv.q);
+                lv_err[0] = std::max(lv_err[0], std::fabs(pde_price(e, lv, 401, 400).price - bs) / bs);
+                lv_err[1] = std::max(lv_err[1], std::fabs(pde_price(e, lv, 801, 800).price - bs) / bs);
+            }
+        }
+    }
+    const bool dupire_ok = lv_err[1] < 1e-3 && lv_err[1] < lv_err[0];
+    all_ok = all_ok && dupire_ok;
+    printf("  local vol reprices the surface: 12 vanillas (90/100/110%%, 3m and 1y) worst relative error %.2e (401) → %.2e (801)  %s\n",
+           lv_err[0], lv_err[1], dupire_ok ? "OK" : "*** FAIL ***");
+
+    // knock-outs under local volatility: PDE against the Brownian-bridge Monte Carlo (Richardson, 1M paths)
+    ExoticSpec b;
+    b.kind = ExoticKind::Barrier; b.type = OptionType::Call; b.K = 755.0; b.T = 0.25; b.n_levels = 3;
+    b.levels[0] = 680.0; b.levels[1] = 700.0; b.levels[2] = 720.0;
+    const ExoticResult mc = mc_exotic_mt(b, lv, 1'000'000, 17, 365.0, true, -1);
+    double worst_z = 0.0;
+    for (int j = 0; j < 3; ++j) {
+        PdeSpec ko;
+        ko.kind = PdeKind::KnockOut; ko.type = OptionType::Call; ko.K = 755.0; ko.T = 0.25; ko.H = b.levels[j];
+        t0 = clk::now();
+        const PdeResult p = pde_price(ko, lv, 801, 800);
+        const double ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+        const double z = (mc.out[j] - p.price) / mc.out_se[j];
+        worst_z = std::max(worst_z, std::fabs(z));
+        printf("    down-and-out H=%.0f: PDE %.4f (Δ %.4f, Γ %.6f, %.1f ms) · Monte Carlo %.4f ± %.4f (z %+.2f)\n",
+               b.levels[j], p.price, p.delta, p.gamma, ms, mc.out[j], mc.out_se[j], z);
+    }
+    const bool mc_ok = worst_z < 4.0;
+    all_ok = all_ok && mc_ok;
+    printf("  local-vol knock-outs, PDE vs Monte Carlo: worst |z| %.2f  %s\n", worst_z, mc_ok ? "OK" : "*** FAIL ***");
+
+    // early exercise under the smile against flat volatility at the option's implied volatility
+    PdeSpec lp;
+    lp.kind = PdeKind::American; lp.type = OptionType::Put; lp.K = 756.0; lp.T = 1.0;
+    PdeSpec le = lp;
+    le.kind = PdeKind::European;
+    VolSurface iv;
+    iv.S = lv.S; iv.r = lv.r; iv.q = lv.q; iv.sigma = implied_vol(lv, 756.0, 1.0);
+    const PdeResult la = pde_price(lp, lv, 801, 800), le_ = pde_price(le, lv, 801, 800);
+    const PdeResult fa = pde_price(lp, iv, 801, 800), fe = pde_price(le, iv, 801, 800);
+    const bool ee_ok = la.price > le_.price && fa.price > fe.price && std::fabs(le_.price - fe.price) < 1e-3 * fe.price;
+    all_ok = all_ok && ee_ok;
+    printf("  American put 756, 1y: local vol %.4f − European %.4f = %.4f early exercise · flat σ(K) %.2f%%: %.4f − %.4f = %.4f · boundary today %.2f vs %.2f  %s\n",
+           la.price, le_.price, la.price - le_.price, iv.sigma * 100, fa.price, fe.price, fa.price - fe.price,
+           la.boundary_S[la.n_boundary - 1], fa.boundary_S[fa.n_boundary - 1], ee_ok ? "OK" : "*** FAIL ***");
+
+    // the American put under local volatility, where the exercise region reaches deep into high-volatility wings:
+    // grid refinement, no-arbitrage bounds, a boundary at every sample, and a policy iteration that settles quickly
+    const PdeResult fine = pde_price(lp, lv, 1601, 3200);
+    bool lv_boundary_ok = la.n_boundary == 64;
+    for (int j = 0; j < la.n_boundary; ++j) lv_boundary_ok = lv_boundary_ok && std::isfinite(la.boundary_S[j]) && la.boundary_S[j] < 756.0;
+    const double refine = std::fabs(la.price - fine.price) / fine.price;
+    const bool am_lv_ok = refine < 5e-4 && la.price >= std::max(le_.price, 756.0 - lv.S) && la.price <= 756.0 &&
+                          lv_boundary_ok && la.lcp_iterations < 50 && fine.lcp_iterations < 50;
+    all_ok = all_ok && am_lv_ok;
+    printf("  local-vol American put: 801 × 800 %.5f vs 1601 × 3200 %.5f (relative %.1e) · Δ %.5f Γ %.7f Θ %.3f · boundary %.1f (%.0fd) → %.1f (1y) · policy iterations ≤ %d / %d  %s\n",
+           la.price, fine.price, refine, la.delta, la.gamma, la.theta, la.boundary_S[0], la.boundary_tau[0] * 365,
+           la.boundary_S[la.n_boundary - 1], la.lcp_iterations, fine.lcp_iterations, am_lv_ok ? "OK" : "*** FAIL ***");
+
+    // invalid input
+    PdeSpec bad = lp;
+    bad.T = 0.0;
+    PdeSpec bad_ko = lp;
+    bad_ko.kind = PdeKind::KnockOut; bad_ko.H = 0.0;
+    const bool invalid_ok = std::isnan(pde_price(bad, lv, 801, 800).price) && std::isnan(pde_price(lp, lv, 10, 800).price) &&
+                            std::isnan(pde_price(bad_ko, lv, 801, 800).price);
+    all_ok = all_ok && invalid_ok;
+    printf("  T = 0, 10 nodes, barrier 0 → NaN  %s\n", invalid_ok ? "OK" : "*** FAIL ***");
+
+    printf("\n  %-22s  %s\n", "Local-vol PDE:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -640,6 +849,7 @@ int main() {
     section_portfolio_mc();
     section_local_vol();
     section_exotics();
+    section_pde();
 
     banner("End of Phase 1 report");
     return 0;
