@@ -344,6 +344,32 @@ cd dashboard && npm run build          # static export → dashboard/out
 source ~/emsdk/emsdk_env.sh && ./scripts/build-wasm.sh
 ```
 
+### The engine in a container (optional)
+
+The WebSocket engine is a local service by default. `deploy/engine.Dockerfile` builds it for Linux —
+the C++17 core, its pybind11 module and the FastAPI server — and `render.yaml` carries a
+`quantcore-engine` service alongside the market-data proxy:
+
+```bash
+docker build -f deploy/engine.Dockerfile -t quantcore-engine .
+```
+
+Two macOS-only paths compile out there. The Metal GPU kernel is Objective-C++, and the `OBJCXX`
+language is now enabled only on Apple; the Accelerate vForce/vDSP calls in `black_scholes_batch.cpp`
+and `monte_carlo_mt.cpp` sit behind `QUANTCORE_ACCELERATE` and fall back to plain loops the compiler
+vectorises, so a container reports `metal: false` and prices on its own cores. `-march=native` is
+behind `QUANTCORE_NATIVE_ARCH` (on by default, off in the image) because an image is built on one
+host and run on another. Both paths are checked here: the acceptance gate passes with Accelerate and
+with `-DQUANTCORE_ACCELERATE=OFF -DQUANTCORE_NATIVE_ARCH=OFF`, and the image build runs the gate
+itself, so a failure fails the build.
+
+The server binds `HOST` (`0.0.0.0` in the image) on `PORT` (supplied by the platform), answers
+`GET /healthz` for container health checks, and takes `ALLOWED_ORIGINS` — a comma-separated list of
+browser origins allowed to open a socket. Unset, as it runs locally, any origin is accepted; set, a
+disallowed origin is refused at the handshake and clients without an `Origin` header (tests,
+scripts) still connect. On Render's free tier the service sleeps after ~15 minutes idle and takes
+roughly 50 s to wake; the terminal degrades to its in-browser WebAssembly engine meanwhile.
+
 `netlify.toml` builds `dashboard/` and publishes `out/` for Git-connected Netlify deploys; `dashboard/out` can also
 be uploaded directly with the market-data function (`NEXT_PUBLIC_PROXY_URL=/api npm run build`, then Netlify CLI
 `deploy --dir dashboard/out --functions dashboard/netlify/functions`). Without `NEXT_PUBLIC_PROXY_URL` a build makes no

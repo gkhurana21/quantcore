@@ -93,6 +93,7 @@ v2 — request/response messages, any number per connection, matched by "id":
 """
 
 import asyncio, json, math, os, sys, time
+from typing import Optional
 
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -111,6 +112,21 @@ MAX_PATHS        = 10_000_000
 MAX_LV_WORK      = 4_000_000_000    # paths × coarse steps for one local-vol run
 HAS_METAL        = hasattr(quantcore, "mc_price_gpu")
 CPU_THREADS      = os.cpu_count() or 1
+# Browser origins allowed to open a socket. Unset (the default, and how it runs locally) accepts
+# any origin; a hosted engine sets it so only the deployed terminal can spend its CPU.
+ALLOWED_ORIGINS  = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
+
+def origin_allowed(origin: Optional[str]) -> bool:
+    """Browsers always send Origin; other clients (tests, scripts) send none and are allowed."""
+    return not ALLOWED_ORIGINS or origin is None or origin in ALLOWED_ORIGINS
+
+
+@app.get("/healthz")
+async def healthz() -> dict:
+    """Plain HTTP liveness for container platforms; the pricing itself is the WebSocket at /ws."""
+    return {"status": "ok", "protocol": PROTOCOL_VERSION, "metal": HAS_METAL,
+            "device": gpu_device(), "cpu_threads": CPU_THREADS}
 
 _gpu_device = None
 
@@ -277,6 +293,10 @@ def run_mc_exotic(spec: dict, market: dict, paths: int, seed: int, steps_per_yea
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
+    # A hosted engine only serves its own terminal; locally ALLOWED_ORIGINS is unset and this passes.
+    if not origin_allowed(ws.headers.get("origin")):
+        await ws.close(code=1008)   # policy violation — the handshake never completes
+        return
     await ws.accept()
     option_spec = None
     entry_price = None
@@ -523,5 +543,8 @@ async def ws_endpoint(ws: WebSocket):
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    # Locally: `python3 server/ws_server.py [port]` on loopback. In a container the platform supplies
+    # PORT and HOST=0.0.0.0 binds every interface (deploy/engine.Dockerfile).
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", 8765))
+    host = os.environ.get("HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=port, log_level="warning")

@@ -1,10 +1,55 @@
 #include "quantcore/black_scholes_batch.hpp"
 
-#include <Accelerate/Accelerate.h>
+#if defined(__APPLE__) && !defined(QUANTCORE_NO_ACCELERATE)
+#  define QUANTCORE_USE_ACCELERATE 1
+#  include <Accelerate/Accelerate.h>
+#endif
 #include <cmath>
 #include <vector>
 
 namespace quantcore {
+namespace {
+
+// Elementwise helpers: Apple vForce/vDSP where available, plain loops otherwise. The loops carry
+// no inter-iteration dependencies, so -O3 vectorises them; results differ from vForce only by the
+// last-bit rounding of the platform's exp/log/sqrt.
+
+inline void vec_sqrt(double* dst, const double* src, std::size_t n) {
+#ifdef QUANTCORE_USE_ACCELERATE
+    int ni = static_cast<int>(n);
+    vvsqrt(dst, src, &ni);
+#else
+    for (std::size_t i = 0; i < n; ++i) dst[i] = std::sqrt(src[i]);
+#endif
+}
+
+inline void vec_log(double* dst, const double* src, std::size_t n) {
+#ifdef QUANTCORE_USE_ACCELERATE
+    int ni = static_cast<int>(n);
+    vvlog(dst, src, &ni);
+#else
+    for (std::size_t i = 0; i < n; ++i) dst[i] = std::log(src[i]);
+#endif
+}
+
+inline void vec_exp(double* dst, const double* src, std::size_t n) {
+#ifdef QUANTCORE_USE_ACCELERATE
+    int ni = static_cast<int>(n);
+    vvexp(dst, src, &ni);
+#else
+    for (std::size_t i = 0; i < n; ++i) dst[i] = std::exp(src[i]);
+#endif
+}
+
+inline void vec_scale(double* dst, const double* src, double c, std::size_t n) {
+#ifdef QUANTCORE_USE_ACCELERATE
+    vDSP_vsmulD(src, 1, &c, dst, 1, n);
+#else
+    for (std::size_t i = 0; i < n; ++i) dst[i] = src[i] * c;
+#endif
+}
+
+} // namespace
 
 // ── Abramowitz-Stegun 26.2.17 batch N(x) ─────────────────────────────────────
 //
@@ -53,19 +98,17 @@ void batch_bs_full_accel(bool        is_call,
 {
     static constexpr double kInvSqrt2Pi = 0.3989422804014326779;
 
-    int ni = static_cast<int>(n);
-
     // Working buffers (stack-allocated via vector; on hot path consider
     // a slab allocator, but for benchmarking this is fine).
     std::vector<double> sqrtT(n), logSK(n), d1(n), d2(n);
     std::vector<double> phi(n), disc(n), Nd1(n), Nd2(n), tmp(n);
 
     // ── 1. sqrtT = sqrt(T)  [SIMD via vvexp-family] ──────────────────────────
-    vvsqrt(sqrtT.data(), T, &ni);
+    vec_sqrt(sqrtT.data(), T, n);
 
     // ── 2. log(S/K)  [SIMD via vvlog] ────────────────────────────────────────
     for (std::size_t i = 0; i < n; ++i) logSK[i] = S[i] / K[i];
-    vvlog(logSK.data(), logSK.data(), &ni);
+    vec_log(logSK.data(), logSK.data(), n);
 
     // ── 3. d1, d2  [scalar loop — fast arithmetic, auto-vectorises] ──────────
     for (std::size_t i = 0; i < n; ++i) {
@@ -76,13 +119,12 @@ void batch_bs_full_accel(bool        is_call,
 
     // ── 4. φ(d1) = (1/√2π)·exp(-½d1²)  [SIMD via vvexp] ─────────────────────
     for (std::size_t i = 0; i < n; ++i) tmp[i] = -0.5 * d1[i] * d1[i];
-    vvexp(phi.data(), tmp.data(), &ni);
-    double c = kInvSqrt2Pi;
-    vDSP_vsmulD(phi.data(), 1, &c, phi.data(), 1, n);
+    vec_exp(phi.data(), tmp.data(), n);
+    vec_scale(phi.data(), phi.data(), kInvSqrt2Pi, n);
 
     // ── 5. disc = exp(-r·T)  [SIMD via vvexp] ────────────────────────────────
     for (std::size_t i = 0; i < n; ++i) tmp[i] = -r[i] * T[i];
-    vvexp(disc.data(), tmp.data(), &ni);
+    vec_exp(disc.data(), tmp.data(), n);
 
     // ── 6. N(d1), N(d2) — A&S 26.2.17 polynomial (NEON auto-vectorised) ──────
     // Need φ(d2) for N(d2) computation — reuse the same A&S formula.

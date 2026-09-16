@@ -56,3 +56,4 @@ secrets.json
 
 # Netlify Drop bundle (generated from dashboard/out)
 /quantcore-demo-site.zip
+build-portable/

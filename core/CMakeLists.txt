@@ -22,9 +22,15 @@ target_include_directories(quantcore_core PUBLIC
 
 target_compile_options(quantcore_core PRIVATE
     -Wall -Wextra -Wpedantic
-    $<$<CONFIG:Release>:-O3 -march=native>
+    $<$<CONFIG:Release>:-O3>
+    $<$<AND:$<CONFIG:Release>,$<BOOL:${QUANTCORE_NATIVE_ARCH}>>:-march=native>
     $<$<CONFIG:Debug>:-g -O0>
 )
+
+# Without Accelerate the batch and multithreaded kernels use their portable loops
+if(NOT QUANTCORE_ACCELERATE)
+    target_compile_definitions(quantcore_core PRIVATE QUANTCORE_NO_ACCELERATE)
+endif()
 
 # Apple frameworks
 if(APPLE)

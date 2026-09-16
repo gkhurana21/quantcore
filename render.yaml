@@ -26,3 +26,21 @@ services:
         value: https://gaurangkhurana.ca,https://www.gaurangkhurana.ca,https://quantcore-gk.netlify.app
       - key: PORT
         value: "8080"
+
+  # The C++ pricing engine over WebSockets (server/ws_server.py). CPU only: the Metal kernel and
+  # Accelerate SIMD are macOS-specific and compile out, so `info` reports metal: false and Monte
+  # Carlo runs on the container's cores. The free tier sleeps after ~15 min idle and takes roughly
+  # 50 s to wake; the terminal degrades to its in-browser WebAssembly engine meanwhile.
+  - type: web
+    name: quantcore-engine
+    runtime: docker
+    plan: free
+    region: oregon
+    rootDir: .
+    dockerfilePath: ./deploy/engine.Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: https://quantcore-gk.netlify.app,https://gaurangkhurana.ca,https://www.gaurangkhurana.ca
+      - key: HOST
+        value: 0.0.0.0

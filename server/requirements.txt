@@ -1,0 +1,6 @@
+# Runtime dependencies of the WebSocket engine (server/ws_server.py).
+# The C++ module itself is built from source — see deploy/engine.Dockerfile.
+fastapi>=0.110
+uvicorn>=0.29
+websockets>=12
+numpy>=1.26
