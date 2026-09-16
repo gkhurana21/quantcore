@@ -54,6 +54,14 @@ void local_variance_row(const VolSurface& s, double t, const double* log_spots, 
 /** Whether the surface's parameters are usable (positive S and σ, the SSVI region, a valid term structure). */
 bool vol_surface_valid(const VolSurface& s);
 
+/**
+ * Spot at each of n_dates strictly increasing times, for `paths` paths of the surface's local volatility: log-Euler
+ * steps of at most 1/steps_per_year landing on every date, the same kernel mc_local_vol simulates. `out` is filled row
+ * by row (paths × n_dates). Returns the time steps per path, or 0 on invalid input or allocation failure.
+ */
+long long simulate_local_vol_paths(const VolSurface& s, const double* dates, std::size_t n_dates, long long paths,
+                                   uint64_t seed, double steps_per_year, double* out);
+
 struct LocalVolResult {
     double    price;      // $ value of the portfolio
     double    std_error;

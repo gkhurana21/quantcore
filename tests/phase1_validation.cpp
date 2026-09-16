@@ -15,6 +15,7 @@
 #include "quantcore/monte_carlo_portfolio.hpp"
 #include "quantcore/local_vol.hpp"
 #include "quantcore/exotics.hpp"
+#include "quantcore/lsm.hpp"
 #include "quantcore/pde.hpp"
 #include "quantcore/ziggurat.hpp"
 
@@ -835,6 +836,94 @@ static void section_pde() {
     printf("\n  %-22s  %s\n", "Local-vol PDE:", all_ok ? "ALL PASS" : "FAIL");
 }
 
+// ── Section 9: American Monte Carlo ─────────────────────────────────────────
+//
+// Longstaff–Schwartz against the finite-difference solver — two methods that share only the diffusion. The valuation
+// pass prices fresh paths under a policy fitted on other paths, so it is low biased: it must not exceed the PDE by
+// more than Monte Carlo error, and it may fall short of it by the discreteness of the exercise dates and the
+// simulation's own bias. Bounds fixed before the first run: within 4 standard errors above, and within 4 standard
+// errors plus 1% of the price below (0.5% under flat volatility, where the simulation's variance steps are exact).
+
+static void section_lsm() {
+    banner("9. AMERICAN MONTE CARLO  (Longstaff–Schwartz against the local-volatility PDE)");
+    bool all_ok = true;
+    using clk = std::chrono::steady_clock;
+
+    // flat volatility, Hull's put: the simulation is exact, so only the exercise dates separate the two
+    VolSurface hull;
+    hull.S = 50.0; hull.r = 0.10; hull.q = 0.0; hull.sigma = 0.40;
+    PdeSpec am;
+    am.kind = PdeKind::American; am.type = OptionType::Put; am.K = 50.0; am.T = 5.0 / 12.0;
+    const double pde_flat = pde_price(am, hull, 801, 800).price;
+    auto t0 = clk::now();
+    // policy paths × dates stay under kLsmMaxCells, so the finer date grid uses fewer policy paths
+    const LsmResult coarse = lsm_american(OptionType::Put, 50.0, 5.0 / 12.0, hull, 100'000, 400'000, 11, 22, 365.0);
+    const double ms_flat = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+    const LsmResult fine = lsm_american(OptionType::Put, 50.0, 5.0 / 12.0, hull, 80'000, 400'000, 11, 88, 365.0);
+    const bool flat_ok = coarse.price <= pde_flat + 4 * coarse.std_error && fine.price <= pde_flat + 4 * fine.std_error &&
+                         fine.price >= pde_flat - (4 * fine.std_error + 0.005 * pde_flat) && fine.price >= coarse.price - 4 * fine.std_error;
+    all_ok = all_ok && flat_ok;
+    printf("  Hull American put, flat σ: PDE %.4f · LSM %d dates %.4f ± %.4f · %d dates %.4f ± %.4f (policy %.4f, %d dates with a rule, %.0f ms)  %s\n",
+           pde_flat, coarse.dates, coarse.price, coarse.std_error, fine.dates, fine.price, fine.std_error, fine.policy_price,
+           fine.exercise_dates, ms_flat, flat_ok ? "OK" : "*** FAIL ***");
+
+    // the same put by European Monte Carlo on the valuation paths, against the PDE's European value
+    PdeSpec eu = am;
+    eu.kind = PdeKind::European;
+    const double pde_eu = pde_price(eu, hull, 801, 800).price;
+    const double z_eu = std::fabs(fine.european - pde_eu) / fine.european_se;
+    const bool eu_ok = z_eu < 4.0;
+    all_ok = all_ok && eu_ok;
+    printf("  the same paths held to expiry: %.4f ± %.4f vs PDE European %.4f (|z| %.2f) · early exercise %.4f vs PDE %.4f  %s\n",
+           fine.european, fine.european_se, pde_eu, z_eu, fine.price - fine.european, pde_flat - pde_eu,
+           eu_ok ? "OK" : "*** FAIL ***");
+
+    // local volatility: the surface where Brennan–Schwartz went wrong, at two exercise-date counts and two step sizes
+    VolSurface lv;
+    lv.S = 756.48; lv.r = 0.045; lv.q = 0.0; lv.sigma = 0.138;
+    lv.smile = true; lv.rho = -0.7; lv.eta = 1.0; lv.gamma = 0.45;
+    lv.term = TermKind::Curve; lv.ratio = 0.5; lv.half_life = 0.15;
+    PdeSpec lp;
+    lp.kind = PdeKind::American; lp.type = OptionType::Put; lp.K = 756.0; lp.T = 1.0;
+    const PdeResult pde_lv = pde_price(lp, lv, 801, 800);
+    struct Run { int dates; double spy; const char* label; };
+    const Run runs[] = { { 26, 365.0, "26 dates, 365 steps/yr" }, { 52, 365.0, "52 dates, 365 steps/yr" },
+                         { 52, 730.0, "52 dates, 730 steps/yr" } };
+    LsmResult finest{};
+    bool lv_ok = true;
+    for (const Run& run : runs) {
+        t0 = clk::now();
+        const LsmResult r = lsm_american(OptionType::Put, 756.0, 1.0, lv, 100'000, 200'000, 17, run.dates, run.spy);
+        const double ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+        lv_ok = lv_ok && r.price <= pde_lv.price + 4 * r.std_error;
+        finest = r;
+        printf("    %s: %.4f ± %.4f (policy %.4f, European %.4f ± %.4f, %lld steps, %.0f ms)\n",
+               run.label, r.price, r.std_error, r.policy_price, r.european, r.european_se, r.steps, ms);
+    }
+    lv_ok = lv_ok && finest.price >= pde_lv.price - (4 * finest.std_error + 0.01 * pde_lv.price);
+    all_ok = all_ok && lv_ok;
+    printf("  local-vol American put 756, 1y: PDE %.4f · LSM %.4f ± %.4f (%+.2f%%, low biased by discrete dates)  %s\n",
+           pde_lv.price, finest.price, finest.std_error, (finest.price / pde_lv.price - 1.0) * 100,
+           lv_ok ? "OK" : "*** FAIL ***");
+
+    // a call without dividends is never exercised early: the policy must find no rule worth using
+    const LsmResult c = lsm_american(OptionType::Call, 756.0, 1.0, lv, 50'000, 100'000, 5, 26, 365.0);
+    const double z_call = std::fabs(c.price - c.european) / c.european_se;
+    const bool call_ok = z_call < 4.0 && c.price <= c.european + 4 * c.std_error;
+    all_ok = all_ok && call_ok;
+    printf("  American call, no dividend: %.4f ± %.4f vs the same paths held to expiry %.4f ± %.4f (|z| %.2f)  %s\n",
+           c.price, c.std_error, c.european, c.european_se, z_call, call_ok ? "OK" : "*** FAIL ***");
+
+    // invalid input
+    const bool invalid_ok = std::isnan(lsm_american(OptionType::Put, 0.0, 1.0, lv, 1000, 1000, 1, 10, 365.0).price) &&
+                            std::isnan(lsm_american(OptionType::Put, 756.0, 1.0, lv, 10, 1000, 1, 10, 365.0).price) &&
+                            std::isnan(lsm_american(OptionType::Put, 756.0, 1.0, lv, 1'000'000, 1000, 1, 512, 365.0).price);
+    all_ok = all_ok && invalid_ok;
+    printf("  K = 0, too few paths, more cells than the cap → NaN  %s\n", invalid_ok ? "OK" : "*** FAIL ***");
+
+    printf("\n  %-22s  %s\n", "American Monte Carlo:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -850,6 +939,7 @@ int main() {
     section_local_vol();
     section_exotics();
     section_pde();
+    section_lsm();
 
     banner("End of Phase 1 report");
     return 0;

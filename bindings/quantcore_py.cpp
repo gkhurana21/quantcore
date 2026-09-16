@@ -12,6 +12,7 @@
 #include "quantcore/monte_carlo_portfolio.hpp"
 #include "quantcore/local_vol.hpp"
 #include "quantcore/exotics.hpp"
+#include "quantcore/lsm.hpp"
 #include "quantcore/pde.hpp"
 #ifdef __APPLE__
 #  include "quantcore/monte_carlo_gpu.hpp"
@@ -446,6 +447,27 @@ PYBIND11_MODULE(quantcore, m) {
           py::arg("spec"), py::arg("market"), py::arg("nodes") = 801, py::arg("steps") = 800,
           "European, American or knock-out option under the market's local volatility by Crank-Nicolson finite "
           "differences: price, grid Greeks and the early-exercise boundary; values per unit of underlying.");
+
+    m.def("lsm_american",
+          [](bool call, double K, double T, const py::dict& market, long long policy_paths, long long value_paths,
+             uint64_t seed, int dates, double steps_per_year) {
+              const VolSurface s = surface_from(market);
+              LsmResult r;
+              {
+                  py::gil_scoped_release release;
+                  r = lsm_american(call ? OptionType::Call : OptionType::Put, K, T, s, policy_paths, value_paths,
+                                   seed, dates, steps_per_year);
+              }
+              return py::dict("price"_a = finite_or_none(r.price), "std_error"_a = finite_or_none(r.std_error),
+                              "policy_price"_a = finite_or_none(r.policy_price),
+                              "european"_a = finite_or_none(r.european), "european_se"_a = finite_or_none(r.european_se),
+                              "policy_paths"_a = r.policy_paths, "value_paths"_a = r.value_paths, "dates"_a = r.dates,
+                              "steps"_a = r.steps, "exercise_dates"_a = r.exercise_dates);
+          },
+          py::arg("call"), py::arg("K"), py::arg("T"), py::arg("market"), py::arg("policy_paths") = 100000LL,
+          py::arg("value_paths") = 400000LL, py::arg("seed") = 42ULL, py::arg("dates") = 52, py::arg("steps_per_year") = 365.0,
+          "American option under the market's local volatility by Longstaff-Schwartz: a regression policy on one set of "
+          "paths, valued out of sample on another, so the price is low biased; values per unit of underlying.");
 
     m.def("mc_portfolio_mt",
           [](DoubleArray is_call, DoubleArray K, DoubleArray T, DoubleArray sigma, DoubleArray weight,

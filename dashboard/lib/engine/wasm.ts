@@ -14,7 +14,7 @@ import { legSigma } from '../quant/volSurface';
 
 export const WASM_PATH = '/wasm/quantcore.wasm';
 export const WASM_MANIFEST_PATH = '/wasm/quantcore.json';
-export const WASM_ABI = 5;
+export const WASM_ABI = 6;
 export const MAX_WASM_PATHS = 50_000_000;
 /** Cap on paths × legs for one portfolio run, so a single-threaded run stays within seconds. */
 export const MAX_WASM_PORTFOLIO_WORK = 64_000_000;
@@ -32,6 +32,20 @@ const PDE_BOUNDARY_POINTS = 64;
 const PDE_OUT_SIZE = 7 + 2 * PDE_BOUNDARY_POINTS;
 /** Default finite-difference grid: log-spot nodes × time steps (second order; ~7e-6 relative on a 1y vanilla). */
 export const PDE_GRID = { nodes: 801, steps: 800 } as const;
+
+// Longstaff–Schwartz output: price, std_error, policy_price, european, european_se, policy paths, value paths,
+// dates, steps, exercise dates
+const LSM_OUT_SIZE = 10;
+/** Recorded cells (policy paths × exercise dates) one run may hold in the module's 8 MB heap. */
+export const MAX_WASM_LSM_CELLS = 600_000;
+
+/** An American option by Longstaff–Schwartz; `price` is the out-of-sample valuation pass, so it is low biased. */
+export interface LsmResult {
+  price: number; stdError: number;
+  policyPrice: number;                       // in-sample backward induction (high biased)
+  european: number; europeanSe: number;      // the same valuation paths held to expiry
+  policyPaths: number; valuePaths: number; dates: number; steps: number; exerciseDates: number;
+}
 
 export type PdeKind = 'european' | 'american' | 'knockout';
 
@@ -98,6 +112,12 @@ export interface QuantcoreWasm {
    * (core/src/pde.cpp): price, grid Greeks and the early-exercise boundary. Deterministic; milliseconds.
    */
   pde(spec: PdeSpec, m: Market, nodes?: number, steps?: number): PdeResult | null;
+  /**
+   * An American option under the market's local volatility by Longstaff–Schwartz (core/src/lsm.cpp): a regression
+   * policy fitted on `policyPaths` paths, then valued out of sample on `valuePaths` fresh ones.
+   */
+  lsm(call: boolean, K: number, T: number, m: Market, policyPaths: number, valuePaths: number, seed: number,
+      dates: number, stepsPerYear: number): LsmResult | null;
 }
 
 /** The module's surface buffer for a market: S, r, q, σ, smile, centre, term kind and parameters, pillars. */
@@ -144,6 +164,10 @@ interface Exports {
   qc_pde_out(): number;
   qc_pde_out_size(): number;
   qc_pde(kind: number, call: number, K: number, T: number, H: number, up: number, nodes: number, steps: number): void;
+  qc_lsm_out(): number;
+  qc_lsm_out_size(): number;
+  qc_lsm(call: number, K: number, T: number, policyPaths: number, valuePaths: number, seed: number,
+         dates: number, stepsPerYear: number): void;
 }
 
 const positive = (v: number) => Number.isFinite(v) && v > 0;
@@ -171,6 +195,7 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
     throw new Error(`quantcore.wasm exotic buffers ${ex.qc_exotic_spec_size()}/${ex.qc_exotic_out_size()}, expected ${EXOTIC_SPEC_SIZE}/${EXOTIC_OUT_SIZE}`);
   }
   if (ex.qc_pde_out_size() !== PDE_OUT_SIZE) throw new Error(`quantcore.wasm PDE buffer ${ex.qc_pde_out_size()}, expected ${PDE_OUT_SIZE}`);
+  if (ex.qc_lsm_out_size() !== LSM_OUT_SIZE) throw new Error(`quantcore.wasm LSM buffer ${ex.qc_lsm_out_size()}, expected ${LSM_OUT_SIZE}`);
 
   let view = new Float64Array(ex.memory.buffer, ex.qc_out(), 8);
   const out = () => (view.buffer === ex.memory.buffer ? view : (view = new Float64Array(ex.memory.buffer, ex.qc_out(), 8)));
@@ -296,6 +321,18 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
       if (!Number.isFinite(o[0]) || !Number.isFinite(o[1]) || !Number.isFinite(o[2]) || !Number.isFinite(o[3])) return null;
       const boundary = Array.from({ length: o[6] }, (_, j) => ({ tau: o[7 + j], S: finiteOrNull(o[7 + PDE_BOUNDARY_POINTS + j]) }));
       return { price: o[0], delta: o[1], gamma: o[2], theta: o[3], nodes: o[4], steps: o[5], boundary };
+    },
+    lsm(call, K, T, m, policyPaths, valuePaths, seed, dates, stepsPerYear) {
+      if (!positive(K) || !positive(T) || !Number.isInteger(policyPaths) || policyPaths < 100 ||
+          !Number.isInteger(valuePaths) || valuePaths < 100 || !Number.isInteger(dates) || dates < 1 || dates > 512 ||
+          !Number.isInteger(seed) || seed < 0 || seed > 0xffff_ffff ||
+          !(stepsPerYear > 0 && stepsPerYear <= 100_000) || policyPaths * dates > MAX_WASM_LSM_CELLS ||
+          !setSurface(m)) return null;
+      ex.qc_lsm(call ? 1 : 0, K, T, policyPaths, valuePaths, seed, dates, stepsPerYear);
+      const o = new Float64Array(ex.memory.buffer, ex.qc_lsm_out(), LSM_OUT_SIZE);
+      if (!Number.isFinite(o[0]) || !Number.isFinite(o[1]) || !Number.isFinite(o[3])) return null;
+      return { price: o[0], stdError: o[1], policyPrice: o[2], european: o[3], europeanSe: o[4],
+               policyPaths: o[5], valuePaths: o[6], dates: o[7], steps: o[8], exerciseDates: o[9] };
     },
   };
 }

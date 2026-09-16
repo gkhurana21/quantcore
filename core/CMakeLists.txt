@@ -7,6 +7,7 @@ set(CORE_SOURCES
     src/local_vol.cpp
     src/exotics.cpp
     src/pde.cpp
+    src/lsm.cpp
 )
 
 if(APPLE)

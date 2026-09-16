@@ -683,6 +683,46 @@ void local_variance_row(const VolSurface& s, double t, const double* log_spots, 
 
 bool vol_surface_valid(const VolSurface& s) { return valid_surface(s); }
 
+long long simulate_local_vol_paths(const VolSurface& s, const double* dates, std::size_t n_dates, long long paths,
+                                   uint64_t seed, double steps_per_year, double* out) {
+    if (!valid_surface(s) || n_dates == 0 || paths < 1 || !(steps_per_year > 0.0) || !std::isfinite(steps_per_year)) return 0;
+    for (std::size_t k = 0; k < n_dates; ++k) {
+        if (!(dates[k] > 0.0) || !std::isfinite(dates[k]) || (k > 0 && !(dates[k] > dates[k - 1]))) return 0;
+    }
+    Grid g;
+    if (!build_grid(g, dates, n_dates, s, steps_per_year, false)) return 0;
+    std::mt19937_64 rng(seed);
+    double x[kBlock], z[kBlock];
+    const double rho = g.rho, omr2 = g.omr2, carry = g.carry;
+    for (long long done = 0; done < paths;) {
+        const std::size_t B = static_cast<std::size_t>(std::min<long long>(static_cast<long long>(kBlock), paths - done));
+        std::fill(x, x + B, g.x0);
+        std::size_t a = 0;
+        for (std::size_t i = 0; i < g.n; ++i) {
+            for (std::size_t b = 0; b < B; ++b) z[b] = normal_ziggurat(rng);
+            const double dt = g.dt[i], sq = g.sqdt[i];
+            if (g.smile) {
+                const Slice& c = g.mid[i];
+                for (std::size_t b = 0; b < B; ++b) {
+                    const double v = lvar(rho, omr2, c, x[b]);
+                    x[b] += (carry - 0.5 * v) * dt + std::sqrt(v) * sq * z[b];
+                }
+            } else {
+                const double dv = g.var_inc[i], drift = carry * dt - 0.5 * dv, sd = std::sqrt(dv);
+                for (std::size_t b = 0; b < B; ++b) x[b] += drift + sd * z[b];
+            }
+            if (a < n_dates && static_cast<std::size_t>(g.anchor_step[a]) == i + 1) {
+                for (std::size_t b = 0; b < B; ++b) out[(static_cast<std::size_t>(done) + b) * n_dates + a] = std::exp(x[b]);
+                ++a;
+            }
+        }
+        done += static_cast<long long>(B);
+    }
+    const long long n = static_cast<long long>(g.n);
+    std::free(g.block);
+    return n;
+}
+
 LocalVolResult mc_local_vol(const PortfolioLeg* legs, std::size_t n_legs, const VolSurface& s,
                             long long paths, uint64_t seed, double steps_per_year, bool extrapolate) {
     if (!valid_inputs(legs, n_legs, s, paths, steps_per_year)) return invalid();

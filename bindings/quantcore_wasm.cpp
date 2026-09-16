@@ -13,6 +13,7 @@
 #include "quantcore/exotics.hpp"
 #include "quantcore/local_vol.hpp"
 #include "quantcore/monte_carlo.hpp"
+#include "quantcore/lsm.hpp"
 #include "quantcore/pde.hpp"
 #include "quantcore/monte_carlo_portfolio.hpp"
 
@@ -39,6 +40,10 @@ constexpr int kPdePoints = static_cast<int>(quantcore::kPdeBoundaryPoints);
 // PDE output: price, delta, gamma, theta, nodes, steps, n_boundary, boundary_tau × 64, boundary_S × 64
 constexpr int kPdeOutSize = 7 + 2 * kPdePoints;
 double g_pde_out[kPdeOutSize];
+// Longstaff–Schwartz output: price, std_error, policy_price, european, european_se, policy_paths, value_paths,
+// dates, steps, exercise_dates
+constexpr int kLsmOutSize = 10;
+double g_lsm_out[kLsmOutSize];
 
 quantcore::VolSurface read_surface() {
     const double* v = g_surface;
@@ -63,7 +68,7 @@ quantcore::VolSurface read_surface() {
 extern "C" {
 
 // Bumped whenever a signature or the output layout changes.
-EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 5; }
+EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 6; }
 
 EMSCRIPTEN_KEEPALIVE double* qc_out() { return g_out; }
 
@@ -219,6 +224,29 @@ EMSCRIPTEN_KEEPALIVE void qc_pde(int kind, int call, double K, double T, double 
         o[7 + j] = r.boundary_tau[j];
         o[7 + kPdePoints + j] = r.boundary_S[j];
     }
+}
+
+EMSCRIPTEN_KEEPALIVE double* qc_lsm_out() { return g_lsm_out; }
+EMSCRIPTEN_KEEPALIVE int qc_lsm_out_size() { return kLsmOutSize; }
+
+// American option by Longstaff–Schwartz on the surface in qc_surface(); results in qc_lsm_out().
+EMSCRIPTEN_KEEPALIVE void qc_lsm(int call, double K, double T, double policy_paths, double value_paths, double seed,
+                                 int dates, double steps_per_year) {
+    const quantcore::LsmResult r =
+        quantcore::lsm_american(call ? OptionType::Call : OptionType::Put, K, T, read_surface(),
+                                static_cast<long long>(policy_paths), static_cast<long long>(value_paths),
+                                static_cast<uint64_t>(seed), dates, steps_per_year);
+    double* o = g_lsm_out;
+    o[0] = r.price;
+    o[1] = r.std_error;
+    o[2] = r.policy_price;
+    o[3] = r.european;
+    o[4] = r.european_se;
+    o[5] = static_cast<double>(r.policy_paths);
+    o[6] = static_cast<double>(r.value_paths);
+    o[7] = r.dates;
+    o[8] = static_cast<double>(r.steps);
+    o[9] = r.exercise_dates;
 }
 
 }  // extern "C"

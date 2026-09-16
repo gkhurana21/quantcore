@@ -6,7 +6,7 @@
 // where a put would be exercised carry far higher local volatility than the strike's implied volatility, so holding
 // is worth more and the boundary sits lower.
 
-import { memo, useMemo, useRef } from 'react';
+import { memo, useMemo, useRef, useState } from 'react';
 import type { Leg, Market } from '@/lib/quant/types';
 import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
 import { bsPrice } from '@/lib/quant/blackScholes';
@@ -15,17 +15,20 @@ import type { LabResult } from '@/lib/compute/tasks';
 import type { WasmEngine } from '@/lib/engine/useWasmEngine';
 import type { PdeItem } from '@/lib/engine/usePdeBatch';
 import { usePdeBatch } from '@/lib/engine/usePdeBatch';
-import type { PdeResult } from '@/lib/engine/wasm';
+import type { LsmResult, PdeResult } from '@/lib/engine/wasm';
 import { PDE_GRID } from '@/lib/engine/wasm';
 import { legLabel, legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
 import { num, signed, usd, usdSigned } from '@/lib/format';
 import { linear, niceTicks, strikeTick } from '@/components/charts/scale';
 import { useElementWidth } from '@/components/ui/useElementWidth';
-import { cx, ui } from '@/components/ui/primitives';
-import { fmtMs } from './labFormat';
+import { Badge, Button, cx, ui } from '@/components/ui/primitives';
+import { fmtMs, fmtPaths } from './labFormat';
 import l from './lab.module.css';
 
 type Boundary = PdeResult['boundary'];
+
+/** The Longstaff–Schwartz cross-check: a policy fitted on one set of paths, valued on another (policy × dates ≤ 600k cells). */
+const LSM = { policyPaths: 20_000, valuePaths: 200_000, dates: 26, stepsPerYear: 365, seed: 31 } as const;
 
 interface Plan { leg: number; flat: number; lvAm: number | null; lvEu: number | null; }
 
@@ -150,6 +153,25 @@ export function EarlyExercise({ legs, market, wasm, active, lab, labCurrent }: {
   const latticeEep = (r: Row) => (r.crr != null && r.crrEu != null ? r.crr - r.crrEu : null);
   const lattice = rows.reduce((a, r) => { const e = latticeEep(r); return e == null ? a : Math.max(a, Math.abs(r.eepFlat - e)); }, 0);
   const reprice = surface ? rows.reduce((a, r) => Math.max(a, Math.abs((r.euLv ?? r.bs) - r.bs) / r.bs), 0) : null;
+  // Longstaff–Schwartz on the chart's leg: an independent check of the PDE's American value, run on request
+  const [lsm, setLsm] = useState<{ key: string; busy: boolean; run?: LsmResult & { ms: number }; error?: string } | null>(null);
+  const lsmKey = chartRow ? `${key}|${chartRow.leg}` : '';
+  const lsmRun = lsm && lsm.key === lsmKey ? lsm : null;
+  const pdeAmerican = chartRow ? (surface ? chartRow.amLv ?? chartRow.amFlat : chartRow.amFlat) : null;
+  const runLsm = async () => {
+    if (!chartRow) return;
+    const leg = legs[chartRow.leg];
+    setLsm({ key: lsmKey, busy: true });
+    try {
+      const on: Market = surface ? market
+        : { S: market.S, r: market.r, q: market.q, sigma: legSigma(market, leg.K, leg.T), smile: null, term: null };
+      const run = await wasm.runLsm(leg.call, leg.K, leg.T, on, LSM.policyPaths, LSM.valuePaths, LSM.seed, LSM.dates, LSM.stepsPerYear);
+      setLsm({ key: lsmKey, busy: false, run });
+    } catch (err) {
+      setLsm({ key: lsmKey, busy: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
   const status = wasm.status === 'loading' ? 'Loading the C++ WebAssembly engine…'
     : wasm.status === 'unavailable' ? 'WebAssembly could not load, so the finite-difference solver is unavailable.'
     : batch.error ? `Finite differences failed: ${batch.error}` : null;
@@ -239,6 +261,40 @@ export function EarlyExercise({ legs, market, wasm, active, lab, labCurrent }: {
             {surface && <> Close to today the local-volatility boundary drops steeply: the power-law smile makes short-dated
               local volatility very high away from the money, so holding a deep in-the-money option is worth more there.</>}
           </p>
+
+          {chartRow && pdeAmerican != null && (
+            <div className={l.engineBox} data-testid="lab-lsm">
+              <strong>Longstaff–Schwartz check</strong>
+              <Button size="sm" onClick={runLsm} disabled={!!lsmRun?.busy || wasm.status !== 'ready'} data-testid="lab-lsm-run">
+                {lsmRun?.busy ? 'Simulating…' : `Value ${fmtPaths(LSM.valuePaths)} paths on a regression policy`}
+              </Button>
+              <span>
+                {chartRow.label} · {LSM.dates} exercise dates · policy fitted on {fmtPaths(LSM.policyPaths)} separate paths · seed {LSM.seed}
+              </span>
+              {lsmRun?.run && (() => {
+                const r = lsmRun.run!;
+                const gap = r.price - pdeAmerican;
+                const z = r.stdError > 0 ? gap / r.stdError : 0;
+                const consistent = gap <= 4 * r.stdError && -gap <= 4 * r.stdError + 0.01 * pdeAmerican;
+                return (
+                  <>
+                    <span data-testid="lab-lsm-result" data-price={r.price} data-se={r.stdError} data-european={r.european}
+                          data-pde={pdeAmerican} data-z={z}>
+                      American <b className="mono">{r.price.toFixed(4)}</b> ± {num(r.stdError, 4)} vs PDE {pdeAmerican.toFixed(4)}
+                      {' '}({signed(gap, 4)}, {signed(z, 2)} SE) · European on the same paths {r.european.toFixed(4)} ± {num(r.europeanSe, 4)}
+                      {' '}· {r.exerciseDates}/{r.dates} dates with an exercise rule · {r.steps} steps · {fmtMs(r.ms)}
+                    </span>
+                    <Badge tone={consistent ? 'good' : 'warn'}>{consistent ? 'Consistent with the PDE' : 'Outside the expected band'}</Badge>
+                  </>
+                );
+              })()}
+              {lsmRun?.error && <span className="neg">{lsmRun.error}</span>}
+              <span>
+                The policy is fitted on paths it never values, so this price is low biased: it should sit at the PDE’s value or a
+                little below it — the gap is what discrete exercise dates cost.
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>

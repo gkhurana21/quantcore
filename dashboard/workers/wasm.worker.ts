@@ -21,12 +21,18 @@ export interface ExoticMcRequest {
 /** Several finite-difference solves in one message, each option on its own market (e.g. the surface and flat σ). */
 export interface PdeBatchRequest { items: { spec: PdeSpec; market: Market }[]; nodes: number; steps: number; }
 
+export interface LsmRequest {
+  call: boolean; K: number; T: number; market: Market;
+  policyPaths: number; valuePaths: number; seed: number; dates: number; stepsPerYear: number;
+}
+
 type McMessage =
   | { id: number; url: string; kind: 'mc'; req: EngineMcRequest }
   | { id: number; url: string; kind: 'portfolio'; req: PortfolioMcRequest }
   | { id: number; url: string; kind: 'localvol'; req: LocalVolMcRequest }
   | { id: number; url: string; kind: 'exotic'; req: ExoticMcRequest }
-  | { id: number; url: string; kind: 'pde'; req: PdeBatchRequest };
+  | { id: number; url: string; kind: 'pde'; req: PdeBatchRequest }
+  | { id: number; url: string; kind: 'lsm'; req: LsmRequest };
 
 const ctx = self as unknown as {
   postMessage(message: unknown): void;
@@ -46,6 +52,10 @@ function run(w: QuantcoreWasm, msg: McMessage): object | null {
     case 'pde': {
       const { nodes, steps } = msg.req;
       return { results: msg.req.items.map(it => w.pde(it.spec, it.market, nodes, steps)) };
+    }
+    case 'lsm': {
+      const r = msg.req;
+      return w.lsm(r.call, r.K, r.T, r.market, r.policyPaths, r.valuePaths, r.seed, r.dates, r.stepsPerYear);
     }
     default:
       return w.mcPrice(msg.req.call, msg.req.S, msg.req.K, msg.req.r, msg.req.sigma, msg.req.T, msg.req.paths, msg.req.seed, msg.req.q);

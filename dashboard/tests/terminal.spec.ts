@@ -406,7 +406,7 @@ test.describe('QuantCore terminal flows', () => {
     expect(Number(await page.getByTestId('exo-row-mc-flat').getAttribute('data-z'))).toBeLessThan(4);
   });
 
-  test('19. Finite differences: American puts under the surface, the exercise boundary, and the barrier PDE against Monte Carlo', async ({ page }) => {
+  test('19. Finite differences: American puts under the surface, the exercise boundary, Longstaff–Schwartz, and the barrier PDE against Monte Carlo', async ({ page }) => {
     test.setTimeout(150_000);
     await page.routeWebSocket('ws://localhost:8765/ws', ws => ws.close({ code: 1000, reason: 'no native engine' }));
     await open(page);
@@ -433,6 +433,15 @@ test.describe('QuantCore terminal flows', () => {
     const headline = page.getByTestId('lab-pde-headline');
     expect(Number(await headline.getAttribute('data-eep-lv'))).toBeGreaterThan(0);
     expect(Number(await chart.getAttribute('data-lv-today'))).toBeLessThan(Number(await chart.getAttribute('data-flat-today')));
+
+    // Longstaff–Schwartz on the same leg: low biased, so at or just below the PDE's American value
+    await page.getByTestId('lab-lsm-run').click();
+    const lsm = page.getByTestId('lab-lsm-result');
+    await expect(lsm).toHaveAttribute('data-price', /\d/, { timeout: 90_000 });
+    const l = async (a: string) => Number(await lsm.getAttribute(a));
+    expect(await l('data-price')).toBeLessThan(await l('data-pde') + 4 * await l('data-se'));
+    expect(await l('data-price')).toBeGreaterThan(await l('data-pde') - (4 * await l('data-se') + 0.02 * await l('data-pde')));
+    expect(await l('data-price')).toBeGreaterThan(await l('data-european'));
 
     // barrier: the PDE knock-out on the surface agrees with the local-vol Monte Carlo, and draws its curve
     await page.getByTestId('tab-exotics').click();

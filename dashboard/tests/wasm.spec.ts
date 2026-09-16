@@ -453,6 +453,48 @@ test.describe('C++ core compiled to WebAssembly', () => {
     expect(bad).toEqual([]);
   });
 
+  test('Longstaff–Schwartz American Monte Carlo brackets the finite-difference price', () => {
+    test.setTimeout(120_000);
+    const hull: Market = { S: 50, sigma: 0.4, r: 0.1, q: 0 };
+    const pde = w.pde({ kind: 'american', call: false, K: 50, T: 5 / 12 }, hull)!;
+    const eu = w.pde({ kind: 'european', call: false, K: 50, T: 5 / 12 }, hull)!;
+    const a = w.lsm(false, 50, 5 / 12, hull, 20_000, 200_000, 7, 22, 365)!;
+    console.log(`  LSM ${a.price.toFixed(4)} ± ${a.stdError.toFixed(4)} (policy ${a.policyPrice.toFixed(4)}) vs PDE ${pde.price.toFixed(4)}; ` +
+                `European ${a.european.toFixed(4)} ± ${a.europeanSe.toFixed(4)} vs ${eu.price.toFixed(4)}; ${a.exerciseDates}/${a.dates} dates with a rule`);
+    // the valuation pass is out of sample, so it is low biased: at or below the PDE up to Monte Carlo error
+    expect(a.price).toBeLessThan(pde.price + 4 * a.stdError);
+    expect(a.price).toBeGreaterThan(pde.price - (4 * a.stdError + 0.01 * pde.price));
+    expect(Math.abs(a.european - eu.price) / a.europeanSe).toBeLessThan(4);
+    expect(a.price).toBeGreaterThan(a.european);
+    expect(a.dates).toBe(22);
+    expect(a.exerciseDates).toBeGreaterThan(15);
+    expect(a.valuePaths).toBe(200_000);
+
+    // domain: over the cell cap, no strike, too few paths, too many dates
+    expect(w.lsm(false, 50, 5 / 12, hull, 20_000, 200_000, 7, 64, 365)).toBeNull();
+    expect(w.lsm(false, 0, 1, hull, 1000, 1000, 1, 10, 365)).toBeNull();
+    expect(w.lsm(false, 50, 1, hull, 50, 1000, 1, 10, 365)).toBeNull();
+    expect(w.lsm(false, 50, 1, hull, 1000, 1000, 1, 513, 365)).toBeNull();
+  });
+
+  test('Longstaff–Schwartz reproduces the native C++ result for the same seed', () => {
+    test.skip(!nativeAvailable(), 'native quantcore module not built');
+    const m: Market = { S: 756.48, sigma: 0.138, r: 0.045, q: 0.01, smile: SMILE_PRESETS['Equity index'], term: TERM_PRESETS.Upward };
+    const a = w.lsm(false, 756, 0.5, m, 10_000, 20_000, 13, 26, 365)!;
+    interface NativeLsm { price: number; std_error: number; policy_price: number; european: number; european_se: number;
+                          dates: number; steps: number; exercise_dates: number; }
+    const ref = native<NativeLsm>(
+      'quantcore.lsm_american(x["call"], x["K"], x["T"], x["market"], x["policy"], x["value"], x["seed"], x["dates"], x["spy"])',
+      { call: false, K: 756, T: 0.5, market: m, policy: 10_000, value: 20_000, seed: 13, dates: 26, spy: 365 });
+    const near = (x: number, y: number) => Math.abs(x - y) <= 1e-12 * Math.abs(y) + 1e-9;
+    const bad = ([['price', a.price, ref.price], ['std_error', a.stdError, ref.std_error],
+                  ['policy_price', a.policyPrice, ref.policy_price], ['european', a.european, ref.european],
+                  ['european_se', a.europeanSe, ref.european_se], ['dates', a.dates, ref.dates],
+                  ['steps', a.steps, ref.steps], ['exercise_dates', a.exerciseDates, ref.exercise_dates]] as [string, number, number][])
+      .filter(([, x, y]) => !near(x, y)).map(([k, x, y]) => `${k}: wasm ${x} native ${y}`);
+    expect(bad).toEqual([]);
+  });
+
   test('inputs outside the model domain are rejected, never priced', () => {
     const invalid: [number, number, number, number, number][] = [
       [0, 100, 0.05, 0.2, 1], [100, 0, 0.05, 0.2, 1], [100, 100, 0.05, 0, 1], [100, 100, 0.05, 0.2, 0],
