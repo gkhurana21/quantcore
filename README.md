@@ -16,7 +16,7 @@ over WebSocket when it runs locally.
 | **Greeks & payoff** | Price, Δ, Γ, Θ, ν and P&L tiles; exact max profit / max loss and break-evens; an interactive payoff chart with P&L · Δ · Γ · Vega · Θ modes (hover or keyboard crosshair); a full-revaluation spot × vol P&L surface. |
 | **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice — and, by finite differences in C++, each leg's American value under the volatility surface's local volatility against its implied volatility, with the early-exercise boundary and a Longstaff–Schwartz Monte Carlo check of it. A C++ cross-check simulates the whole portfolio — on the native engine when it is running, otherwise in WebAssembly — and, with a smile or term structure, a local-volatility Monte Carlo reprices it under Dupire's diffusion. |
 | **Monte Carlo** | Animated risk-neutral paths — GBM in a flat market, Dupire local volatility when a smile or term structure is on — with spot, strike, expiry and in-the-money markers; a 50,000-sample terminal distribution against its analytic lognormal or smile-implied density; simulated P(ITM) vs the analytic value; local against implied volatility across strikes. |
-| **Exotics** | Barrier options (down- and up-and-out, knock-in by parity), monitored continuously or on a monthly, weekly or daily schedule, and arithmetic and geometric Asian options on the terminal's market. Reiner–Rubinstein and geometric-average closed forms under flat volatility, with the Broadie–Glasserman–Kou correction when the barrier is monitored on a schedule; the C++ Monte Carlo kernel — Brownian-bridge monitoring, or an indicator on those same dates, up to 16 barrier levels on the same paths — under that volatility as a check, and under the surface's Dupire local volatility, with the vanilla on the same paths as a repricing check, and barriers also solved as a PDE (a second method, with its Greeks). A knock-out-vs-barrier chart, the geometric control variate for arithmetic averages and fine-grid bias estimates; on the native engine or in WebAssembly. |
+| **Exotics** | Barrier options (down- and up-and-out, knock-in by parity), monitored continuously or on a monthly, weekly or daily schedule and optionally paying a rebate at the hit or at expiry, and arithmetic and geometric Asian options on the terminal's market. Reiner–Rubinstein and geometric-average closed forms under flat volatility, with the Broadie–Glasserman–Kou correction when the barrier is monitored on a schedule and Reiner–Rubinstein's E and F terms when it pays a rebate — the two corrections do not compose, and the panel says so rather than showing a reference it cannot compute; the C++ Monte Carlo kernel — Brownian-bridge monitoring, or an indicator on those same dates, up to 16 barrier levels on the same paths — under that volatility as a check, and under the surface's Dupire local volatility, with the vanilla on the same paths as a repricing check, and barriers also solved as a PDE (a second method, with its Greeks). A knock-out-vs-barrier chart, the geometric control variate for arithmetic averages and fine-grid bias estimates; on the native engine or in WebAssembly. |
 | **Stress Lab** | 2008-style credit crisis, COVID-style crash, volatility spike, rate shock, melt-up / vol crush, or a custom shock. Shows Spot → Vol → Greeks → P&L → VaR, P&L by leg, a P&L-vs-spot ladder and all scenarios side by side; apply a shock to the whole terminal and reset. |
 | **Risk / VaR** | 1-day 95% parametric VaR, plus delta-normal, delta-gamma and Monte Carlo full-revaluation VaR — spot only, and spot with correlated implied-vol shocks — with expected shortfall at 90 / 95 / 99% over 1 / 5 / 10 days, exposures and stated assumptions. |
 | **Portfolio Upload** | CSV, XLSX or XLS, parsed entirely in the browser. Tolerant column names (`option_type`, `cp`, `action`, `strike_price`, `dte`, `expiration`, `contracts`, `fill_price`, …), ISO / US / Excel dates, accounting negatives, a row-by-row preview with errors and warnings, and downloadable samples. |
@@ -129,6 +129,18 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   value; the correction lands 0.16, 0.44 and 0.31 standard errors from the simulation at those frequencies, where the
   uncorrected continuous formula is 73, 41 and 20 standard errors away. An up-and-out put behaves the same way with
   the shift reversed, and in + out = vanilla on the same paths to 2e-14.
+- **Barrier rebates** (Reiner & Rubinstein's E and F terms): the knock-out pays a rebate when it is extinguished —
+  at the hit, or at expiry — and the knock-in pays one at expiry when the barrier is never touched. With
+  μ = (r − q − σ²/2)/σ², λ = √(μ² + 2r/σ²) and η = +1 below the spot, the rebate at the hit is
+  R·[(H/S)^(μ+λ)·N(ηz) + (H/S)^(μ−λ)·N(η(z − 2λσ√T))] with z = ln(H/S)/σ√T + λσ√T, and at expiry it is R·e^(−rT)
+  against P(no hit) = N(η(x₂ − σ√T)) − (H/S)^(2μ)·N(η(y₂ − σ√T)). The simulation earns it as it loses survival. A
+  rebate breaks in-out parity, and exactly: paid at expiry the two sides together pay it in every state, so
+  in + out − vanilla is R·e^(−rT) path by path — which is what the gate checks where discrete monitoring leaves no
+  closed form to compare against. Three methods agree in the C++ gate: over four barrier types and both payment times
+  the closed form matches the finite-difference solver (carrying the rebate as the barrier's boundary value) to
+  3.6e-6, and on Hull's down-and-out call with a rebate of 3 the simulation gives 7.9541 ± 0.0167 at the hit against
+  7.9630 and 7.9032 ± 0.0167 at expiry against 7.9118. With a single time step the only possible hit time is the
+  expiry, and the two payment times then price identically to the last digit.
 - **Finite differences (local-volatility PDE)**: V_τ = ½σ²V_xx + (r − q − ½σ²)V_x − rV in log spot with σ² the surface's
   local variance (`core/src/pde.cpp`, native and WebAssembly) — European, American and continuously monitored knock-out
   options, with grid Greeks (Δ, Γ, Θ) and the early-exercise boundary. A uniform log-spot grid with the payoff averaged
@@ -444,10 +456,13 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence, portfolio
 - American early exercise is priced only in the Pricing Models Lab — the CRR lattice at each leg's implied volatility and
   finite differences under the surface; the Greeks tiles, charts, stress and VaR treat options as European. Close to today
   the local-volatility exercise boundary inherits the power-law smile's very high short-dated wing volatility.
-- Path-dependent payoffs are limited to barriers without rebates — monitored continuously or on an equally spaced
-  schedule — and Asian options on equally spaced fixings, priced one at a time in the Exotics tab; strategies, the
-  payoff chart, stress and VaR hold European options. Under local volatility the barrier bridge uses each step's local
-  variance, an approximation whose error shrinks with the step. The Broadie–Glasserman–Kou correction is asymptotic in
+- Path-dependent payoffs are limited to barriers — monitored continuously or on an equally spaced schedule, with or
+  without a rebate — and Asian options on equally spaced fixings, priced one at a time in the Exotics tab; strategies,
+  the payoff chart, stress and VaR hold European options. Under local volatility the barrier bridge uses each step's
+  local variance, an approximation whose error shrinks with the step. A rebate paid at the hit is placed at the end of
+  the step that breached the barrier, since the estimator carries a survival probability rather than a hit time: that
+  costs an O(Δt) timing bias, worth 0.6% of the knock-out at one step a year and gone by 26 (it is exact on a
+  monitoring schedule, where the hit really is on a date, and a rebate paid at expiry has no timing error at all). The Broadie–Glasserman–Kou correction is asymptotic in
   the number of monitoring dates, so it is weakest at very few of them, and it assumes one flat volatility; the
   simulation monitors discretely under any surface. The Metal GPU kernel prices one contract per run; whole portfolios and exotics run on the
   multithreaded CPU kernel or in WebAssembly.

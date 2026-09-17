@@ -15,7 +15,9 @@ import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { bsGreeks, bsPrice } from '../lib/quant/blackScholes';
 import type { ExoticSpec } from '../lib/quant/exotics';
-import { barrierPrices, barrierPricesDiscrete, controlVariate, geometricAsianPrice } from '../lib/quant/exotics';
+import {
+  barrierPrices, barrierPricesDiscrete, barrierPricesRebate, controlVariate, geometricAsianPrice,
+} from '../lib/quant/exotics';
 import { localVol, mcLocalVol } from '../lib/quant/localVol';
 import { mulberry32 } from '../lib/quant/rng';
 import type { Leg, Market, Smile, TermStructure } from '../lib/quant/types';
@@ -40,6 +42,15 @@ const MAC_PY = '/Library/Developer/CommandLineTools/usr/bin/python3';
 const PY = existsSync(MAC_PY) ? MAC_PY : 'python3';
 
 const sha256 = (buf: Buffer) => createHash('sha256').update(buf).digest('hex');
+
+/**
+ * The bindings read the wire protocol's snake_case keys; the TypeScript models are camelCase. Handing a model
+ * straight to Python would leave `rebateAtHit` unread and silently price the rebate at the hit.
+ */
+function toNative<T extends object>(spec: T): Record<string, unknown> {
+  const { rebateAtHit, ...rest } = spec as T & { rebateAtHit?: boolean };
+  return rebateAtHit === undefined ? { ...rest } : { ...rest, rebate_at_hit: rebateAtHit };
+}
 const bytes = readFileSync(path.join(WASM_DIR, 'quantcore.wasm'));
 const manifest: WasmManifest = JSON.parse(readFileSync(path.join(WASM_DIR, 'quantcore.json'), 'utf8'));
 
@@ -303,6 +314,15 @@ test.describe('C++ core compiled to WebAssembly', () => {
           cmp(`in m=${monitors} ${tag}`, d.in, e.in);
           if (monitors === 0 && d.out !== a.out) bad.push(`m=0 is not the continuous price ${tag}: ${d.out} vs ${a.out}`);
         }
+        // paying a rebate, at the hit and at expiry; 0 must leave the plain price untouched
+        for (const rebate of [0, 2.5]) for (const atHit of [true, false]) {
+          const d = w.barrierPricesRebate(call, up, 100, K, H, T, sigma, 0.045, q, rebate, atHit);
+          const e = barrierPricesRebate(call, up, 100, K, H, T, sigma, 0.045, q, rebate, atHit);
+          if (!d) { bad.push(`null rebate ${rebate} ${tag}`); continue; }
+          cmp(`out rebate ${rebate} ${atHit} ${tag}`, d.out, e.out);
+          cmp(`in rebate ${rebate} ${atHit} ${tag}`, d.in, e.in);
+          if (rebate === 0 && (d.out !== a.out || d.in !== a.in)) bad.push(`rebate 0 moved the price ${tag}`);
+        }
       }
     for (const call of [true, false]) for (const fixings of [1, 2, 12, 52, 365]) for (const K of [80, 100, 120]) for (const T of [0.1, 1, 3]) {
       cmp(`asian ${JSON.stringify({ call, fixings, K, T })}`, w.geometricAsian(call, 100, K, T, fixings, 0.3, 0.045, 0.02) ?? NaN,
@@ -320,6 +340,9 @@ test.describe('C++ core compiled to WebAssembly', () => {
       { kind: 'barrier', call: false, K: 740, T: 0.4, up: true, levels: [780, 820] },
       // tested on 13 dates instead of continuously: the spec buffer's monitoring slot, through the browser build
       { kind: 'barrier', call: true, K: 756, T: 0.25, up: false, levels: [640, 700, 740], monitors: 13 },
+      // paying a rebate, at the hit and at expiry: the spec buffer's two rebate slots
+      { kind: 'barrier', call: true, K: 756, T: 0.25, up: false, levels: [700, 740], rebate: 12, rebateAtHit: true },
+      { kind: 'barrier', call: false, K: 740, T: 0.4, up: true, levels: [800], rebate: 12, rebateAtHit: false },
       { kind: 'asian', call: true, K: 750, T: 0.5, fixings: 26 },
     ];
     interface NativeExotic {
@@ -335,7 +358,7 @@ test.describe('C++ core compiled to WebAssembly', () => {
     for (const spec of specs) for (const extrapolate of [false, true]) {
       const a = w.mcExotic(spec, m, 50_000, 13, 365, extrapolate)!;
       const ref = native<NativeExotic>('quantcore.mc_exotic(x["spec"], x["market"], x["paths"], x["seed"], x["spy"], x["extrapolate"], 0)',
-                                       { spec, market: m, paths: 50_000, seed: 13, spy: 365, extrapolate });
+                                       { spec: toNative(spec), market: m, paths: 50_000, seed: 13, spy: 365, extrapolate });
       expect(a.steps).toBe(ref.steps);
       expect(a.monitors).toBe(ref.monitors);
       expect(a.out.length).toBe(ref.out.length);
@@ -446,6 +469,9 @@ test.describe('C++ core compiled to WebAssembly', () => {
       { kind: 'american', call: false, K: 740, T: 0.5 },
       { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false },
       { kind: 'knockout', call: false, K: 740, T: 0.4, H: 800, up: true },
+      // the rebate as the barrier's boundary value, paid at the hit and at expiry
+      { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false, rebate: 15, rebateAtHit: true },
+      { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false, rebate: 15, rebateAtHit: false },
     ];
     interface NativePde { price: number; delta: number; gamma: number; theta: number; nodes: number; steps: number;
                           boundary_tau: number[]; boundary_S: (number | null)[]; }
@@ -453,7 +479,8 @@ test.describe('C++ core compiled to WebAssembly', () => {
     const bad: string[] = [];
     for (const spec of specs) {
       const a = w.pde(spec, m, 401, 400)!;
-      const ref = native<NativePde>('quantcore.pde_price(x["spec"], x["market"], 401, 400)', { spec, market: m });
+      const ref = native<NativePde>('quantcore.pde_price(x["spec"], x["market"], 401, 400)',
+                                    { spec: toNative(spec), market: m });
       const pairs: [string, number | null, number | null][] = [
         ['price', a.price, ref.price], ['delta', a.delta, ref.delta], ['gamma', a.gamma, ref.gamma], ['theta', a.theta, ref.theta],
         ['nodes', a.nodes, ref.nodes], ['steps', a.steps, ref.steps], ['boundary length', a.boundary.length, ref.boundary_tau.length],

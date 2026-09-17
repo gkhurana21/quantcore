@@ -11,10 +11,10 @@ import type { ReactNode } from 'react';
 import type { Market } from '@/lib/quant/types';
 import { bsPrice } from '@/lib/quant/blackScholes';
 import { hasVolSurface, legSigma } from '@/lib/quant/volSurface';
-import type { ExoticMcResult, ExoticSpec } from '@/lib/quant/exotics';
+import type { BarrierPrices, ExoticMcResult, ExoticSpec } from '@/lib/quant/exotics';
 import {
-  barrierPrices, barrierPricesDiscrete, controlVariate, geometricAsianPrice, MAX_ASIAN_FIXINGS, MAX_BARRIER_LEVELS,
-  MAX_BARRIER_MONITORS,
+  barrierPrices, barrierPricesDiscrete, barrierPricesRebate, controlVariate, geometricAsianPrice, MAX_ASIAN_FIXINGS,
+  MAX_BARRIER_LEVELS, MAX_BARRIER_MONITORS,
 } from '@/lib/quant/exotics';
 import { LV_MIN_STEPS, LV_STEPS_PER_YEAR, LV_WASM_WORK } from '@/lib/compute/tasks';
 import type { Engine } from '@/lib/engine/useEngine';
@@ -66,6 +66,7 @@ interface Setup {
   S: number; r: number; q: number; K: number; H: number; hPct: number; T: number;
   fixings: number; schedule: Schedule; sigmaK: number; sigmaH: number;
   monitoring: Monitoring; monitors: number;  // barrier monitoring dates; 0 is continuous monitoring
+  rebate: number; rebateAtHit: boolean;      // paid when the barrier is hit, or at expiry; 0 is a plain barrier
   levels: number[]; hIndex: number;          // barrier levels simulated on the same paths, and the selected one
   market: Market; flatMarket: Market; surface: boolean; stepsPerYear: number; seed: number;
 }
@@ -93,7 +94,8 @@ function barrierLadder(S: number, H: number, up: boolean, sdT: number): number[]
 }
 
 function buildSetup(product: Product, call: boolean, up: boolean, kPct: number, hPct: number, dayCount: number,
-                    schedule: Schedule, monitoring: Monitoring, market: Market, seed: number): Setup {
+                    schedule: Schedule, monitoring: Monitoring, rebatePct: number, rebateAtHit: boolean,
+                    market: Market, seed: number): Setup {
   const { S, r, q } = market;
   const T = dayCount / 365, K = (S * kPct) / 100, H = (S * hPct) / 100;
   const sigmaK = legSigma(market, K, T), sigmaH = legSigma(market, H, T);
@@ -102,13 +104,17 @@ function buildSetup(product: Product, call: boolean, up: boolean, kPct: number, 
   // continuous monitoring carries no dates, and the spec then omits the field entirely
   const monPerYear = SCHEDULES.find(s => s.value === monitoring)?.perYear ?? 0;
   const monitors = monPerYear ? Math.min(MAX_BARRIER_MONITORS, Math.max(1, Math.round(T * monPerYear))) : 0;
+  const rebate = (S * rebatePct) / 100;   // as a share of spot, like the strike and the barrier
   const levels = product === 'barrier' ? barrierLadder(S, H, up, sigmaK * Math.sqrt(T)) : [];
   const spec: ExoticSpec = product === 'barrier'
-    ? { kind: 'barrier', call, K, T, up, levels, ...(monitors ? { monitors } : {}) }
+    ? { kind: 'barrier', call, K, T, up, levels, ...(monitors ? { monitors } : {}),
+        ...(rebate > 0 ? { rebate, rebateAtHit } : {}) }
     : { kind: 'asian', call, K, T, fixings };
   return {
-    key: [product, call, up, kPct, hPct, dayCount, schedule, monitoring, marketKeyOf(market), seed].join('|'),
+    key: [product, call, up, kPct, hPct, dayCount, schedule, monitoring, rebatePct, rebateAtHit,
+          marketKeyOf(market), seed].join('|'),
     product, call, up, spec, S, r, q, K, H, hPct, T, fixings, schedule, sigmaK, sigmaH, monitoring, monitors,
+    rebate, rebateAtHit,
     levels, hIndex: levels.indexOf(H), market,
     flatMarket: { S, r, q, sigma: sigmaK, smile: null, term: null },
     surface: hasVolSurface(market),
@@ -291,25 +297,33 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
   const { setup: s, flat, local } = view;
   const j = s.hIndex;
   const name = `${s.up ? 'up' : 'down'}-and-out ${s.call ? 'call' : 'put'}`;
-  // with monitoring dates these carry the Broadie–Glasserman–Kou correction; with none they are the continuous
-  // formulas unchanged, so the default view is exactly what it was
-  const cfK = barrierPricesDiscrete(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaK, s.r, s.q, s.monitors);
-  const cfH = barrierPricesDiscrete(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaH, s.r, s.q, s.monitors);
-  const cont = s.monitors ? barrierPrices(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaK, s.r, s.q) : null;
-  const gap = (v: number, se: number | null) => (
+  // Broadie–Glasserman–Kou shifts the barrier and the rebate terms assume a continuous one, so the two do not
+  // compose: a monitored barrier paying a rebate has no closed form here, and the simulation is the only price.
+  // With neither, these are the continuous formulas unchanged, so the plain view is exactly what it was.
+  const noClosedForm = s.rebate > 0 && s.monitors > 0;
+  const cfK: BarrierPrices | null = noClosedForm ? null
+    : s.rebate > 0 ? barrierPricesRebate(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaK, s.r, s.q, s.rebate, s.rebateAtHit)
+    : barrierPricesDiscrete(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaK, s.r, s.q, s.monitors);
+  const cfH: BarrierPrices | null = noClosedForm ? null
+    : s.rebate > 0 ? barrierPricesRebate(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaH, s.r, s.q, s.rebate, s.rebateAtHit)
+    : barrierPricesDiscrete(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaH, s.r, s.q, s.monitors);
+  const cont = s.monitors && !noClosedForm ? barrierPrices(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaK, s.r, s.q) : null;
+  const gap = (v: number, se: number | null) => (cfK === null ? <span className={css.dash}>—</span> : (
     <>
       <span className={l.valueMain}>{signed(v - cfK.out, 4)}</span>
       {se != null && se > 0 && <span className={l.valueSub}>{signed((v - cfK.out) / se, 1)} SE</span>}
     </>
-  );
+  ));
 
   const rows: Row[] = [
     { id: 'bs-k', model: `Black-Scholes · σ(K) ${pct(s.sigmaK, 2)}`,
-      detail: s.monitors ? `Broadie–Glasserman–Kou · ${s.monitors} monitoring dates · reference`
-                         : 'Reiner–Rubinstein closed form · reference',
-      cells: [<Price key="out" v={cfK.out} />, <Price key="in" v={cfK.in} />, <Price key="van" v={cfK.vanilla} />,
+      detail: noClosedForm ? 'monitored on a schedule and paying a rebate: no closed form composes the two'
+        : s.rebate > 0 ? `Reiner–Rubinstein with a rebate paid ${s.rebateAtHit ? 'at the hit' : 'at expiry'} · reference`
+        : s.monitors ? `Broadie–Glasserman–Kou · ${s.monitors} monitoring dates · reference`
+        : 'Reiner–Rubinstein closed form · reference',
+      cells: [<Price key="out" v={cfK?.out} />, <Price key="in" v={cfK?.in} />, <Price key="van" v={cfK?.vanilla} />,
               <span key="gap" className={css.dash}>—</span>],
-      z: null, ms: null, verdict: REFERENCE },
+      z: null, ms: null, verdict: noClosedForm ? { tone: 'muted', text: 'No closed form' } : REFERENCE },
   ];
   if (cont) {
     rows.push({ id: 'continuous', model: 'Continuous monitoring',
@@ -319,7 +333,7 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
                 z: null, ms: null, verdict: { tone: 'muted', text: 'Continuous' },
                 attrs: { 'data-continuous-out': cont.out } });
   }
-  if (s.surface) {
+  if (s.surface && cfH) {
     rows.push({ id: 'bs-h', model: `Black-Scholes · σ(H) ${pct(s.sigmaH, 2)}`, detail: 'closed form at the barrier’s implied volatility',
                 cells: [<Price key="out" v={cfH.out} />, <Price key="in" v={cfH.in} />, <Price key="van" v={cfH.vanilla} />,
                         gap(cfH.out, null)],
@@ -327,31 +341,41 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
   }
   let flatZ: number | null = null;
   if (flat) {
-    flatZ = Math.max(zOf(flat.out[j], cfK.out, flat.outSe[j]), zOf(flat.in[j], cfK.in, flat.inSe[j]));
+    flatZ = cfK ? Math.max(zOf(flat.out[j], cfK.out, flat.outSe[j]), zOf(flat.in[j], cfK.in, flat.inSe[j])) : null;
     rows.push({ id: 'mc-flat', model: 'Monte Carlo · flat σ(K)',
                 detail: runDetail(flat, s.monitors ? `${s.monitors} monitoring dates` : 'Brownian bridge'),
                 cells: [<Price key="out" v={flat.out[j]} se={flat.outSe[j]} />, <Price key="in" v={flat.in[j]} se={flat.inSe[j]} />,
                         <Price key="van" v={flat.vanilla} se={flat.vanillaSe} />, gap(flat.out[j], flat.outSe[j])],
-                z: flatZ, ms: flat.ms, verdict: agreement(flatZ) });
+                z: flatZ, ms: flat.ms,
+                verdict: flatZ == null ? { tone: 'muted', text: 'The price, unchecked' } : agreement(flatZ) });
   } else {
     rows.push(pendingRow('mc-flat', 'Monte Carlo · flat σ(K)', pendingText, 4));
   }
   let headline: ReactNode = null;
   if (s.surface && local) {
-    const z = zOf(local.vanilla, cfK.vanilla, local.vanillaSe);
-    const d = local.out[j] - cfK.out, dz = local.outSe[j] > 0 ? d / local.outSe[j] : 0;
+    // the repricing check is against the plain vanilla, which no barrier, schedule or rebate changes, so it holds
+    // even where the barrier itself has no closed form
+    const z = zOf(local.vanilla, bsPrice(s.call, s.S, s.K, s.T, s.sigmaK, s.r, s.q), local.vanillaSe);
+    const d = cfK ? local.out[j] - cfK.out : 0;
+    const dz = cfK && local.outSe[j] > 0 ? d / local.outSe[j] : 0;
     rows.push({ id: 'local', model: 'Local vol (Dupire)',
                 detail: runDetail(local, s.monitors ? `${s.monitors} monitoring dates` : 'bridge at the step’s local variance'),
                 cells: [<Price key="out" v={local.out[j]} se={local.outSe[j]} />, <Price key="in" v={local.in[j]} se={local.inSe[j]} />,
                         <Price key="van" v={local.vanilla} se={local.vanillaSe} />, gap(local.out[j], local.outSe[j])],
                 z, ms: local.ms, verdict: repricing(z), local: true, attrs: { 'data-gap': d, 'data-gap-z': dz } });
-    headline = (
+    headline = cfK ? (
       <span>
         Under local volatility the {name} is worth <b className="mono">{usd(local.out[j], 4)}</b> against {usd(cfK.out, 4)} at
         the strike’s implied volatility:{' '}
         <b className="mono" data-testid="exo-gap" data-value={d} data-z={dz}>{signed(d, 4)}</b> ({signed(dz, 1)} standard errors),
         while its vanilla on the same paths reprices within {z.toFixed(2)} standard errors.
         {pde?.results[j + 1] && <> The PDE on the same surface gives {usd(pde.results[j + 1]!.price, 4)}.</>}
+      </span>
+    ) : (
+      <span>
+        Under local volatility the {name} is worth <b className="mono">{usd(local.out[j], 4)}</b> per share. Watched on a
+        schedule <em>and</em> paying a rebate, it has no closed form to be checked against — the simulation is the price,
+        and its vanilla on the same paths still reprices within {z.toFixed(2)} standard errors.
       </span>
     );
   } else if (s.surface) {
@@ -515,12 +539,15 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
   const [dayCount, setDayCount] = useState(91);
   const [schedule, setSchedule] = useState<Schedule>('weekly');
   const [monitoring, setMonitoring] = useState<Monitoring>('continuous');
+  const [rebatePct, setRebatePct] = useState(0);
+  const [rebateAtHit, setRebateAtHit] = useState(true);
   const [seed, setSeed] = useState(11);
 
   const native = engine.status === 'connected' && (engine.info?.protocol ?? 0) >= 7;
   const backend: Backend | null = native ? 'native' : wasm.status === 'ready' ? 'wasm' : null;
-  const setup = useMemo(() => buildSetup(product, call, up, kPct, hPct, dayCount, schedule, monitoring, market, seed),
-                        [product, call, up, kPct, hPct, dayCount, schedule, monitoring, market, seed]);
+  const setup = useMemo(
+    () => buildSetup(product, call, up, kPct, hPct, dayCount, schedule, monitoring, rebatePct, rebateAtHit, market, seed),
+    [product, call, up, kPct, hPct, dayCount, schedule, monitoring, rebatePct, rebateAtHit, market, seed]);
   const setupRef = useRef(setup);
   setupRef.current = setup;
   const key = `${setup.key}|${backend ?? 'none'}`;
@@ -572,9 +599,14 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
   const pdeItems = useMemo((): PdeItem[] => {
     if (setup.product !== 'barrier') return [];
     const m = setup.surface ? setup.market : setup.flatMarket;
+    // the solver carries the rebate as the barrier's boundary value; it always monitors continuously, so on a
+    // monitoring schedule it is pricing a different contract and the table says so rather than scoring them
+    const rebate = setup.rebate > 0 ? { rebate: setup.rebate, rebateAtHit: setup.rebateAtHit } : {};
     return [
       { spec: { kind: 'european', call: setup.call, K: setup.K, T: setup.T }, market: m },
-      ...setup.levels.map((H): PdeItem => ({ spec: { kind: 'knockout', call: setup.call, K: setup.K, T: setup.T, H, up: setup.up }, market: m })),
+      ...setup.levels.map((H): PdeItem => ({
+        spec: { kind: 'knockout', call: setup.call, K: setup.K, T: setup.T, H, up: setup.up, ...rebate }, market: m,
+      })),
     ];
   }, [setup]);
   const pde = usePdeBatch(wasm, active && product === 'barrier' ? pdeItems : null, setup.key);
@@ -593,9 +625,10 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
   return (
     <div>
       <p className={l.intro}>
-        Path-dependent options on the terminal’s market, per share. Barriers pay no rebate and are monitored continuously
-        unless a monitoring schedule is chosen, when the barrier is tested only on those dates — and is worth more, being
-        harder to breach; Asian options average on equally spaced fixings, the last at expiry. The closed forms assume one flat volatility. The
+        Path-dependent options on the terminal’s market, per share. A barrier is monitored continuously unless a schedule
+        is chosen, when it is tested only on those dates — and is worth more, being harder to breach — and it can pay a
+        rebate when it is knocked out, at the hit or at expiry; Asian options average on equally spaced fixings, the last
+        at expiry. The closed forms assume one flat volatility. The
         same C++ Monte Carlo kernel runs under that volatility, where it must agree with them, and under the surface’s Dupire
         local volatility — the one diffusion consistent with every vanilla on the surface — where no closed form exists.
       </p>
@@ -616,6 +649,11 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
                        }} />
             <Segmented size="sm" label="Monitoring" testid="exo-monitoring" value={monitoring}
                        options={MONITORINGS.map(x => ({ value: x.value, label: x.label }))} onChange={setMonitoring} />
+            {rebatePct > 0 && (
+              <Segmented size="sm" label="Rebate paid" testid="exo-rebate-when" value={rebateAtHit ? 'hit' : 'expiry'}
+                         options={[{ value: 'hit', label: 'At the hit' }, { value: 'expiry', label: 'At expiry' }]}
+                         onChange={v => setRebateAtHit(v === 'hit')} />
+            )}
           </>
         ) : (
           <Segmented size="sm" label="Fixing schedule" testid="exo-fixings" value={schedule}
@@ -638,6 +676,12 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
                        format={pctAndUsd} onChange={setHPct} inputDecimals={1} testid="exo-h" displayTestid="exo-h-display"
                        tip="The option is extinguished the first time the price is through the barrier — at any instant under continuous monitoring, or only on the monitoring dates when a schedule is chosen."
                        rangeLabels={up ? ['100.5%', '150%'] : ['50%', '99.5%']} />
+        )}
+        {product === 'barrier' && (
+          <SliderField label="Rebate" symbol="R" value={rebatePct} min={0} max={25} step={0.5} format={pctAndUsd}
+                       onChange={setRebatePct} inputDecimals={1} testid="exo-rebate" displayTestid="exo-rebate-display"
+                       tip="Paid to the holder when the barrier is hit and the knock-out is extinguished, or at expiry; the knock-in pays it at expiry when the barrier is never touched. 0 is a plain barrier."
+                       rangeLabels={['0%', '25%']} />
         )}
         <SliderField label="Expiry" symbol="T" value={dayCount} min={7} max={730} step={1} format={v => `${v} days`}
                      onChange={v => setDayCount(Math.round(v))} inputDecimals={0} testid="exo-days" displayTestid="exo-days-display"
@@ -692,6 +736,21 @@ H → H·exp(−βσ√(T/m))   down barrier`}</pre>
               monitored one. Moving the barrier away from the spot by βσ√Δt in the continuous formula prices that, with
               error o(1/√m). The simulation tests the barrier on the same m dates instead of the bridge, and the unit
               tests require the correction to sit within Monte Carlo error of it at monthly, weekly and daily monitoring.
+            </p>
+          </div>
+          <div className={l.formula}>
+            <h4>Rebates · Reiner–Rubinstein E and F</h4>
+            <pre>{`μ = (r − q − σ²/2)/σ²,  λ = √(μ² + 2r/σ²),  z = ln(H/S)/σ√T + λσ√T
+at the hit   R·[(H/S)^(μ+λ)·N(ηz) + (H/S)^(μ−λ)·N(η(z − 2λσ√T))]
+at expiry    R·e^(−rT)·(1 − P(no hit))
+in + out − vanilla = R·e^(−rT)        (rebate paid at expiry)`}</pre>
+            <p>
+              The knock-out pays the rebate when it is extinguished, the knock-in at expiry if the barrier is never
+              touched, so a rebate breaks in-out parity — by exactly the rebate discounted from expiry, an identity that
+              holds path by path and is what the unit tests check where no closed form exists. The simulation earns the
+              rebate as it loses survival; paid at the hit it places the hit at the step’s end, which is exact on a
+              monitoring schedule and converges as the grid refines otherwise. A schedule and a rebate together have no
+              closed form, and the table above says so rather than showing a reference it cannot compute.
             </p>
           </div>
           <div className={l.formula}>

@@ -14,7 +14,7 @@ import { legSigma } from '../quant/volSurface';
 
 export const WASM_PATH = '/wasm/quantcore.wasm';
 export const WASM_MANIFEST_PATH = '/wasm/quantcore.json';
-export const WASM_ABI = 7;
+export const WASM_ABI = 8;
 export const MAX_WASM_PATHS = 50_000_000;
 /** Cap on paths × legs for one portfolio run, so a single-threaded run stays within seconds. */
 export const MAX_WASM_PORTFOLIO_WORK = 64_000_000;
@@ -23,8 +23,9 @@ export const MAX_WASM_LOCAL_VOL_WORK = 300_000_000;
 /** Term-structure pillars the module's surface buffer holds. */
 export const WASM_TERM_PILLARS = 32;
 const SURFACE_SIZE = 13 + 2 * WASM_TERM_PILLARS;
-// exotic input: kind, call, K, T, up, n_levels, levels × 16, n_fixings, n_monitors; output: bindings/quantcore_wasm.cpp
-const EXOTIC_SPEC_SIZE = 8 + MAX_BARRIER_LEVELS;
+// exotic input: kind, call, K, T, up, n_levels, levels × 16, n_fixings, n_monitors, rebate, rebate_at_hit;
+// output: bindings/quantcore_wasm.cpp
+const EXOTIC_SPEC_SIZE = 10 + MAX_BARRIER_LEVELS;
 const EXOTIC_OUT_SIZE = 6 + 5 * MAX_BARRIER_LEVELS + 7;
 
 // PDE output: price, delta, gamma, theta, nodes, steps, n_boundary, boundary τ × 64, boundary S × 64
@@ -49,8 +50,14 @@ export interface LsmResult {
 
 export type PdeKind = 'european' | 'american' | 'knockout';
 
-/** An option for the finite-difference solver; H and up for a knock-out (continuously monitored, no rebate). */
-export interface PdeSpec { kind: PdeKind; call: boolean; K: number; T: number; H?: number; up?: boolean; }
+/**
+ * An option for the finite-difference solver; H and up for a knock-out, monitored continuously. A knock-out's
+ * `rebate` is paid on hitting the barrier unless `rebateAtHit` is false, when it is paid at expiry instead.
+ */
+export interface PdeSpec {
+  kind: PdeKind; call: boolean; K: number; T: number; H?: number; up?: boolean;
+  rebate?: number; rebateAtHit?: boolean;
+}
 
 /** Per unit of underlying; theta is ∂V/∂t per year. The boundary is an American option's exercise spot by time to expiry. */
 export interface PdeResult {
@@ -105,6 +112,9 @@ export interface QuantcoreWasm {
   /** Barrier monitored at `monitors` equally spaced dates (Broadie–Glasserman–Kou) — the C++ port of barrierPricesDiscrete. */
   barrierPricesDiscrete(call: boolean, up: boolean, S: number, K: number, H: number, T: number, sigma: number,
                         r: number, q: number, monitors: number): BarrierPrices | null;
+  /** Barrier paying a rebate at the hit or at expiry (Reiner–Rubinstein E and F) — the C++ port of barrierPricesRebate. */
+  barrierPricesRebate(call: boolean, up: boolean, S: number, K: number, H: number, T: number, sigma: number,
+                      r: number, q: number, rebate: number, atHit: boolean): BarrierPrices | null;
   /** Geometric-average Asian option on n equally spaced fixings — the C++ port of geometricAsianPrice. */
   geometricAsian(call: boolean, S: number, K: number, T: number, n: number, sigma: number, r: number, q: number): number | null;
   /**
@@ -167,11 +177,14 @@ interface Exports {
   qc_barrier_prices(call: number, up: number, S: number, K: number, H: number, T: number, sigma: number, r: number, q: number): void;
   qc_barrier_prices_discrete(call: number, up: number, S: number, K: number, H: number, T: number, sigma: number,
                              r: number, q: number, monitors: number): void;
+  qc_barrier_prices_rebate(call: number, up: number, S: number, K: number, H: number, T: number, sigma: number,
+                           r: number, q: number, rebate: number, atHit: number): void;
   qc_geometric_asian(call: number, S: number, K: number, T: number, n: number, sigma: number, r: number, q: number): number;
   qc_mc_exotic(paths: number, seed: number, stepsPerYear: number, extrapolate: number): void;
   qc_pde_out(): number;
   qc_pde_out_size(): number;
-  qc_pde(kind: number, call: number, K: number, T: number, H: number, up: number, nodes: number, steps: number): void;
+  qc_pde(kind: number, call: number, K: number, T: number, H: number, up: number, nodes: number, steps: number,
+         rebate: number, rebateAtHit: number): void;
   qc_lsm_out(): number;
   qc_lsm_out_size(): number;
   qc_lsm(call: number, K: number, T: number, policyPaths: number, valuePaths: number, seed: number,
@@ -292,6 +305,13 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
       const o = out();
       return Number.isFinite(o[0]) && Number.isFinite(o[1]) && Number.isFinite(o[2]) ? { out: o[0], in: o[1], vanilla: o[2] } : null;
     },
+    barrierPricesRebate(call, up, S, K, H, T, sigma, r, q, rebate, atHit) {
+      if (!validMarket(S, K, r, sigma, T, q) || !positive(H)) return null;
+      if (!(rebate >= 0) || !Number.isFinite(rebate)) return null;
+      ex.qc_barrier_prices_rebate(call ? 1 : 0, up ? 1 : 0, S, K, H, T, sigma, r, q, rebate, atHit ? 1 : 0);
+      const o = out();
+      return Number.isFinite(o[0]) && Number.isFinite(o[1]) && Number.isFinite(o[2]) ? { out: o[0], in: o[1], vanilla: o[2] } : null;
+    },
     geometricAsian(call, S, K, T, n, sigma, r, q) {
       if (!validMarket(S, K, r, sigma, T, q) || !Number.isInteger(n) || n < 1 || n > MAX_ASIAN_FIXINGS) return null;
       return finiteOrNull(ex.qc_geometric_asian(call ? 1 : 0, S, K, T, n, sigma, r, q));
@@ -310,6 +330,10 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
         v[0] = 0; v[4] = spec.up ? 1 : 0; v[5] = n;
         v.set(spec.levels, 6);
         v[7 + MAX_BARRIER_LEVELS] = monitors;
+        const rebate = spec.rebate ?? 0;   // 0 pays no rebate; paid at the hit unless rebateAtHit is false
+        if (!(rebate >= 0) || !Number.isFinite(rebate)) return null;
+        v[8 + MAX_BARRIER_LEVELS] = rebate;
+        v[9 + MAX_BARRIER_LEVELS] = spec.rebateAtHit === false ? 0 : 1;
       } else {
         if (!Number.isInteger(spec.fixings) || spec.fixings < 1 || spec.fixings > MAX_ASIAN_FIXINGS) return null;
         v[0] = 1; v[6 + MAX_BARRIER_LEVELS] = spec.fixings;
@@ -333,8 +357,10 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
       if (!positive(spec.K) || !positive(spec.T) || (knock && !positive(spec.H ?? NaN)) ||
           !Number.isInteger(nodes) || nodes < 21 || nodes > 4001 || !Number.isInteger(steps) || steps < 4 || steps > 20_000 ||
           !setSurface(m)) return null;
+      const rebate = knock ? spec.rebate ?? 0 : 0;
+      if (!(rebate >= 0) || !Number.isFinite(rebate)) return null;
       ex.qc_pde(spec.kind === 'american' ? 1 : knock ? 2 : 0, spec.call ? 1 : 0, spec.K, spec.T, knock ? spec.H! : 0,
-                spec.up ? 1 : 0, nodes, steps);
+                spec.up ? 1 : 0, nodes, steps, rebate, spec.rebateAtHit === false ? 0 : 1);
       const o = new Float64Array(ex.memory.buffer, ex.qc_pde_out(), PDE_OUT_SIZE);
       if (!Number.isFinite(o[0]) || !Number.isFinite(o[1]) || !Number.isFinite(o[2]) || !Number.isFinite(o[3])) return null;
       const boundary = Array.from({ length: o[6] }, (_, j) => ({ tau: o[7 + j], S: finiteOrNull(o[7 + PDE_BOUNDARY_POINTS + j]) }));

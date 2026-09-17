@@ -57,6 +57,19 @@ const wireMarket = (m: Market) => ({
   ...(m.smileSpot != null ? { smileSpot: m.smileSpot } : {}), ...(m.term ? { term: m.term } : {}),
 });
 
+/**
+ * The wire takes the protocol's snake_case keys; the models in lib/quant/exotics.ts are camelCase. Only the fields
+ * the spec actually sets are sent, so a plain barrier is exactly the message older protocols expect.
+ */
+const wireExotic = (s: ExoticSpec): Record<string, unknown> =>
+  s.kind === 'barrier'
+    ? {
+        kind: 'barrier', call: s.call, K: s.K, T: s.T, up: s.up, levels: s.levels,
+        ...(s.monitors ? { monitors: s.monitors } : {}),
+        ...(s.rebate ? { rebate: s.rebate, rebate_at_hit: s.rebateAtHit !== false } : {}),
+      }
+    : { kind: 'asian', call: s.call, K: s.K, T: s.T, fixings: s.fixings };
+
 const numOrNull = (v: unknown): number | null => (v == null ? null : Number(v));
 const numList = (v: unknown): number[] => (Array.isArray(v) ? v.map(Number) : []);
 
@@ -342,7 +355,8 @@ export function useEngine(): Engine {
   const runExoticMc = useCallback((spec: ExoticSpec, m: Market, paths: number, seed: number, stepsPerYear: number,
                                    extrapolate: boolean) =>
     request<EngineExoticResult>({
-      type: 'mc_exotic', paths, seed, steps_per_year: stepsPerYear, extrapolate, market: wireMarket(m), spec,
+      type: 'mc_exotic', paths, seed, steps_per_year: stepsPerYear, extrapolate, market: wireMarket(m),
+      spec: wireExotic(spec),
     }, 120_000), [request]);
 
   const reconnect = useCallback(() => connectRef.current(), []);

@@ -1086,6 +1086,101 @@ static void section_discrete_barrier() {
     printf("\n  %-22s  %s\n", "Discrete barriers:", all_ok ? "ALL PASS" : "FAIL");
 }
 
+// ── Section 12: barrier rebates ─────────────────────────────────────────────
+//
+// A knock-out that pays a rebate on being extinguished, and a knock-in that pays one at expiry if the barrier is never
+// touched (Reiner & Rubinstein's E and F terms). Three methods that share no algebra: the closed form, the
+// finite-difference solver carrying the rebate as the barrier's Dirichlet value, and the simulation, which earns the
+// rebate as it loses survival — it holds a probability, not a hit time, so a rebate paid at the hit is placed at the
+// step's end and converges as the grid refines, while one paid at expiry needs only the final survival.
+//
+// Bounds fixed before the first run, as requirements: the closed form matches the PDE to 1e-4 for every barrier type
+// and both payment times; a rebate of 0 leaves every price exactly as it was; a rebate paid at the hit is worth more
+// than the same rebate paid at expiry; one time step leaves only one possible hit time, so the two must then agree
+// exactly; the simulation sits within 4 standard errors of the closed form; and out + in − vanilla is the rebate
+// discounted from expiry — exactly, since that holds path by path under any monitoring scheme.
+
+static void section_rebate() {
+    banner("12. BARRIER REBATES  (closed form, finite differences and simulation)");
+    bool all_ok = true;
+
+    VolSurface flat;
+    flat.S = 100.0; flat.r = 0.08; flat.q = 0.04; flat.sigma = 0.25;
+    const double T = 0.5, R = 3.0;
+    const double reb_expiry = R * std::exp(-flat.r * T);
+
+    struct Case { OptionType type; bool up; double K, H; };
+    const Case cases[] = { { OptionType::Call, false, 100.0, 92.0 }, { OptionType::Put, true, 100.0, 108.0 },
+                           { OptionType::Put, false, 105.0, 85.0 }, { OptionType::Call, true, 95.0, 120.0 } };
+    double worst_pde = 0.0;
+    bool   shape_ok = true;
+    for (const Case& c : cases) {
+        const BarrierPrices none = barrier_prices(c.type, c.up, flat.S, c.K, c.H, T, flat.sigma, flat.r, flat.q);
+        const BarrierPrices zero =
+            barrier_prices_rebate(c.type, c.up, flat.S, c.K, c.H, T, flat.sigma, flat.r, flat.q, 0.0, true);
+        shape_ok = shape_ok && zero.out == none.out && zero.in == none.in;
+        double at[2] = {};
+        for (int k = 0; k < 2; ++k) {
+            const bool at_hit = k == 0;
+            const BarrierPrices cf =
+                barrier_prices_rebate(c.type, c.up, flat.S, c.K, c.H, T, flat.sigma, flat.r, flat.q, R, at_hit);
+            PdeSpec sp;
+            sp.kind = PdeKind::KnockOut; sp.type = c.type; sp.K = c.K; sp.T = T; sp.H = c.H; sp.up = c.up;
+            sp.rebate = R; sp.rebate_at_hit = at_hit;
+            worst_pde = std::max(worst_pde, std::fabs(cf.out - pde_price(sp, flat, 1601, 2000).price));
+            at[k] = cf.out;
+            if (!at_hit) shape_ok = shape_ok && std::fabs(cf.out + cf.in - cf.vanilla - reb_expiry) < 1e-10;
+        }
+        shape_ok = shape_ok && at[0] > at[1];   // paid at the hit the money arrives earlier, so it is worth more
+    }
+    const bool cf_ok = worst_pde < 1e-4 && shape_ok;
+    all_ok = all_ok && cf_ok;
+    printf("  4 barrier types × 2 payment times: worst |closed form − PDE| %.1e · rebate 0 unchanged, at the hit > at expiry, in + out − vanilla = R·e^−rT  %s\n",
+           worst_pde, cf_ok ? "OK" : "*** FAIL ***");
+
+    // the simulation on the first case, at both payment times
+    ExoticSpec e;
+    e.kind = ExoticKind::Barrier; e.type = cases[0].type; e.K = cases[0].K; e.T = T; e.up = cases[0].up;
+    e.n_levels = 1; e.levels[0] = cases[0].H;
+    for (int k = 0; k < 2; ++k) {
+        const bool at_hit = k == 0;
+        ExoticSpec spec = e;
+        spec.rebate = R; spec.rebate_at_hit = at_hit;
+        const BarrierPrices cf = barrier_prices_rebate(cases[0].type, cases[0].up, flat.S, cases[0].K, cases[0].H, T,
+                                                       flat.sigma, flat.r, flat.q, R, at_hit);
+        const ExoticResult r = mc_exotic_mt(spec, flat, 400'000, 11, 365.0, true, -1);
+        const double z = zscore(r.out[0], cf.out, r.out_se[0]);
+        const bool   ok = z < 4.0;
+        all_ok = all_ok && ok;
+        printf("    down-and-out call H=92, rebate paid %-11s: %.4f ± %.4f vs closed form %.4f (|z| %.2f, %lld steps)  %s\n",
+               at_hit ? "at the hit" : "at expiry", r.out[0], r.out_se[0], cf.out, z, r.steps, ok ? "OK" : "*** FAIL ***");
+    }
+
+    // one step: the only hit time is the expiry, so the two payment times must price identically
+    ExoticSpec one_hit = e, one_exp = e;
+    one_hit.rebate = one_exp.rebate = R;
+    one_hit.rebate_at_hit = true; one_exp.rebate_at_hit = false;
+    const ExoticResult rh = mc_exotic(one_hit, flat, 50'000, 7, 2.0, true);
+    const ExoticResult re = mc_exotic(one_exp, flat, 50'000, 7, 2.0, true);
+    // discrete monitoring has no closed form here, but the identity is exact under any monitoring
+    ExoticSpec dm = e;
+    dm.n_monitors = 26; dm.rebate = R; dm.rebate_at_hit = false;
+    const ExoticResult rd = mc_exotic_mt(dm, flat, 400'000, 11, 365.0, true, -1);
+    const double identity = std::fabs(rd.out[0] + rd.in[0] - rd.vanilla - reb_expiry);
+    const bool   exact_ok = rh.steps == 1 && rh.out[0] == re.out[0] && identity < 1e-9;
+    all_ok = all_ok && exact_ok;
+    printf("    one step: at the hit %.6f = at expiry %.6f · 26 monitoring dates: |out + in − vanilla − R·e^−rT| %.1e  %s\n",
+           rh.out[0], re.out[0], identity, exact_ok ? "OK" : "*** FAIL ***");
+
+    ExoticSpec bad = e;
+    bad.rebate = -1.0;
+    const bool invalid_ok = std::isnan(mc_exotic(bad, flat, 100, 1, 365.0, true).vanilla);
+    all_ok = all_ok && invalid_ok;
+    printf("  a negative rebate → NaN  %s\n", invalid_ok ? "OK" : "*** FAIL ***");
+
+    printf("\n  %-22s  %s\n", "Barrier rebates:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -1104,6 +1199,7 @@ int main() {
     section_lsm();
     section_dual();
     section_discrete_barrier();
+    section_rebate();
 
     banner("End of Phase 1 report");
     return 0;

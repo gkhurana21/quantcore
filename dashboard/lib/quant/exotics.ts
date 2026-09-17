@@ -1,8 +1,10 @@
 // Path-dependent options in closed form under Black-Scholes-Merton (flat volatility):
 //
-//  • Barrier options, continuously monitored, no rebate — Reiner & Rubinstein (1991), as tabulated by
-//    Haug (The Complete Guide to Option Pricing Formulas, §4.17). Knock-out prices come from the formulas;
-//    knock-in prices from in-out parity, in + out = vanilla, which holds path by path without rebates.
+//  • Barrier options — Reiner & Rubinstein (1991), as tabulated by Haug (The Complete Guide to Option Pricing
+//    Formulas, §4.17). Knock-out prices come from the formulas; knock-in prices from in-out parity,
+//    in + out = vanilla, which holds path by path without rebates. barrierPricesDiscrete corrects the price for a
+//    barrier watched on a finite number of dates (Broadie–Glasserman–Kou), and barrierPricesRebate adds the rebate
+//    terms E and F, which break that parity by exactly the rebate's discounted value.
 //  • Geometric-average Asian options on n equally spaced fixings t_i = T·i/n: ln G is normal with mean
 //    ln S + (r − q − σ²/2)·T(n + 1)/(2n) and variance σ²·T(n + 1)(2n + 1)/(6n²), so the price is
 //    Black-Scholes-like. It is the exact reference, and the control variate, for arithmetic averages under GBM.
@@ -67,6 +69,40 @@ export function barrierPricesDiscrete(call: boolean, up: boolean, S: number, K: 
   return barrierPrices(call, up, S, K, H * shift, T, sigma, r, q);
 }
 
+/**
+ * Barrier option paying a rebate, continuously monitored (Reiner & Rubinstein's E and F terms). The knock-out pays
+ * `rebate` when the barrier is hit if `atHit`, otherwise at expiry — the first is worth more, the money arriving
+ * earlier. The knock-in pays it at expiry when the barrier is never touched.
+ *
+ * A rebate breaks in-out parity. With the rebate paid at expiry the two sides together pay it in every state, so
+ * in + out − vanilla is exactly R·e^(−rT); paid at the hit, the out side is worth more still. Parity is restored
+ * exactly when `rebate` is 0.
+ */
+export function barrierPricesRebate(call: boolean, up: boolean, S: number, K: number, H: number, T: number,
+                                    sigma: number, r: number, q: number, rebate: number, atHit: boolean): BarrierPrices {
+  const p = barrierPrices(call, up, S, K, H, T, sigma, r, q);
+  if (!(rebate > 0) || !Number.isFinite(rebate)) return p;
+  if (up ? S >= H : S <= H) {
+    // already through the barrier: the out side is the rebate alone, and the in side can no longer earn one
+    return { out: atHit ? rebate : rebate * Math.exp(-r * T), in: p.in, vanilla: p.vanilla };
+  }
+  if (!(T > 0) || !(sigma > 0) || !(H > 0)) return p;
+
+  const sd = sigma * Math.sqrt(T);
+  const mu = (r - q - (sigma * sigma) / 2) / (sigma * sigma);
+  const lambda = Math.sqrt(mu * mu + (2 * r) / (sigma * sigma));
+  const eta = up ? -1 : 1;
+  const hs = H / S;
+  const x2 = Math.log(S / H) / sd + (1 + mu) * sd;
+  const y2 = Math.log(H / S) / sd + (1 + mu) * sd;
+  const z = Math.log(H / S) / sd + lambda * sd;
+  const noHit = normCdf(eta * (x2 - sd)) - Math.pow(hs, 2 * mu) * normCdf(eta * (y2 - sd));
+  const f = rebate * (Math.pow(hs, mu + lambda) * normCdf(eta * z) +
+                      Math.pow(hs, mu - lambda) * normCdf(eta * (z - 2 * lambda * sd)));
+  const dr = Math.exp(-r * T);
+  return { out: p.out + (atHit ? f : rebate * dr * (1 - noHit)), in: p.in + rebate * dr * noHit, vanilla: p.vanilla };
+}
+
 /** Geometric-average Asian option on n equally spaced fixings T·i/n, i = 1..n (flat volatility). */
 export function geometricAsianPrice(call: boolean, S: number, K: number, T: number, n: number,
                                     sigma: number, r: number, q: number): number {
@@ -101,7 +137,8 @@ export const MAX_BARRIER_MONITORS = 2000;
  * equally spaced dates the barrier is tested on; absent or 0 monitors it continuously.
  */
 export type ExoticSpec =
-  | { kind: 'barrier'; call: boolean; K: number; T: number; up: boolean; levels: number[]; monitors?: number }
+  | { kind: 'barrier'; call: boolean; K: number; T: number; up: boolean; levels: number[]; monitors?: number;
+      rebate?: number; rebateAtHit?: boolean }
   | { kind: 'asian'; call: boolean; K: number; T: number; fixings: number };
 
 /**

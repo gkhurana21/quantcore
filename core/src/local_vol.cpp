@@ -410,6 +410,8 @@ struct ExoticPlan {
     std::size_t n_mon = 0;                    // barrier monitoring dates; 0 monitors continuously
     std::size_t n_fix = 0;
     double K = 0.0, df = 1.0;
+    double rebate = 0.0, r = 0.0;             // r discounts a rebate to the step it is earned at
+    bool   at_hit = true;
 };
 
 bool valid_exotic(const ExoticSpec& e, const VolSurface& s, long long paths, double spy) {
@@ -418,7 +420,8 @@ bool valid_exotic(const ExoticSpec& e, const VolSurface& s, long long paths, dou
     if (e.kind == ExoticKind::Barrier) {
         if (e.n_levels < 1 || e.n_levels > static_cast<int>(kMaxBarrierLevels)) return false;
         for (int j = 0; j < e.n_levels; ++j) if (!(e.levels[j] > 0.0) || !std::isfinite(e.levels[j])) return false;
-        return e.n_monitors >= 0 && e.n_monitors <= static_cast<int>(kMaxBarrierMonitors);
+        return e.n_monitors >= 0 && e.n_monitors <= static_cast<int>(kMaxBarrierMonitors) &&
+               e.rebate >= 0.0 && std::isfinite(e.rebate);
     }
     return e.kind == ExoticKind::Asian && e.n_fixings >= 1 && e.n_fixings <= static_cast<int>(kMaxAsianFixings);
 }
@@ -429,6 +432,9 @@ bool build_exotic_plan(ExoticPlan& p, const ExoticSpec& e, const VolSurface& s, 
     p.up = e.up;
     p.K = e.K;
     p.df = std::exp(-s.r * e.T);
+    p.r = s.r;
+    p.rebate = p.barrier ? e.rebate : 0.0;
+    p.at_hit = e.rebate_at_hit;
     if (p.barrier) {
         p.M = static_cast<std::size_t>(e.n_levels);
         for (std::size_t j = 0; j < p.M; ++j) p.h[j] = std::log(e.levels[j]);
@@ -474,23 +480,25 @@ struct ExoticSums {
     }
 };
 
-// One grid's state for a block of paths: log price, survival per level (sv[j·kBlock + b]), running average sums.
-struct PathState { double* x; double* sv; double* asum; double* gsum; };
+// One grid's state for a block of paths: log price, survival per level (sv[j·kBlock + b]), the discounted rebate
+// earned so far per level (reb[j·kBlock + b]; zero unless the barrier pays one), running average sums.
+struct PathState { double* x; double* sv; double* reb; double* asum; double* gsum; };
 
 ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, bool richardson) {
     const Grid& g = p.g;
     ExoticSums out;
     const std::size_t M = p.M;
-    const std::size_t per = kBlock * (3 + M);
+    const std::size_t per = kBlock * (3 + 2 * M);
     const std::size_t grids = richardson ? 2 : 1;
     double* mem = static_cast<double*>(std::calloc(grids * per + 2 * kBlock, sizeof(double)));
     if (!mem) { out.ok = false; return out; }
     auto state = [&](std::size_t k) {
         double* base = mem + k * per;
-        return PathState{base, base + kBlock, base + kBlock * (1 + M), base + kBlock * (2 + M)};
+        return PathState{base, base + kBlock, base + kBlock * (1 + M), base + kBlock * (1 + 2 * M),
+                         base + kBlock * (2 + 2 * M)};
     };
     const PathState F = state(0);
-    const PathState C = richardson ? state(1) : PathState{nullptr, nullptr, nullptr, nullptr};
+    const PathState C = richardson ? state(1) : PathState{nullptr, nullptr, nullptr, nullptr, nullptr};
     double* z1 = mem + grids * per, * z2 = z1 + kBlock;
 
     std::mt19937_64 rng(seed);
@@ -498,33 +506,51 @@ ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, 
     const double inv_n = p.n_fix ? 1.0 / static_cast<double>(p.n_fix) : 0.0;
     const bool up = p.up;
     const bool discrete = p.n_mon > 0;   // the barrier is tested on the monitoring dates only, never between them
+    const bool rebate_on = p.rebate > 0.0;
 
     const double kInf = std::numeric_limits<double>::infinity();
     double xn[kBlock], inv_var[kBlock];
     // Barrier survival over a step from st.x to xn: a Brownian bridge with step variance 1/inv_var stays on the far side
     // of the log barrier h with probability 1 − exp(−2(x₀ − h)(x₁ − h)/v). One level at a time over the block, so the
     // loop is a plain pass the compiler can vectorise; the exponential is skipped once it is below e^−40.
-    auto bridge = [&](const PathState& st, std::size_t B) {
+    auto bridge = [&](const PathState& st, std::size_t B, double df_hit) {
         for (std::size_t j = 0; j < M; ++j) {
             const double h = p.h[j];
             double* sv = st.sv + j * kBlock;
+            if (!rebate_on) {
+                for (std::size_t b = 0; b < B; ++b) {
+                    const double a = up ? h - st.x[b] : st.x[b] - h, c = up ? h - xn[b] : xn[b] - h;
+                    if (!(a > 0.0) || !(c > 0.0)) { sv[b] = 0.0; continue; }
+                    const double e = 2.0 * a * c * inv_var[b];
+                    if (e <= 40.0) sv[b] *= -std::expm1(-e);
+                }
+                continue;
+            }
+            // paying a rebate, the probability of touching during this step is earned here, discounted to the step's
+            // end — the hit's time is not sampled, so this carries an O(Δt) timing error that shrinks with the step
+            double* reb = st.reb + j * kBlock;
             for (std::size_t b = 0; b < B; ++b) {
                 const double a = up ? h - st.x[b] : st.x[b] - h, c = up ? h - xn[b] : xn[b] - h;
-                if (!(a > 0.0) || !(c > 0.0)) { sv[b] = 0.0; continue; }
+                if (!(a > 0.0) || !(c > 0.0)) { reb[b] += sv[b] * df_hit; sv[b] = 0.0; continue; }
                 const double e = 2.0 * a * c * inv_var[b];
-                if (e <= 40.0) sv[b] *= -std::expm1(-e);
+                if (e <= 40.0) {
+                    const double w = -std::expm1(-e);
+                    reb[b] += sv[b] * (1.0 - w) * df_hit;
+                    sv[b] *= w;
+                }
             }
         }
     };
     // one grid's paths by one log-Euler step at the local variance, then the bridge
-    auto step_smile = [&](const PathState& st, std::size_t B, const Slice& sl, double h_dt, double sq, const double* z) {
+    auto step_smile = [&](const PathState& st, std::size_t B, const Slice& sl, double h_dt, double sq, const double* z,
+                          double df_hit) {
         for (std::size_t b = 0; b < B; ++b) {
             const double v = lvar(rho, omr2, sl, st.x[b]);
             xn[b] = st.x[b] + (carry - 0.5 * v) * h_dt + std::sqrt(v) * sq * z[b];
             const double var = v * h_dt;
             inv_var[b] = var > 0.0 ? 1.0 / var : kInf;
         }
-        if (M && !discrete) bridge(st, B);
+        if (M && !discrete) bridge(st, B, df_hit);
         std::copy(xn, xn + B, st.x);
     };
 
@@ -533,26 +559,33 @@ ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, 
         for (std::size_t k = 0; k < grids; ++k) {
             const PathState st = k ? C : F;
             std::fill(st.x, st.x + B, g.x0);
-            for (std::size_t j = 0; j < M; ++j) std::fill(st.sv + j * kBlock, st.sv + j * kBlock + B, 1.0);
+            for (std::size_t j = 0; j < M; ++j) {
+                std::fill(st.sv + j * kBlock, st.sv + j * kBlock + B, 1.0);
+                std::fill(st.reb + j * kBlock, st.reb + j * kBlock + B, 0.0);
+            }
             std::fill(st.asum, st.asum + B, 0.0);
             std::fill(st.gsum, st.gsum + B, 0.0);
         }
         std::size_t r = 0;   // next fixing
         for (std::size_t i = 0; i < g.n; ++i) {
+            // the rebate earned in this step, discounted to where the hit is placed: the step's end, or the midpoint
+            // for the fine grid's first half step. The amount is folded in here, so the accumulator holds money.
+            const double df_end = rebate_on ? p.rebate * std::exp(-p.r * g.times[i + 1]) : 0.0;
+            const double df_mid = rebate_on ? p.rebate * std::exp(-p.r * 0.5 * (g.times[i] + g.times[i + 1])) : 0.0;
             if (richardson) {
                 for (std::size_t b = 0; b < B; ++b) {
                     z1[b] = normal_ziggurat(rng);
                     z2[b] = normal_ziggurat(rng);
                 }
                 const double dt = g.dt[i], hdt = g.hdt[i], sq = g.sqhdt[i];
-                step_smile(F, B, g.fine[2 * i], hdt, sq, z1);
-                step_smile(F, B, g.fine[2 * i + 1], hdt, sq, z2);
+                step_smile(F, B, g.fine[2 * i], hdt, sq, z1, df_mid);
+                step_smile(F, B, g.fine[2 * i + 1], hdt, sq, z2, df_end);
                 for (std::size_t b = 0; b < B; ++b) z2[b] += z1[b];   // the coarse step's increment
-                step_smile(C, B, g.coarse[i], dt, sq, z2);
+                step_smile(C, B, g.coarse[i], dt, sq, z2, df_end);
             } else {
                 for (std::size_t b = 0; b < B; ++b) z1[b] = normal_ziggurat(rng);
                 if (g.smile) {
-                    step_smile(F, B, g.mid[i], g.dt[i], g.sqdt[i], z1);
+                    step_smile(F, B, g.mid[i], g.dt[i], g.sqdt[i], z1, df_end);
                 } else {
                     // no smile: the step's variance is exact, so the bridge weight is too
                     const double dv = g.var_inc[i], drift = carry * g.dt[i] - 0.5 * dv, sd = std::sqrt(dv);
@@ -561,7 +594,7 @@ ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, 
                         xn[b] = F.x[b] + drift + sd * z1[b];
                         inv_var[b] = inv;
                     }
-                    if (M && !discrete) bridge(F, B);
+                    if (M && !discrete) bridge(F, B, df_end);
                     std::copy(xn, xn + B, F.x);
                 }
             }
@@ -579,8 +612,12 @@ ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, 
                         for (std::size_t j = 0; j < M; ++j) {
                             const double h = p.h[j];
                             double*      sv = st.sv + j * kBlock;
+                            double*      reb = st.reb + j * kBlock;
                             for (std::size_t b = 0; b < B; ++b) {
-                                if (up ? st.x[b] >= h : st.x[b] <= h) sv[b] = 0.0;
+                                if (up ? st.x[b] >= h : st.x[b] <= h) {
+                                    if (rebate_on) reb[b] += sv[b] * df_end;   // exact: the hit is on this date
+                                    sv[b] = 0.0;
+                                }
                             }
                         }
                     }
@@ -590,6 +627,8 @@ ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, 
         }
 
         const double df = p.df, K = p.K;
+        const double reb_expiry = p.rebate * p.df;   // a rebate paid at expiry, whichever side earns it
+        const bool at_hit = p.at_hit;
         const bool call = p.call;
         auto pay = [call, K, df](double s) { return df * std::max(call ? s - K : K - s, 0.0); };
         for (std::size_t b = 0; b < B; ++b) {
@@ -600,10 +639,19 @@ ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, 
             out.van2 += van * van;
             out.van_gap += vc - vf;
             for (std::size_t j = 0; j < M; ++j) {
-                const double of = F.sv[j * kBlock + b] * vf;
-                const double oc = richardson ? C.sv[j * kBlock + b] * vc : 0.0;
+                // the knock-out keeps the payoff where it survived and adds the rebate it earned; the knock-in pays
+                // where it did not survive, and earns its rebate at expiry where it did. Without a rebate these are
+                // exactly the old sv·payoff and vanilla − knock-out.
+                const double svf = F.sv[j * kBlock + b];
+                const double svc = richardson ? C.sv[j * kBlock + b] : 0.0;
+                const double of = svf * vf + (rebate_on ? (at_hit ? F.reb[j * kBlock + b] : reb_expiry * (1.0 - svf)) : 0.0);
+                const double oc = richardson
+                    ? svc * vc + (rebate_on ? (at_hit ? C.reb[j * kBlock + b] : reb_expiry * (1.0 - svc)) : 0.0)
+                    : 0.0;
                 const double o = richardson ? 2 * of - oc : of;
-                const double kin = van - o;
+                const double in_f = (1.0 - svf) * vf + (rebate_on ? reb_expiry * svf : 0.0);
+                const double in_c = richardson ? (1.0 - svc) * vc + (rebate_on ? reb_expiry * svc : 0.0) : 0.0;
+                const double kin = richardson ? 2 * in_f - in_c : in_f;
                 out.out[j] += o;
                 out.out2[j] += o * o;
                 out.out_gap[j] += oc - of;

@@ -59,6 +59,8 @@ PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int ste
     res.steps = steps;
     if (knock && (spec.up ? S >= spec.H : S <= spec.H)) {   // the barrier has already been crossed
         res.nodes = nodes;
+        // nothing is left but the rebate: due now if it is paid at the hit, otherwise at expiry
+        res.price = spec.rebate > 0.0 ? (spec.rebate_at_hit ? spec.rebate : spec.rebate * std::exp(-s.r * spec.T)) : 0.0;
         return res;
     }
 
@@ -104,7 +106,13 @@ PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int ste
         const double call_hi = std::max(S_hi * dq - K * dr, 0.0), put_lo = std::max(K * dr - S_lo * dq, 0.0);
         v_lo = call ? 0.0 : (american ? std::max(put_lo, K - S_lo) : put_lo);
         v_hi = call ? (american ? std::max(call_hi, S_hi - K) : call_hi) : 0.0;
-        if (knock) (spec.up ? v_hi : v_lo) = 0.0;
+        // at the barrier the option is extinguished and worth only its rebate: that amount at the hit, or its
+        // discounted value when the rebate is not paid until expiry
+        if (knock) {
+            (spec.up ? v_hi : v_lo) = spec.rebate > 0.0
+                ? (spec.rebate_at_hit ? spec.rebate : spec.rebate * std::exp(-r * tau))
+                : 0.0;
+        }
     };
     ends(0.0, V[0], V[n]);
 

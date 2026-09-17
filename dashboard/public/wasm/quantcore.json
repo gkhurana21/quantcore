@@ -1,5 +1,5 @@
 {
-  "abi": 7,
+  "abi": 8,
   "emscripten": "6.0.9",
   "flags": [
     "-std=c++17",
@@ -18,8 +18,8 @@
     "-sINITIAL_MEMORY=8388608",
     "-sALLOW_MEMORY_GROWTH=0"
   ],
-  "bytes": 85457,
-  "sha256": "e54e60151647e10bc2d5c7dd0697e250f73ffb06853db25add559aa3c12c73bf",
+  "bytes": 86393,
+  "sha256": "c89d3d54ad810995f27e67d82cb7fa23350f323d84d18d9c901bacfe2bf40f57",
   "sources": [
     {
       "path": "core/src/black_scholes.cpp",
@@ -35,15 +35,15 @@
     },
     {
       "path": "core/src/local_vol.cpp",
-      "sha256": "1f5024b942d09ab27bae890d18e8dc72a7ba89e33218cf41cfbc1fefd83638b3"
+      "sha256": "e9574d438f293e1d4b863c2a7b023e2b75f06189801c9c03375208ea7e87621d"
     },
     {
       "path": "core/src/exotics.cpp",
-      "sha256": "8238a6a4dd123542e6f0b29108955d4f24027d2a27490ac753a9acc710746d4f"
+      "sha256": "c7fb3ef7e9ea48150515242c0c74bce2d26b41a2dfd6b937e9b2528a22d45176"
     },
     {
       "path": "core/src/pde.cpp",
-      "sha256": "1b39a1218788efa5cdeddfeeba9b39596625e9d3c6ad24f934593e6a2dc79def"
+      "sha256": "65835c934bd8ba14b225a04428e9dc0f1ba21c31dee578b509e20b8b6bd4b0bb"
     },
     {
       "path": "core/src/lsm.cpp",
@@ -51,7 +51,7 @@
     },
     {
       "path": "bindings/quantcore_wasm.cpp",
-      "sha256": "61a539390de5ce91e629ec3f6e16d324125e88a79a1fac30bee59c5565243105"
+      "sha256": "b3b51cdddf026d4313887cc5f18a2def217c612e6b567d679151e60820958f53"
     },
     {
       "path": "core/include/quantcore/black_scholes.hpp",
@@ -75,11 +75,11 @@
     },
     {
       "path": "core/include/quantcore/exotics.hpp",
-      "sha256": "5689d6aae7b1a8f83b6e5858e22fbb5bd08fdb86391d8fdbd6a18980e197b27f"
+      "sha256": "284a4a47cd8cf1b70be0094976baff621e0240e3fe0933e5f6df8cde30993ec3"
     },
     {
       "path": "core/include/quantcore/pde.hpp",
-      "sha256": "04a0a110e3fc30a243357809bd9de32a2762c47d82f8a649d9993891840c5fae"
+      "sha256": "cd913bab083e6812e948db4799196cb452c50a7f6a4c5a200b1b8230ee9a594f"
     },
     {
       "path": "core/include/quantcore/lsm.hpp",

@@ -53,6 +53,32 @@ BarrierPrices barrier_prices_discrete(OptionType type, bool up, double S, double
     return barrier_prices(type, up, S, K, H * shift, T, sigma, r, q);
 }
 
+BarrierPrices barrier_prices_rebate(OptionType type, bool up, double S, double K, double H, double T,
+                                    double sigma, double r, double q, double rebate, bool at_hit) {
+    const BarrierPrices p = barrier_prices(type, up, S, K, H, T, sigma, r, q);
+    if (!(rebate > 0.0) || !std::isfinite(rebate)) return p;
+    if (up ? S >= H : S <= H) {
+        // already through the barrier: the out side is the rebate alone, and the in side can no longer earn one
+        return BarrierPrices{at_hit ? rebate : rebate * std::exp(-r * T), p.in, p.vanilla};
+    }
+    if (!(T > 0.0) || !(sigma > 0.0) || !(H > 0.0)) return p;   // the barrier can never be reached
+
+    const double sd = sigma * std::sqrt(T);
+    const double mu = (r - q - (sigma * sigma) / 2) / (sigma * sigma);
+    const double lambda = std::sqrt(mu * mu + (2.0 * r) / (sigma * sigma));
+    const double eta = up ? -1.0 : 1.0;
+    const double hs = H / S;
+    const double x2 = std::log(S / H) / sd + (1 + mu) * sd;
+    const double y2 = std::log(H / S) / sd + (1 + mu) * sd;
+    const double z = std::log(H / S) / sd + lambda * sd;
+    const double no_hit = norm_cdf(eta * (x2 - sd)) - std::pow(hs, 2 * mu) * norm_cdf(eta * (y2 - sd));
+    const double f = rebate * (std::pow(hs, mu + lambda) * norm_cdf(eta * z) +
+                               std::pow(hs, mu - lambda) * norm_cdf(eta * (z - 2.0 * lambda * sd)));
+    const double dr = std::exp(-r * T);
+    const double out_rebate = at_hit ? f : rebate * dr * (1.0 - no_hit);
+    return BarrierPrices{p.out + out_rebate, p.in + rebate * dr * no_hit, p.vanilla};
+}
+
 double geometric_asian_price(OptionType type, double S, double K, double T, int n_fixings,
                              double sigma, double r, double q) {
     if (!(T > 0.0) || !(sigma > 0.0) || n_fixings < 1) return intrinsic(type, S, K);

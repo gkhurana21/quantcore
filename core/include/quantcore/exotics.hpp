@@ -46,6 +46,22 @@ inline constexpr double kBgkBeta = 0.5825971579390106;
 BarrierPrices barrier_prices_discrete(OptionType type, bool up, double S, double K, double H, double T,
                                       double sigma, double r, double q, int n_monitors);
 
+/**
+ * Barrier option paying a rebate, continuously monitored (Reiner & Rubinstein's E and F terms).
+ *
+ * The knock-out pays `rebate` when the barrier is hit if `at_hit`, otherwise at expiry — the first is worth more,
+ * since the money arrives earlier. The knock-in pays it at expiry when the barrier is never touched, which is the
+ * usual convention for the in side. With μ = (r − q − σ²/2)/σ², λ = √(μ² + 2r/σ²) and η = +1 below the spot:
+ *   P(no hit) = N(η(x₂ − σ√T)) − (H/S)^{2μ}·N(η(y₂ − σ√T))
+ *   at the hit  F = R·[ (H/S)^{μ+λ}·N(ηz) + (H/S)^{μ−λ}·N(η(z − 2λσ√T)) ],   z = ln(H/S)/σ√T + λσ√T
+ *   at expiry   R·e^{−rT}·(1 − P(no hit)) for the out side, R·e^{−rT}·P(no hit) for the in side
+ *
+ * A rebate breaks in-out parity: in + out exceeds the vanilla by the rebate's value, and the two sides are paid in
+ * different states. Parity holds again exactly when `rebate` is 0, which is also the default everywhere.
+ */
+BarrierPrices barrier_prices_rebate(OptionType type, bool up, double S, double K, double H, double T,
+                                    double sigma, double r, double q, double rebate, bool at_hit);
+
 /** Geometric-average Asian option on n equally spaced fixings, flat volatility. */
 double geometric_asian_price(OptionType type, double S, double K, double T, int n_fixings,
                              double sigma, double r, double q);
@@ -66,6 +82,8 @@ struct ExoticSpec {
     int    n_levels = 0;                        // barrier: levels priced on the same paths
     double levels[kMaxBarrierLevels] = {};
     int    n_monitors = 0;                      // barrier: monitoring dates k·T/m; 0 monitors continuously
+    double rebate = 0.0;                        // barrier: paid when the barrier is hit, or at expiry
+    bool   rebate_at_hit = true;
     int    n_fixings = 0;                       // asian
 };
 

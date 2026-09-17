@@ -36,6 +36,11 @@ Server → Client  result:
     {"type":"result","price":...,"delta":...,"gamma":...,"theta":...,
      "vega":...,"pnl":...,"t_ns":<echo>,"calc_us":...}
 
+v9 — mc_exotic gains spec.rebate (≥ 0) and spec.rebate_at_hit: the knock-out pays the rebate when the barrier is
+hit, or at expiry when rebate_at_hit is false, and the knock-in pays it at expiry when the barrier is never touched.
+A rebate breaks in-out parity — paid at expiry, out + in exceeds the vanilla by exactly rebate·e^(−rT). Absent or 0
+pays no rebate and the exchange is exactly the v8 one.
+
 v8 — mc_exotic gains spec.monitors (1…2000): the barrier is tested only on that many equally spaced dates k·T/m
 instead of continuously, and mc_exotic_result carries "monitors" (0 when monitored continuously). A barrier checked
 on only m dates is harder to breach, so a discretely monitored knock-out is worth more than the continuous one.
@@ -111,7 +116,7 @@ import quantcore
 
 app = FastAPI()
 
-PROTOCOL_VERSION = 8
+PROTOCOL_VERSION = 9
 MAX_LEGS         = 64
 MAX_PATHS        = 10_000_000
 MAX_LV_WORK      = 4_000_000_000    # paths × coarse steps for one local-vol run
@@ -285,6 +290,10 @@ def _exotic(raw) -> dict:
         # absent monitors the barrier continuously, which is what every client before protocol 8 asked for
         if raw.get("monitors") is not None:
             spec["monitors"] = int(_number(raw, "monitors", 1, 2000))
+        # absent or 0 pays no rebate, as every client before protocol 9 expected
+        if raw.get("rebate") is not None:
+            spec["rebate"] = _number(raw, "rebate", 0, 1e9)
+            spec["rebate_at_hit"] = bool(raw.get("rebate_at_hit", True))
     else:
         spec["fixings"] = int(_number(raw, "fixings", 1, 2000))
     return spec

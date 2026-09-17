@@ -30,8 +30,9 @@ double g_legs[kMaxLegs * 5];   // portfolio input: [call (0/1), K, T, sigma, wei
 double g_surface[kSurfaceSize];
 constexpr int kLevels = static_cast<int>(quantcore::kMaxBarrierLevels);
 constexpr int kMonitors = static_cast<int>(quantcore::kMaxBarrierMonitors);
-// exotic input: kind (0 barrier, 1 asian), call (0/1), K, T, up (0/1), n_levels, levels × 16, n_fixings, n_monitors
-constexpr int kExoticSpecSize = 8 + kLevels;
+// exotic input: kind (0 barrier, 1 asian), call (0/1), K, T, up (0/1), n_levels, levels × 16, n_fixings, n_monitors,
+// rebate, rebate_at_hit (0/1)
+constexpr int kExoticSpecSize = 10 + kLevels;
 double g_exotic_spec[kExoticSpecSize];
 // exotic output: paths, steps, vanilla, vanilla_se, vanilla_fine_bias, n_levels, out × 16, out_se × 16,
 // out_fine_bias × 16, in × 16, in_se × 16, arith, arith_se, arith_fine_bias, geo, geo_se, arith_geo_cov, n_monitors
@@ -69,7 +70,7 @@ quantcore::VolSurface read_surface() {
 extern "C" {
 
 // Bumped whenever a signature or the output layout changes.
-EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 7; }
+EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 8; }
 
 EMSCRIPTEN_KEEPALIVE double* qc_out() { return g_out; }
 
@@ -170,6 +171,18 @@ EMSCRIPTEN_KEEPALIVE void qc_barrier_prices_discrete(int call, int up, double S,
     g_out[2] = p.vanilla;
 }
 
+// out: knock-out, knock-in, vanilla — the knock-out pays `rebate` on hitting the barrier when at_hit, otherwise at
+// expiry, and the knock-in pays it at expiry when the barrier is never touched (Reiner-Rubinstein E and F).
+EMSCRIPTEN_KEEPALIVE void qc_barrier_prices_rebate(int call, int up, double S, double K, double H, double T,
+                                                   double sigma, double r, double q, double rebate, int at_hit) {
+    const quantcore::BarrierPrices p =
+        quantcore::barrier_prices_rebate(call ? OptionType::Call : OptionType::Put, up != 0, S, K, H, T, sigma, r, q,
+                                         rebate, at_hit != 0);
+    g_out[0] = p.out;
+    g_out[1] = p.in;
+    g_out[2] = p.vanilla;
+}
+
 EMSCRIPTEN_KEEPALIVE double qc_geometric_asian(int call, double S, double K, double T, int n, double sigma, double r, double q) {
     return quantcore::geometric_asian_price(call ? OptionType::Call : OptionType::Put, S, K, T, n, sigma, r, q);
 }
@@ -189,6 +202,8 @@ EMSCRIPTEN_KEEPALIVE void qc_mc_exotic(double paths, double seed, double steps_p
     e.n_fixings = static_cast<int>(v[6 + kLevels]);
     const int n_monitors = static_cast<int>(v[7 + kLevels]);
     e.n_monitors = n_monitors < 0 ? -1 : (n_monitors > kMonitors ? kMonitors + 1 : n_monitors);   // out of range fails validation
+    e.rebate = v[8 + kLevels];                    // negative or not finite fails validation
+    e.rebate_at_hit = v[9 + kLevels] != 0.0;
     const quantcore::ExoticResult r =
         quantcore::mc_exotic(e, read_surface(), static_cast<long long>(paths), static_cast<uint64_t>(seed), steps_per_year, extrapolate != 0);
     double* o = g_exotic_out;
@@ -218,8 +233,10 @@ EMSCRIPTEN_KEEPALIVE void qc_mc_exotic(double paths, double seed, double steps_p
 EMSCRIPTEN_KEEPALIVE double* qc_pde_out() { return g_pde_out; }
 EMSCRIPTEN_KEEPALIVE int qc_pde_out_size() { return kPdeOutSize; }
 
-// Finite differences on the surface in qc_surface(). kind: 0 European, 1 American, 2 knock-out. Results in qc_pde_out().
-EMSCRIPTEN_KEEPALIVE void qc_pde(int kind, int call, double K, double T, double H, int up, int nodes, int steps) {
+// Finite differences on the surface in qc_surface(). kind: 0 European, 1 American, 2 knock-out; a knock-out's rebate
+// is paid at the hit when rebate_at_hit, otherwise at expiry. Results in qc_pde_out().
+EMSCRIPTEN_KEEPALIVE void qc_pde(int kind, int call, double K, double T, double H, int up, int nodes, int steps,
+                                 double rebate, int rebate_at_hit) {
     quantcore::PdeSpec p;
     p.kind = kind == 1 ? quantcore::PdeKind::American : kind == 2 ? quantcore::PdeKind::KnockOut : quantcore::PdeKind::European;
     p.type = call ? OptionType::Call : OptionType::Put;
@@ -227,6 +244,8 @@ EMSCRIPTEN_KEEPALIVE void qc_pde(int kind, int call, double K, double T, double 
     p.T = T;
     p.H = H;
     p.up = up != 0;
+    p.rebate = rebate;
+    p.rebate_at_hit = rebate_at_hit != 0;
     const quantcore::PdeResult r = quantcore::pde_price(p, read_surface(), nodes, steps);
     double* o = g_pde_out;
     o[0] = r.price;

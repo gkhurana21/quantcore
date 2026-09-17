@@ -24,7 +24,9 @@ namespace quantcore {
  *              iteration. Brennan–Schwartz, which assumes the exercise region is one interval from the grid's edge,
  *              gave a 1y local-vol put whose price moved with the grid's width (53.28 → 51.06); policy iteration
  *              agrees to 1e-5 at every width. The early-exercise boundary is recorded.
- *   KnockOut   continuously monitored, no rebate: V = 0 on an end node placed exactly at ln H, the far boundary as
+ *   KnockOut   continuously monitored: the barrier is an end node placed exactly at ln H, holding V = 0 without a
+ *              rebate, the rebate itself when one is paid at the hit, or R·e^{−rτ} when it is paid at expiry with τ
+ *              still to run; the far boundary as
  *              European
  *
  * Greeks at S₀ from the grid: Δ = V_x/S, Γ = (V_xx − V_x)/S², Θ = ∂V/∂t per year from the PDE itself
@@ -40,6 +42,8 @@ struct PdeSpec {
     double     T = 0.0;
     double     H = 0.0;        // knock-out barrier
     bool       up = false;     // knock-out: the barrier is above spot
+    double     rebate = 0.0;        // knock-out: paid on hitting the barrier, or at expiry
+    bool       rebate_at_hit = true;
 };
 
 inline constexpr int kMinPdeNodes = 21;

@@ -86,6 +86,9 @@ static ExoticSpec exotic_from(const py::dict& d) {
         std::copy(levels.begin(), levels.end(), e.levels);
         // absent, none or 0 monitors the barrier continuously
         if (d.contains("monitors") && !d["monitors"].is_none()) e.n_monitors = d["monitors"].cast<int>();
+        // absent or 0 pays no rebate; "rebate_at_hit" false pays it at expiry instead
+        if (d.contains("rebate") && !d["rebate"].is_none()) e.rebate = d["rebate"].cast<double>();
+        if (d.contains("rebate_at_hit") && !d["rebate_at_hit"].is_none()) e.rebate_at_hit = d["rebate_at_hit"].cast<bool>();
     } else if (kind == "asian") {
         e.kind = ExoticKind::Asian;
         e.n_fixings = d["fixings"].cast<int>();
@@ -113,7 +116,8 @@ static py::dict exotic_dict(const ExoticResult& r) {
                     "arith_geo_cov"_a = finite_or_none(r.arith_geo_cov));
 }
 
-// A finite-difference option from {"kind": "european"|"american"|"knockout", "call", "K", "T", "H"?, "up"?}
+// A finite-difference option from {"kind": "european"|"american"|"knockout", "call", "K", "T", "H"?, "up"?,
+// "rebate"?, "rebate_at_hit"?}
 static PdeSpec pde_from(const py::dict& d) {
     PdeSpec p;
     const std::string kind = d["kind"].cast<std::string>();
@@ -127,6 +131,9 @@ static PdeSpec pde_from(const py::dict& d) {
     if (p.kind == PdeKind::KnockOut) {
         p.H = d["H"].cast<double>();
         p.up = d["up"].cast<bool>();
+        // absent or 0 pays no rebate; "rebate_at_hit" false pays it at expiry instead
+        if (d.contains("rebate") && !d["rebate"].is_none()) p.rebate = d["rebate"].cast<double>();
+        if (d.contains("rebate_at_hit") && !d["rebate_at_hit"].is_none()) p.rebate_at_hit = d["rebate_at_hit"].cast<bool>();
     }
     return p;
 }
@@ -414,6 +421,20 @@ PYBIND11_MODULE(quantcore, m) {
           "continuous formula with the barrier moved away from the spot to H*exp(+/-beta*sigma*sqrt(T/m)), "
           "beta = -zeta(1/2)/sqrt(2*pi). A discretely monitored knock-out is worth more than the continuously "
           "monitored one; monitors < 1 prices continuous monitoring.");
+
+    m.def("barrier_prices_rebate",
+          [](bool call, bool up, double S, double K, double H, double T, double sigma, double r, double q,
+             double rebate, bool at_hit) {
+              const BarrierPrices p = barrier_prices_rebate(call ? OptionType::Call : OptionType::Put, up, S, K, H, T,
+                                                            sigma, r, q, rebate, at_hit);
+              return py::dict("out"_a = p.out, "in"_a = p.in, "vanilla"_a = p.vanilla);
+          },
+          py::arg("call"), py::arg("up"), py::arg("S"), py::arg("K"), py::arg("H"), py::arg("T"), py::arg("sigma"),
+          py::arg("r"), py::arg("q") = 0.0, py::arg("rebate") = 0.0, py::arg("at_hit") = true,
+          "Barrier option paying a rebate (Reiner & Rubinstein's E and F terms): the knock-out pays it on hitting the "
+          "barrier when at_hit, otherwise at expiry, and the knock-in pays it at expiry when the barrier is never "
+          "touched. A rebate breaks in-out parity - paid at expiry, in + out exceeds the vanilla by exactly "
+          "rebate*exp(-r*T). rebate 0 is the plain barrier.");
 
     m.def("geometric_asian_price",
           [](bool call, double S, double K, double T, int n_fixings, double sigma, double r, double q) {

@@ -385,6 +385,23 @@ test.describe('QuantCore terminal flows', () => {
     await page.getByTestId('exo-monitoring-continuous').click();
     await expect(page.getByTestId('exo-row-continuous')).toHaveCount(0);
 
+    // a rebate: the reference becomes the Reiner–Rubinstein rebate price and names when the rebate is paid
+    const ref = page.getByTestId('exo-row-bs-k');
+    await page.getByTestId('exo-rebate').fill('10');
+    await expect(ref).toContainText('rebate paid at the hit', { timeout: 30_000 });
+    await page.getByTestId('exo-rebate-when-expiry').click();
+    await expect(ref).toContainText('rebate paid at expiry', { timeout: 30_000 });
+    await expect(flat).toHaveAttribute('data-z', /\d/, { timeout: 30_000 });
+    expect(Number(await flat.getAttribute('data-z'))).toBeLessThan(4);
+
+    // a rebate on a monitoring schedule composes no closed form: the table must say so, not invent a reference
+    await page.getByTestId('exo-monitoring-weekly').click();
+    await expect(ref).toContainText('No closed form', { timeout: 30_000 });
+    await expect(flat).not.toHaveAttribute('data-z', /\d/, { timeout: 30_000 });
+    await page.getByTestId('exo-monitoring-continuous').click();
+    await page.getByTestId('exo-rebate').fill('0');
+    await expect(ref).toContainText('Reiner–Rubinstein closed form', { timeout: 30_000 });
+
     // equity skew: local vol reprices the vanilla on its own paths and cheapens the down-and-out call
     await page.getByTestId('smile-Equity index').click();
     const local = page.getByTestId('exo-row-local');

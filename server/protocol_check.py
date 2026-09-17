@@ -54,8 +54,8 @@ async def main():
         pong = await rpc(ws, {"type": "ping", "t_ns": 987654321}, "pong")
         check("ping → pong echo", pong.get("t_ns") == 987654321)
         info = await rpc(ws, {"type": "info"}, "info")
-        check("info (protocol 8, dividends, per-leg sigma, portfolio MC, local vol, exotics)",
-              info.get("protocol") == 8 and info.get("dividends") is True and info.get("leg_sigma") is True
+        check("info (protocol 9, dividends, per-leg sigma, portfolio MC, local vol, exotics)",
+              info.get("protocol") == 9 and info.get("dividends") is True and info.get("leg_sigma") is True
               and info.get("portfolio_mc") is True and info.get("local_vol") is True and info.get("exotics") is True,
               json.dumps(info))
 
@@ -207,6 +207,24 @@ async def main():
                   exr.get("id") == 19 and exr["out"] == direct["out"] and exr["in"] == direct["in"] and exr["paths"] == 1_000_000)
         else:
             check("mc_exotic", False, exr.get("msg", ""))
+
+        # v9 rebates: the wire must carry the payment time, not quietly default to paying at the hit. Comparing the
+        # wire against the bindings catches a dropped key (the two would then price different timings), and pricing
+        # both timings catches a flag that is ignored outright (they would come back equal).
+        reb = {"kind": "barrier", "call": True, "K": 100.0, "T": 0.5, "up": False, "levels": [92.0],
+               "rebate": 5.0, "rebate_at_hit": False}
+        rbr = await rpc(ws, {"type": "mc_exotic", "id": 22, "market": flat_m, "spec": reb, "paths": 400_000,
+                             "seed": 6, "steps_per_year": 365, "extrapolate": True}, "mc_exotic_result")
+        hit = await rpc(ws, {"type": "mc_exotic", "id": 23, "market": flat_m, "spec": {**reb, "rebate_at_hit": True},
+                             "paths": 400_000, "seed": 6, "steps_per_year": 365, "extrapolate": True}, "mc_exotic_result")
+        if rbr["type"] == "mc_exotic_result" and hit["type"] == "mc_exotic_result":
+            direct = quantcore.mc_exotic(reb, flat_m, 400_000, 6, 365.0, True, -1)
+            check("mc_exotic rebate: the wire keeps the payment time, and paid at the hit it is worth more",
+                  rbr["out"] == direct["out"] and rbr["in"] == direct["in"] and hit["out"][0] > rbr["out"][0],
+                  f"at expiry {rbr['out'][0]:.4f} (bindings {direct['out'][0]:.4f}) vs at the hit {hit['out'][0]:.4f}")
+        else:
+            check("mc_exotic rebate", False, rbr.get("msg", "") or hit.get("msg", ""))
+
         asian = {"kind": "asian", "call": True, "K": 756.0, "T": 0.25, "fixings": 13}
         asr = await rpc(ws, {"type": "mc_exotic", "id": 20, "market": lv_market, "spec": asian, "paths": 200_000,
                              "seed": 4, "steps_per_year": 365, "extrapolate": True}, "mc_exotic_result")
