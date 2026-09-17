@@ -62,6 +62,17 @@ bool vol_surface_valid(const VolSurface& s);
 long long simulate_local_vol_paths(const VolSurface& s, const double* dates, std::size_t n_dates, long long paths,
                                    uint64_t seed, double steps_per_year, double* out);
 
+/**
+ * The same simulation started part-way through. `start` is the index of the first date still to simulate: paths begin
+ * at `start_spot` at time dates[start − 1] (t = 0 when start is 0) and are recorded at dates[start …], so `out` holds
+ * paths × (n_dates − start) values, column j being dates[start + j]. Local volatility is read at absolute times, so a
+ * path continuing from a state is distributed like the tail of one simulated from today.
+ * Returns the time steps per path, or 0 on invalid input or allocation failure.
+ */
+long long simulate_local_vol_paths_from(const VolSurface& s, const double* dates, std::size_t n_dates, std::size_t start,
+                                        double start_spot, long long paths, uint64_t seed, double steps_per_year,
+                                        double* out);
+
 struct LocalVolResult {
     double    price;      // $ value of the portfolio
     double    std_error;

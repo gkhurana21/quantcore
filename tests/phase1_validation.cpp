@@ -924,6 +924,98 @@ static void section_lsm() {
     printf("\n  %-22s  %s\n", "American Monte Carlo:", all_ok ? "ALL PASS" : "FAIL");
 }
 
+// ── Section 10: American upper bound ────────────────────────────────────────
+//
+// Section 9's Longstaff–Schwartz price is low biased: a suboptimal policy is still a policy, so it bounds the value
+// from below only. The Andersen–Broadie dual turns that same fitted policy into a martingale and prices the option
+// from above, so the two together bracket the value instead of bounding one side of it.
+//
+// What they bracket is the Bermudan the policy exercises — `dates` equally spaced dates — which is worth less than the
+// continuously exercisable American a PDE returns. The reference here is therefore a CRR lattice restricted to those
+// same dates, exact under flat volatility; checking the bracket against the PDE would be checking it against the wrong
+// number, and the lattice's distance below the PDE is reported so that discount stays visible.
+//
+// Bounds fixed before the first run, as requirements on the estimator rather than fits to it: the bracket must contain
+// the lattice value (the lower bound below it and the upper bound above it, each within 4 standard errors), it must be
+// non-empty, at the refined inner count it must be tight enough to be useful (no wider than 2% of the price), and
+// refining the inner simulations must shrink it, since what remains of the gap is inner-sample noise.
+
+// CRR lattice with exercise permitted only every `per` steps, so only on the policy's own `dates` exercise dates.
+static double crr_bermudan(OptionType type, double S, double K, double T, double sigma, double r, double q, int dates,
+                           int per) {
+    const int    n = dates * per;
+    const double dt = T / n, lnu = sigma * std::sqrt(dt), u = std::exp(lnu), d = 1.0 / u;
+    const double p = (std::exp((r - q) * dt) - d) / (u - d), disc = std::exp(-r * dt);
+    const double pu = disc * p, pd = disc * (1.0 - p);
+    auto exercise = [type, K](double spot) { return type == OptionType::Call ? std::max(spot - K, 0.0) : std::max(K - spot, 0.0); };
+    std::vector<double> level(2 * static_cast<std::size_t>(n) + 1), v(static_cast<std::size_t>(n) + 1);
+    for (int k = -n; k <= n; ++k) level[static_cast<std::size_t>(k + n)] = S * std::exp(k * lnu);
+    for (int i = 0; i <= n; ++i) v[static_cast<std::size_t>(i)] = exercise(level[static_cast<std::size_t>(2 * n - 2 * i)]);
+    for (int step = n - 1; step >= 0; --step) {
+        const bool date = step > 0 && step % per == 0;      // the option is alive between exercise dates
+        for (int i = 0; i <= step; ++i) {
+            const double cont = pu * v[static_cast<std::size_t>(i)] + pd * v[static_cast<std::size_t>(i + 1)];
+            v[static_cast<std::size_t>(i)] =
+                date ? std::max(cont, exercise(level[static_cast<std::size_t>(step - 2 * i + n)])) : cont;
+        }
+    }
+    return v[0];
+}
+
+static void section_dual() {
+    banner("10. AMERICAN UPPER BOUND  (Andersen-Broadie dual against a Bermudan lattice)");
+    bool all_ok = true;
+    using clk = std::chrono::steady_clock;
+
+    VolSurface hull;
+    hull.S = 50.0; hull.r = 0.10; hull.q = 0.0; hull.sigma = 0.40;
+    const double K = 50.0, T = 5.0 / 12.0;
+    PdeSpec am;
+    am.kind = PdeKind::American; am.type = OptionType::Put; am.K = K; am.T = T;
+    const double pde = pde_price(am, hull, 801, 800).price;   // continuous exercise: above every Bermudan below
+
+    for (int dates : { 11, 22 }) {
+        // two refinements of the reference: agreement shows the lattice itself has converged
+        const double coarse = crr_bermudan(OptionType::Put, 50.0, K, T, 0.40, 0.10, 0.0, dates, 240);
+        const double berm   = crr_bermudan(OptionType::Put, 50.0, K, T, 0.40, 0.10, 0.0, dates, 480);
+        const bool   ref_ok = std::fabs(berm - coarse) < 1e-3 && berm < pde;
+        all_ok = all_ok && ref_ok;
+
+        LsmPolicy       policy;
+        const LsmResult lo = lsm_american_policy(OptionType::Put, K, T, hull, 40'000, 200'000, 11, dates, 365.0, &policy);
+        const bool      lo_ok = lo.price <= berm + 4 * lo.std_error;
+        all_ok = all_ok && lo_ok;
+        printf("  %d exercise dates: lattice %.4f (%.4f under continuous %.4f) · LSM lower %.4f ± %.4f  %s\n",
+               dates, berm, pde - berm, pde, lo.price, lo.std_error, (ref_ok && lo_ok) ? "OK" : "*** FAIL ***");
+
+        double widest = 0.0;
+        for (long long inner : { 200LL, 800LL }) {
+            const auto          t0 = clk::now();
+            const LsmDualResult up = lsm_dual_bound(policy, hull, 300, inner, 77, 365.0);
+            const double        ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+            const double        gap = up.upper - lo.price;
+            bool                ok = up.upper >= berm - 4 * up.std_error && up.upper >= lo.price;
+            if (inner == 800) ok = ok && gap <= 0.02 * berm && gap < widest;
+            widest = gap;
+            all_ok = all_ok && ok;
+            printf("    inner %3lld: upper %.4f ± %.4f (%+.4f over the lattice) · bracket [%.4f, %.4f] wide %.4f = %.2f%% · %lld sims, %.0f ms  %s\n",
+                   inner, up.upper, up.std_error, up.upper - berm, lo.price, up.upper, gap, 100 * gap / berm,
+                   up.inner_sims, ms, ok ? "OK" : "*** FAIL ***");
+        }
+    }
+
+    // invalid input: a policy that was never fitted, too few outer paths, too few inner paths
+    LsmPolicy unfitted, good;
+    lsm_american_policy(OptionType::Put, K, T, hull, 20'000, 20'000, 11, 11, 365.0, &good);
+    const bool invalid_ok = std::isnan(lsm_dual_bound(unfitted, hull, 300, 200, 7, 365.0).upper) &&
+                            std::isnan(lsm_dual_bound(good, hull, 50, 200, 7, 365.0).upper) &&
+                            std::isnan(lsm_dual_bound(good, hull, 300, 5, 7, 365.0).upper);
+    all_ok = all_ok && invalid_ok;
+    printf("  an unfitted policy, 50 outer paths, 5 inner paths → NaN  %s\n", invalid_ok ? "OK" : "*** FAIL ***");
+
+    printf("\n  %-22s  %s\n", "American upper bound:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -940,6 +1032,7 @@ int main() {
     section_exotics();
     section_pde();
     section_lsm();
+    section_dual();
 
     banner("End of Phase 1 report");
     return 0;

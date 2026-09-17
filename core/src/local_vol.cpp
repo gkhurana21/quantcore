@@ -162,8 +162,8 @@ struct Grid {
 };
 
 // Coarse step count of timeGrid(): every anchor, at most 1/steps_per_year apart. 0 when too long.
-std::size_t grid_steps(const double* anchors, std::size_t n_anchor, double spy) {
-    double prev = 0.0;
+std::size_t grid_steps(const double* anchors, std::size_t n_anchor, double spy, double t0 = 0.0) {
+    double prev = t0;
     std::size_t total = 0;
     for (std::size_t e = 0; e < n_anchor; ++e) {
         const double raw = std::ceil((anchors[e] - prev) * spy - 1e-9);
@@ -176,8 +176,11 @@ std::size_t grid_steps(const double* anchors, std::size_t n_anchor, double spy) 
 }
 
 // anchors: strictly increasing positive times.
-bool build_grid(Grid& g, const double* anchors, std::size_t n_anchor, const VolSurface& s, double spy, bool richardson) {
-    const std::size_t n = n_anchor ? grid_steps(anchors, n_anchor, spy) : 0;
+// t0: the calendar time the grid starts at (0 for a simulation from today; a date's time for one continuing from a
+// state part-way through). Slices are made at absolute times either way, so the two agree on local volatility.
+bool build_grid(Grid& g, const double* anchors, std::size_t n_anchor, const VolSurface& s, double spy, bool richardson,
+                double t0 = 0.0) {
+    const std::size_t n = n_anchor ? grid_steps(anchors, n_anchor, spy, t0) : 0;
     if (n_anchor && n == 0) return false;
     const std::size_t n_slices = richardson ? 3 * n : n;
     const std::size_t doubles = (n + 1) + 5 * n + n_anchor + n_slices * (sizeof(Slice) / sizeof(double));
@@ -189,7 +192,7 @@ bool build_grid(Grid& g, const double* anchors, std::size_t n_anchor, const VolS
     Slice* slices = reinterpret_cast<Slice*>(anchor_step + n_anchor);
 
     std::size_t k = 0;
-    times[0] = 0.0;
+    times[0] = t0;
     for (std::size_t e = 0; e < n_anchor; ++e) {
         const double prev = times[k], T = anchors[e];
         const std::size_t m = static_cast<std::size_t>(std::max(1.0, std::ceil((T - prev) * spy - 1e-9)));
@@ -683,20 +686,26 @@ void local_variance_row(const VolSurface& s, double t, const double* log_spots, 
 
 bool vol_surface_valid(const VolSurface& s) { return valid_surface(s); }
 
-long long simulate_local_vol_paths(const VolSurface& s, const double* dates, std::size_t n_dates, long long paths,
-                                   uint64_t seed, double steps_per_year, double* out) {
-    if (!valid_surface(s) || n_dates == 0 || paths < 1 || !(steps_per_year > 0.0) || !std::isfinite(steps_per_year)) return 0;
+long long simulate_local_vol_paths_from(const VolSurface& s, const double* dates, std::size_t n_dates, std::size_t start,
+                                        double start_spot, long long paths, uint64_t seed, double steps_per_year,
+                                        double* out) {
+    if (!valid_surface(s) || n_dates == 0 || start + 1 > n_dates || paths < 1 || !(start_spot > 0.0) ||
+        !std::isfinite(start_spot) || !(steps_per_year > 0.0) || !std::isfinite(steps_per_year)) return 0;
     for (std::size_t k = 0; k < n_dates; ++k) {
         if (!(dates[k] > 0.0) || !std::isfinite(dates[k]) || (k > 0 && !(dates[k] > dates[k - 1]))) return 0;
     }
+    const std::size_t remaining = n_dates - start;     // dates still to simulate
+    if (remaining == 0) return 0;
+    const double t0 = start == 0 ? 0.0 : dates[start - 1];
     Grid g;
-    if (!build_grid(g, dates, n_dates, s, steps_per_year, false)) return 0;
+    if (!build_grid(g, dates + start, remaining, s, steps_per_year, false, t0)) return 0;
     std::mt19937_64 rng(seed);
     double x[kBlock], z[kBlock];
     const double rho = g.rho, omr2 = g.omr2, carry = g.carry;
+    const double x_start = std::log(start_spot);
     for (long long done = 0; done < paths;) {
         const std::size_t B = static_cast<std::size_t>(std::min<long long>(static_cast<long long>(kBlock), paths - done));
-        std::fill(x, x + B, g.x0);
+        std::fill(x, x + B, x_start);
         std::size_t a = 0;
         for (std::size_t i = 0; i < g.n; ++i) {
             for (std::size_t b = 0; b < B; ++b) z[b] = normal_ziggurat(rng);
@@ -711,8 +720,8 @@ long long simulate_local_vol_paths(const VolSurface& s, const double* dates, std
                 const double dv = g.var_inc[i], drift = carry * dt - 0.5 * dv, sd = std::sqrt(dv);
                 for (std::size_t b = 0; b < B; ++b) x[b] += drift + sd * z[b];
             }
-            if (a < n_dates && static_cast<std::size_t>(g.anchor_step[a]) == i + 1) {
-                for (std::size_t b = 0; b < B; ++b) out[(static_cast<std::size_t>(done) + b) * n_dates + a] = std::exp(x[b]);
+            if (a < remaining && static_cast<std::size_t>(g.anchor_step[a]) == i + 1) {
+                for (std::size_t b = 0; b < B; ++b) out[(static_cast<std::size_t>(done) + b) * remaining + a] = std::exp(x[b]);
                 ++a;
             }
         }
@@ -721,6 +730,11 @@ long long simulate_local_vol_paths(const VolSurface& s, const double* dates, std
     const long long n = static_cast<long long>(g.n);
     std::free(g.block);
     return n;
+}
+
+long long simulate_local_vol_paths(const VolSurface& s, const double* dates, std::size_t n_dates, long long paths,
+                                   uint64_t seed, double steps_per_year, double* out) {
+    return simulate_local_vol_paths_from(s, dates, n_dates, 0, s.S, paths, seed, steps_per_year, out);
 }
 
 LocalVolResult mc_local_vol(const PortfolioLeg* legs, std::size_t n_legs, const VolSurface& s,

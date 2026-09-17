@@ -469,6 +469,42 @@ PYBIND11_MODULE(quantcore, m) {
           "American option under the market's local volatility by Longstaff-Schwartz: a regression policy on one set of "
           "paths, valued out of sample on another, so the price is low biased; values per unit of underlying.");
 
+    m.def("lsm_american_bounds",
+          [](bool call, double K, double T, const py::dict& market, long long policy_paths, long long value_paths,
+             long long outer_paths, long long inner_paths, uint64_t seed, int dates, double steps_per_year) {
+              const VolSurface s = surface_from(market);
+              LsmResult        lo;
+              LsmDualResult    up{};
+              up.upper = up.std_error = std::nan("");
+              {
+                  py::gil_scoped_release release;
+                  LsmPolicy              policy;
+                  lo = lsm_american_policy(call ? OptionType::Call : OptionType::Put, K, T, s, policy_paths,
+                                           value_paths, seed, dates, steps_per_year, &policy);
+                  // the policy is left untouched when the lower bound is invalid, so there is nothing to bound
+                  if (std::isfinite(lo.price)) {
+                      up = lsm_dual_bound(policy, s, outer_paths, inner_paths, seed + 1, steps_per_year);
+                  }
+              }
+              return py::dict("price"_a = finite_or_none(lo.price), "std_error"_a = finite_or_none(lo.std_error),
+                              "upper"_a = finite_or_none(up.upper), "upper_std_error"_a = finite_or_none(up.std_error),
+                              "gap"_a = finite_or_none(up.upper - lo.price),
+                              "policy_price"_a = finite_or_none(lo.policy_price),
+                              "european"_a = finite_or_none(lo.european), "european_se"_a = finite_or_none(lo.european_se),
+                              "policy_paths"_a = lo.policy_paths, "value_paths"_a = lo.value_paths,
+                              "outer_paths"_a = up.outer_paths, "inner_paths"_a = up.inner_paths,
+                              "inner_sims"_a = up.inner_sims, "dates"_a = lo.dates, "steps"_a = lo.steps,
+                              "exercise_dates"_a = lo.exercise_dates);
+          },
+          py::arg("call"), py::arg("K"), py::arg("T"), py::arg("market"), py::arg("policy_paths") = 40000LL,
+          py::arg("value_paths") = 200000LL, py::arg("outer_paths") = 500LL, py::arg("inner_paths") = 400LL,
+          py::arg("seed") = 42ULL, py::arg("dates") = 22, py::arg("steps_per_year") = 365.0,
+          "Longstaff-Schwartz price and the Andersen-Broadie dual upper bound for that same fitted policy, so the "
+          "value is bracketed rather than bounded on one side. Both price the Bermudan with `dates` equally spaced "
+          "exercise dates, worth less than the continuously exercisable American pde_price returns. The upper bound "
+          "is high biased by its inner simulations and that bias falls as 1/sqrt(inner_paths); cost is about "
+          "outer_paths x dates x inner_paths, so it is far heavier than the lower bound.");
+
     m.def("mc_portfolio_mt",
           [](DoubleArray is_call, DoubleArray K, DoubleArray T, DoubleArray sigma, DoubleArray weight,
              double S, double r, double q, long long paths, uint64_t seed, bool antithetic, int n_threads) {

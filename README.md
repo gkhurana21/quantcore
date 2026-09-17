@@ -146,6 +146,22 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   policy's 4.2960, so the PDE is bracketed; its European value is 4.0784 ± 0.0091 against 4.0760. Under the equity smile
   the one-year put is 51.0988 ± 0.1789 against the PDE's 51.0606 (+0.07%), and an American call without dividends is
   never exercised early.
+- **Andersen–Broadie dual bound** (`core/src/lsm.cpp`, native and Python): the upper bound to match that lower one, so
+  an American price is bracketed by Monte Carlo alone. Any martingale M with M₀ = 0 gives V ≤ E[maxₖ(hₖ − Mₖ)], and
+  taking M from the Doob decomposition of the fitted policy's own value process makes the bound tight — the gap closes
+  as the policy approaches optimal. Along each outer path the increment is ΔMₖ = Qₖ(Sₖ) − E[Qₖ | S_{k−1}], with Q the
+  value of restarting the policy from that state, estimated by nested inner simulations. Q depends on the state alone,
+  so it is defined at every date whether or not the path has already exercised and the maximum runs over all of them;
+  where the restarted policy stops, Q is the intrinsic value and costs no inner simulation, and where it continues one
+  inner simulation serves both as Qₖ and as E[Qₖ₊₁ | Sₖ] — the same quantity — so that draw's sampling noise
+  telescopes out of the two increments it appears in. What the pair bracket is the Bermudan the policy exercises, worth
+  less than the continuously exercisable American the PDE returns, so the gate checks them against a CRR lattice
+  restricted to those same dates: with 11 exercise dates the bracket is [4.2584, 4.2805] around the lattice's 4.2610
+  (0.52% wide), with 22 dates [4.2724, 4.3008] around 4.2724 (0.66%), against a continuous value of 4.2841. The bound
+  is high biased by its inner sampling and that bias falls as 1/√inner_paths — at 200 inner paths those same brackets
+  are 1.56% and 1.73% wide. Cost is about outer × dates × inner paths, so this is native and Python only
+  (`lsm_american_bounds`): one bound is thousands of inner simulations and seconds of CPU, too heavy for the
+  WebAssembly module and the terminal.
 - **Cox-Ross-Rubinstein** lattice: u = e^(σ√Δt), p = (e^((r−q)Δt) − d)/(u − d), backward induction; the American
   variant takes the larger of continuation and exercise value at every node.
 - **Implied volatility**: Newton-Raphson on vega inside a shrinking bisection bracket; no solution is reported for
@@ -380,7 +396,8 @@ market-data requests at all.
 ```
 core/          C++17 pricing library — Black-Scholes, Greeks, Monte Carlo (one contract, portfolios, local volatility
                on the SSVI surface, barrier and Asian options, ziggurat normals), exotic closed forms, the
-               local-volatility finite-difference solver, Longstaff-Schwartz American Monte Carlo;
+               local-volatility finite-difference solver, Longstaff-Schwartz American Monte Carlo and its
+               Andersen-Broadie dual upper bound;
                Metal GPU kernel in core/src/monte_carlo_gpu.mm
 bindings/      pybind11 bindings (GIL released around C++ compute); quantcore_wasm.cpp WebAssembly entry points
 scripts/       build-wasm.sh — C++ core → dashboard/public/wasm (module + manifest)
@@ -402,7 +419,7 @@ dashboard/
   workers/       Worker entry point
   tests/         Playwright unit, flow and engine tests
 tests/         C++ acceptance gate (BS prices, Greeks, MC convergence, portfolio MC, local volatility, exotics, PDE,
-               American Monte Carlo)
+               American Monte Carlo, American upper bound)
 ```
 
 ## Limitations
