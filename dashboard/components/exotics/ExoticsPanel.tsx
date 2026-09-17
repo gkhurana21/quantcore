@@ -317,7 +317,7 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
 
   const rows: Row[] = [
     { id: 'bs-k', model: `Black-Scholes · σ(K) ${pct(s.sigmaK, 2)}`,
-      detail: noClosedForm ? 'monitored on a schedule and paying a rebate: no closed form composes the two'
+      detail: noClosedForm ? 'monitored on a schedule and paying a rebate: no closed form composes the two — the PDE below prices it'
         : s.rebate > 0 ? `Reiner–Rubinstein with a rebate paid ${s.rebateAtHit ? 'at the hit' : 'at expiry'} · reference`
         : s.monitors ? `Broadie–Glasserman–Kou · ${s.monitors} monitoring dates · reference`
         : 'Reiner–Rubinstein closed form · reference',
@@ -374,8 +374,10 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
     ) : (
       <span>
         Under local volatility the {name} is worth <b className="mono">{usd(local.out[j], 4)}</b> per share. Watched on a
-        schedule <em>and</em> paying a rebate, it has no closed form to be checked against — the simulation is the price,
-        and its vanilla on the same paths still reprices within {z.toFixed(2)} standard errors.
+        schedule <em>and</em> paying a rebate it has no closed form, so the finite-difference solver — which applies the
+        knock-out as a jump on those same dates — is the check instead
+        {pde?.results[j + 1] && <>, at {usd(pde.results[j + 1]!.price, 4)}</>}; its vanilla on the same paths still
+        reprices within {z.toFixed(2)} standard errors.
       </span>
     );
   } else if (s.surface) {
@@ -395,7 +397,7 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
   if (pdeOut && pdeVan) {
     pdeZ = mcSame ? zOf(mcSame.out[j], pdeOut.price, mcSame.outSe[j]) : null;
     rows.push({ id: 'pde', model: `PDE · ${s.surface ? 'local vol' : 'flat σ(K)'}`,
-                detail: `finite differences, BDF2 · ${pdeOut.nodes} × ${pdeOut.steps} · ${s.levels.length + 1} solves in ${fmtMs(pde!.ms)}`,
+                detail: `finite differences, BDF2 · ${pdeOut.nodes} × ${pdeOut.steps} · ${s.monitors ? `the knock-out as a jump on ${s.monitors} dates · ` : ''}${s.levels.length + 1} solves in ${fmtMs(pde!.ms)}`,
                 cells: [<Price key="out" v={pdeOut.price} />, <Price key="in" v={pdeVan.price - pdeOut.price} />,
                         <Price key="van" v={pdeVan.price} />, gap(pdeOut.price, null)],
                 z: pdeZ, ms: pde!.ms, verdict: pdeZ == null ? { tone: 'muted', text: 'Deterministic' } : agreement(pdeZ),
@@ -599,13 +601,17 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
   const pdeItems = useMemo((): PdeItem[] => {
     if (setup.product !== 'barrier') return [];
     const m = setup.surface ? setup.market : setup.flatMarket;
-    // the solver carries the rebate as the barrier's boundary value; it always monitors continuously, so on a
-    // monitoring schedule it is pricing a different contract and the table says so rather than scoring them
-    const rebate = setup.rebate > 0 ? { rebate: setup.rebate, rebateAtHit: setup.rebateAtHit } : {};
+    // the solver carries the rebate as the barrier's boundary value and applies the knock-out as a jump on the same
+    // monitoring dates, so it prices the very contract the simulation does — the only second method for a barrier
+    // watched on a schedule, and the only one at all when a rebate is paid as well
+    const extra = {
+      ...(setup.rebate > 0 ? { rebate: setup.rebate, rebateAtHit: setup.rebateAtHit } : {}),
+      ...(setup.monitors > 0 ? { monitors: setup.monitors } : {}),
+    };
     return [
       { spec: { kind: 'european', call: setup.call, K: setup.K, T: setup.T }, market: m },
       ...setup.levels.map((H): PdeItem => ({
-        spec: { kind: 'knockout', call: setup.call, K: setup.K, T: setup.T, H, up: setup.up, ...rebate }, market: m,
+        spec: { kind: 'knockout', call: setup.call, K: setup.K, T: setup.T, H, up: setup.up, ...extra }, market: m,
       })),
     ];
   }, [setup]);

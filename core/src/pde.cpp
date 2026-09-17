@@ -48,9 +48,13 @@ PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int ste
     const bool knock = spec.kind == PdeKind::KnockOut, american = spec.kind == PdeKind::American;
     if (!vol_surface_valid(s) || !(spec.K > 0.0) || !(spec.T > 0.0) || !std::isfinite(spec.K) || !std::isfinite(spec.T) ||
         nodes < kMinPdeNodes || nodes > kMaxPdeNodes || steps < 4 || steps > kMaxPdeSteps ||
-        (knock && !(spec.H > 0.0 && std::isfinite(spec.H)))) {
+        (knock && !(spec.H > 0.0 && std::isfinite(spec.H))) ||
+        spec.n_monitors < 0 || spec.n_monitors > kMaxPdeMonitors ||
+        spec.rebate < 0.0 || !std::isfinite(spec.rebate)) {
         return invalid_pde();
     }
+    // a monitored barrier is tested only on its dates, so between them the option lives on both sides of it
+    const bool monitored = knock && spec.n_monitors > 0;
     const bool call = spec.type == OptionType::Call;
     const double S = s.S, K = spec.K, T = spec.T, r = s.r, q = s.q;
     const double x0 = std::log(S), lnK = std::log(K);
@@ -69,18 +73,36 @@ PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int ste
     const double W = std::max(6.0 * sd, std::fabs(lnK - x0) + 3.0 * sd);
     int n = nodes - 1;                                        // intervals
     double lo = 0.0, dx = 0.0;
-    int i0 = 0;
+    int i0 = 0, mb = 0;                                       // spot node, and intervals from it to the barrier
     if (!knock) {
         n -= n % 2;
         dx = 2.0 * W / n;
         lo = x0 - W;
         i0 = n / 2;
+    } else if (monitored) {
+        // the barrier is an interior node: the grid runs past it, with both ln S₀ and ln H landing on nodes so the
+        // extinguished region is exactly a run of nodes and the jump needs no interpolation
+        const double h = std::log(spec.H), gap = std::fabs(x0 - h);
+        const double half = std::max(W, gap + 3.0 * sd);       // far enough past the barrier for its own boundary
+        mb = std::max(1, static_cast<int>(std::lround((gap * n) / (2.0 * half))));
+        dx = gap / mb;
+        int side = std::max(mb + 1, static_cast<int>(std::ceil(half / dx)));
+        if (2 * side > n) {
+            side = n / 2;
+            if (side < mb + 1) {                               // too few nodes for both sides: coarsen to the barrier
+                mb = std::max(1, side - 1);
+                dx = gap / mb;
+            }
+        }
+        n = 2 * side;
+        lo = x0 - side * dx;
+        i0 = side;
     } else {
         const double h = std::log(spec.H), gap = std::fabs(x0 - h);
-        const int m = std::min(n - 1, std::max(1, static_cast<int>(std::lround(gap * n / (gap + W)))));
-        dx = gap / m;
+        mb = std::min(n - 1, std::max(1, static_cast<int>(std::lround(gap * n / (gap + W)))));
+        dx = gap / mb;
         lo = spec.up ? h - n * dx : h;
-        i0 = spec.up ? n - m : m;
+        i0 = spec.up ? n - mb : mb;
     }
     res.nodes = n + 1;
 
@@ -115,6 +137,24 @@ PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int ste
         }
     };
     ends(0.0, V[0], V[n]);
+
+    // At a monitoring date every node at or beyond the barrier is extinguished and left holding the rebate — the
+    // knock-out as a jump between otherwise plain Black-Scholes steps. The dates are k·T/m for k = 1…m, so the
+    // barrier is tested at expiry too, which is why this runs once before the march as well as during it.
+    const int ib = spec.up ? i0 + mb : i0 - mb;
+    auto knock_out = [&](double tau) {
+        const double v = spec.rebate > 0.0 ? (spec.rebate_at_hit ? spec.rebate : spec.rebate * std::exp(-r * tau)) : 0.0;
+        if (spec.up) {
+            for (int i = ib + 1; i <= n; ++i) V[i] = v;
+        } else {
+            for (int i = 0; i < ib; ++i) V[i] = v;
+        }
+        // The barrier sits at the centre of its node's cell, so only half of that cell is extinguished: killing all
+        // of it throws away half a cell of live value and costs an order of accuracy, the same reason the payoff is
+        // cell-averaged across the strike. Averaging the dead and live halves keeps the scheme second order.
+        V[ib] = 0.5 * (v + V[ib]);
+    };
+    if (monitored) knock_out(0.0);
 
     const double idx2 = 1.0 / (dx * dx), i2dx = 0.5 / dx, idx = 1.0 / dx;
 
@@ -191,11 +231,44 @@ PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int ste
         const double u = 1.0 - static_cast<double>(j) / steps;
         return j == steps ? T : T * (1.0 - u * u);
     };
+    // Step boundaries: the graded grid with every monitoring date merged in, so the march lands on each date exactly.
+    // Merging keeps the grading rather than re-deriving it, and the BDF2 step already takes a variable size.
+    const int n_mon = monitored ? spec.n_monitors : 0;
+    const std::size_t cap = static_cast<std::size_t>(steps) + static_cast<std::size_t>(n_mon) + 2;
+    double* taus = static_cast<double*>(std::calloc(cap, sizeof(double)));
+    unsigned char* is_mon = static_cast<unsigned char*>(std::calloc(cap, sizeof(unsigned char)));
+    if (!taus || !is_mon) { std::free(taus); std::free(is_mon); std::free(block); return invalid_pde(); }
+    std::size_t n_tau = 0;
+    {
+        const double far = 2.0 * T + 1.0, eps = 1e-12 * T;
+        int j = 1, k = n_mon - 1;                             // graded steps, and monitoring dates in rising τ
+        while (j <= steps || k >= 1) {
+            const double tg = j <= steps ? tau_at(j) : far;
+            const double tm = k >= 1 ? T * (1.0 - static_cast<double>(k) / n_mon) : far;
+            double t;
+            bool   mon;
+            if (tm < tg - eps)      { t = tm; mon = true;  --k; }
+            else if (tg < tm - eps) { t = tg; mon = false; ++j; }
+            else                    { t = tg; mon = true;  ++j; --k; }
+            if (n_tau > 0 && t <= taus[n_tau - 1] + eps) {
+                if (mon) is_mon[n_tau - 1] = 1;
+                continue;
+            }
+            taus[n_tau] = t;
+            is_mon[n_tau] = mon ? 1 : 0;
+            ++n_tau;
+        }
+    }
+    res.steps = static_cast<int>(n_tau);
+
     std::size_t target = 0, written = 0;                      // boundary samples at τ = T/64, 2T/64, …, T
-    for (int j = 0; j < steps; ++j) {
-        const double ta = tau_at(j), tb = tau_at(j + 1), h = tb - ta;
+    double t_now = 0.0, t_back = 0.0;                         // this level's τ and the one before it
+    int since_restart = 0;                                    // implicit Euler for two steps, and after every jump
+    for (std::size_t idx = 0; idx < n_tau; ++idx) {
+        const double ta = t_now, tb = taus[idx], h = tb - ta;
+        if (!(h > 0.0)) continue;
         int boundary;
-        if (j < 2) {
+        if (since_restart < 2) {
             std::copy(V, V + N, Vprev);
             const double tm = 0.5 * (ta + tb);
             std::copy(V, V + N, base);
@@ -203,12 +276,17 @@ PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int ste
             std::copy(V, V + N, base);
             boundary = implicit(0.5 * h, tb);
         } else {
-            const double w = h / (ta - tau_at(j - 1));
+            const double w = h / (ta - t_back);
             const double a0 = (1.0 + 2.0 * w) / (1.0 + w), a1 = 1.0 + w, a2 = w * w / (1.0 + w);
             for (std::size_t i = 0; i < N; ++i) base[i] = (a1 * V[i] - a2 * Vprev[i]) / a0;
             std::copy(V, V + N, Vprev);
             boundary = implicit(h / a0, tb);
         }
+        t_back = ta;
+        t_now = tb;
+        ++since_restart;
+        // the jump leaves a fresh discontinuity at the barrier, so the next steps restart with implicit Euler
+        if (is_mon[idx]) { knock_out(tb); since_restart = 0; }
         if (american && target < kPdeBoundaryPoints && tb >= T * static_cast<double>(target + 1) / kPdeBoundaryPoints * (1.0 - 1e-12)) {
             res.boundary_tau[written] = tb;
             res.boundary_S[written] = boundary >= 0 ? std::exp(x[boundary]) : kNaN;
@@ -216,6 +294,8 @@ PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int ste
             while (target < kPdeBoundaryPoints && tb >= T * static_cast<double>(target + 1) / kPdeBoundaryPoints * (1.0 - 1e-12)) ++target;
         }
     }
+    std::free(taus);
+    std::free(is_mon);
     res.n_boundary = static_cast<int>(written);
 
     const double Vm = V[i0 - 1], V0 = V[i0], Vp = V[i0 + 1];

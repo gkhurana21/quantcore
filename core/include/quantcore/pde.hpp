@@ -44,8 +44,11 @@ struct PdeSpec {
     bool       up = false;     // knock-out: the barrier is above spot
     double     rebate = 0.0;        // knock-out: paid on hitting the barrier, or at expiry
     bool       rebate_at_hit = true;
+    int        n_monitors = 0;      // knock-out: the barrier is tested on m dates k·T/m; 0 monitors continuously
 };
 
+/** Monitoring dates one discretely monitored knock-out may use (daily over eight years). */
+inline constexpr int kMaxPdeMonitors = 2000;
 inline constexpr int kMinPdeNodes = 21;
 inline constexpr int kMaxPdeNodes = 4001;
 inline constexpr int kMaxPdeSteps = 20000;

@@ -134,6 +134,8 @@ static PdeSpec pde_from(const py::dict& d) {
         // absent or 0 pays no rebate; "rebate_at_hit" false pays it at expiry instead
         if (d.contains("rebate") && !d["rebate"].is_none()) p.rebate = d["rebate"].cast<double>();
         if (d.contains("rebate_at_hit") && !d["rebate_at_hit"].is_none()) p.rebate_at_hit = d["rebate_at_hit"].cast<bool>();
+        // absent or 0 monitors the barrier continuously
+        if (d.contains("monitors") && !d["monitors"].is_none()) p.n_monitors = d["monitors"].cast<int>();
     }
     return p;
 }

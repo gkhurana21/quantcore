@@ -472,6 +472,10 @@ test.describe('C++ core compiled to WebAssembly', () => {
       // the rebate as the barrier's boundary value, paid at the hit and at expiry
       { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false, rebate: 15, rebateAtHit: true },
       { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false, rebate: 15, rebateAtHit: false },
+      // the knock-out as a jump at each monitoring date, alone and with a rebate
+      { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false, monitors: 13 },
+      { kind: 'knockout', call: false, K: 740, T: 0.4, H: 800, up: true, monitors: 26 },
+      { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false, monitors: 13, rebate: 15, rebateAtHit: true },
     ];
     interface NativePde { price: number; delta: number; gamma: number; theta: number; nodes: number; steps: number;
                           boundary_tau: number[]; boundary_S: (number | null)[]; }

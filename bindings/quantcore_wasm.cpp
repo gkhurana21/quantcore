@@ -70,7 +70,7 @@ quantcore::VolSurface read_surface() {
 extern "C" {
 
 // Bumped whenever a signature or the output layout changes.
-EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 8; }
+EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 9; }
 
 EMSCRIPTEN_KEEPALIVE double* qc_out() { return g_out; }
 
@@ -234,9 +234,10 @@ EMSCRIPTEN_KEEPALIVE double* qc_pde_out() { return g_pde_out; }
 EMSCRIPTEN_KEEPALIVE int qc_pde_out_size() { return kPdeOutSize; }
 
 // Finite differences on the surface in qc_surface(). kind: 0 European, 1 American, 2 knock-out; a knock-out's rebate
-// is paid at the hit when rebate_at_hit, otherwise at expiry. Results in qc_pde_out().
+// is paid at the hit when rebate_at_hit, otherwise at expiry, and n_monitors tests the barrier on that many equally
+// spaced dates instead of continuously. Results in qc_pde_out().
 EMSCRIPTEN_KEEPALIVE void qc_pde(int kind, int call, double K, double T, double H, int up, int nodes, int steps,
-                                 double rebate, int rebate_at_hit) {
+                                 double rebate, int rebate_at_hit, int n_monitors) {
     quantcore::PdeSpec p;
     p.kind = kind == 1 ? quantcore::PdeKind::American : kind == 2 ? quantcore::PdeKind::KnockOut : quantcore::PdeKind::European;
     p.type = call ? OptionType::Call : OptionType::Put;
@@ -246,6 +247,7 @@ EMSCRIPTEN_KEEPALIVE void qc_pde(int kind, int call, double K, double T, double 
     p.up = up != 0;
     p.rebate = rebate;
     p.rebate_at_hit = rebate_at_hit != 0;
+    p.n_monitors = n_monitors < 0 ? -1 : n_monitors;   // out of range fails validation
     const quantcore::PdeResult r = quantcore::pde_price(p, read_surface(), nodes, steps);
     double* o = g_pde_out;
     o[0] = r.price;

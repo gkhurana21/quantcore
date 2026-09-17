@@ -141,8 +141,20 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   3.6e-6, and on Hull's down-and-out call with a rebate of 3 the simulation gives 7.9541 ± 0.0167 at the hit against
   7.9630 and 7.9032 ± 0.0167 at expiry against 7.9118. With a single time step the only possible hit time is the
   expiry, and the two payment times then price identically to the last digit.
+- **Monitored barriers by finite differences**: between its dates a scheduled barrier is simply a vanilla, so the
+  solver drops the absorbing boundary, makes the barrier an interior node with the grid running past it, merges the
+  monitoring dates into the graded time grid so the march lands on each exactly, and applies the knock-out as a jump
+  there — zeroing the nodes beyond the barrier, or leaving them the rebate. A jump reintroduces the discontinuity the
+  implicit-Euler start exists to smooth, so the steps after one restart with Euler. The barrier's own node is half
+  extinguished: its cell straddles the barrier, and killing all of it throws away half a cell of live value — that
+  alone cost an order of accuracy and underpriced by 0.02 until it was cell-averaged, exactly as the payoff is across
+  the strike, after which the grid ratio went from 2 to 4.1–4.3. In the C++ gate the solver sits within |z| 0.02–0.62
+  of a simulation monitoring on the same dates at 13, 52 and 252 dates, moves under 1e-3 when the grid is refined,
+  reproduces the continuous price exactly with no dates, and — since Broadie–Glasserman–Kou and the rebate terms do
+  not compose — is the only method besides simulation that prices a scheduled barrier paying a rebate.
 - **Finite differences (local-volatility PDE)**: V_τ = ½σ²V_xx + (r − q − ½σ²)V_x − rV in log spot with σ² the surface's
-  local variance (`core/src/pde.cpp`, native and WebAssembly) — European, American and continuously monitored knock-out
+  local variance (`core/src/pde.cpp`, native and WebAssembly) — European, American, and knock-out options monitored
+  continuously or on a schedule of dates
   options, with grid Greeks (Δ, Γ, Θ) and the early-exercise boundary. A uniform log-spot grid with the payoff averaged
   over each cell; calendar time graded towards today (t = T·u²), two implicit Euler steps, then variable-step BDF2; the
   American constraint solved exactly at every step by policy iteration. Three choices were forced by measurements. On
@@ -457,8 +469,9 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence, portfolio
   finite differences under the surface; the Greeks tiles, charts, stress and VaR treat options as European. Close to today
   the local-volatility exercise boundary inherits the power-law smile's very high short-dated wing volatility.
 - Path-dependent payoffs are limited to barriers — monitored continuously or on an equally spaced schedule, with or
-  without a rebate — and Asian options on equally spaced fixings, priced one at a time in the Exotics tab; strategies,
-  the payoff chart, stress and VaR hold European options. Under local volatility the barrier bridge uses each step's
+  without a rebate, each priced by both the simulation and the finite-difference solver — and Asian options on equally
+  spaced fixings, priced one at a time in the Exotics tab; strategies, the payoff chart, stress and VaR hold European
+  options. Under local volatility the barrier bridge uses each step's
   local variance, an approximation whose error shrinks with the step. A rebate paid at the hit is placed at the end of
   the step that breached the barrier, since the estimator carries a survival probability rather than a hit time: that
   costs an O(Δt) timing bias, worth 0.6% of the knock-out at one step a year and gone by 26 (it is exact on a

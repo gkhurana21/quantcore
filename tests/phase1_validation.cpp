@@ -1181,6 +1181,91 @@ static void section_rebate() {
     printf("\n  %-22s  %s\n", "Barrier rebates:", all_ok ? "ALL PASS" : "FAIL");
 }
 
+// ── Section 13: monitored barriers by finite differences ───────────────────
+//
+// The solver applies the knock-out as a jump at each monitoring date, between otherwise plain Black-Scholes steps:
+// the barrier becomes an interior node with the grid running past it, the dates are merged into the graded time grid
+// so the march lands on each exactly, and the step after a jump restarts with implicit Euler because the jump
+// reintroduces the discontinuity the Euler start exists to smooth. The barrier's own node is half extinguished — its
+// cell straddles the barrier, so killing all of it throws away half a cell of live value and costs an order, exactly
+// as the payoff must be cell-averaged across the strike.
+//
+// This is the only second method for a barrier watched on a schedule: Broadie–Glasserman–Kou shifts the barrier and
+// the rebate terms assume a continuous one, so nothing in closed form composes monitoring with a rebate.
+//
+// Bounds fixed before the first run, as requirements: no monitoring dates reproduces the continuous price exactly; a
+// monitored barrier is worth more than the continuous one and falls toward it as the dates multiply; a grid
+// refinement moves the price by less than 1e-3; and it sits within 4 standard errors of the simulation monitoring on
+// those same dates, with a rebate and without.
+
+static void section_monitored_pde() {
+    banner("13. MONITORED BARRIERS BY FINITE DIFFERENCES  (the knock-out as a jump at each date)");
+    bool all_ok = true;
+
+    VolSurface flat;
+    flat.S = 100.0; flat.r = 0.08; flat.q = 0.04; flat.sigma = 0.25;
+    const double K = 100.0, H = 92.0, T = 0.5;
+    PdeSpec base;
+    base.kind = PdeKind::KnockOut; base.type = OptionType::Call; base.K = K; base.T = T; base.H = H; base.up = false;
+
+    const double cont = pde_price(base, flat, 801, 800).price;
+    PdeSpec none = base;
+    none.n_monitors = 0;
+    const bool zero_ok = pde_price(none, flat, 801, 800).price == cont;
+    all_ok = all_ok && zero_ok;
+    printf("  down-and-out call H=92: continuous %.4f · no monitoring dates reproduces it exactly  %s\n",
+           cont, zero_ok ? "OK" : "*** FAIL ***");
+
+    auto simulate = [&](int m, double rebate, bool at_hit) {
+        ExoticSpec e;
+        e.kind = ExoticKind::Barrier; e.type = OptionType::Call; e.K = K; e.T = T; e.up = false;
+        e.n_levels = 1; e.levels[0] = H; e.n_monitors = m; e.rebate = rebate; e.rebate_at_hit = at_hit;
+        return mc_exotic_mt(e, flat, 1'000'000, 11, 365.0, true, -1);
+    };
+
+    double prev = 1e300;
+    for (const int m : { 13, 52, 252 }) {
+        PdeSpec sp = base;
+        sp.n_monitors = m;
+        const double p = pde_price(sp, flat, 801, 800).price;
+        const double fine = pde_price(sp, flat, 1601, 2000).price;
+        const ExoticResult r = simulate(m, 0.0, true);
+        const double z = zscore(p, r.out[0], r.out_se[0]);
+        const bool ok = z < 4.0 && p > cont && p < prev && std::fabs(fine - p) < 1e-3;
+        all_ok = all_ok && ok;
+        prev = p;
+        printf("    %3d dates: PDE %.4f (refined %.4f, moved %.1e) vs simulation %.4f ± %.4f (|z| %.2f) · %+.4f over continuous  %s\n",
+               m, p, fine, std::fabs(fine - p), r.out[0], r.out_se[0], z, p - cont, ok ? "OK" : "*** FAIL ***");
+    }
+
+    // a rebate as well: nothing in closed form prices this, so the simulation is the only reference
+    for (const int m : { 13, 26 }) {
+        for (int k = 0; k < 2; ++k) {
+            const bool at_hit = k == 0;
+            PdeSpec sp = base;
+            sp.n_monitors = m; sp.rebate = 3.0; sp.rebate_at_hit = at_hit;
+            const double p = pde_price(sp, flat, 801, 800).price;
+            const ExoticResult r = simulate(m, 3.0, at_hit);
+            const double z = zscore(p, r.out[0], r.out_se[0]);
+            const bool ok = z < 4.0;
+            all_ok = all_ok && ok;
+            printf("    %3d dates, rebate 3 paid %-11s PDE %.4f vs simulation %.4f ± %.4f (|z| %.2f)  %s\n",
+                   m, at_hit ? "at the hit:" : "at expiry:", p, r.out[0], r.out_se[0], z, ok ? "OK" : "*** FAIL ***");
+        }
+    }
+
+    PdeSpec bad = base;
+    bad.n_monitors = kMaxPdeMonitors + 1;
+    PdeSpec neg = base;
+    neg.rebate = -1.0;
+    const bool invalid_ok = std::isnan(pde_price(bad, flat, 801, 800).price) &&
+                            std::isnan(pde_price(neg, flat, 801, 800).price);
+    all_ok = all_ok && invalid_ok;
+    printf("  more monitoring dates than the cap, and a negative rebate → NaN  %s\n", invalid_ok ? "OK" : "*** FAIL ***");
+
+    printf("\n  %-22s  %s\n", "Monitored PDE:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -1200,6 +1285,7 @@ int main() {
     section_dual();
     section_discrete_barrier();
     section_rebate();
+    section_monitored_pde();
 
     banner("End of Phase 1 report");
     return 0;

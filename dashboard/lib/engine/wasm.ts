@@ -14,7 +14,7 @@ import { legSigma } from '../quant/volSurface';
 
 export const WASM_PATH = '/wasm/quantcore.wasm';
 export const WASM_MANIFEST_PATH = '/wasm/quantcore.json';
-export const WASM_ABI = 8;
+export const WASM_ABI = 9;
 export const MAX_WASM_PATHS = 50_000_000;
 /** Cap on paths × legs for one portfolio run, so a single-threaded run stays within seconds. */
 export const MAX_WASM_PORTFOLIO_WORK = 64_000_000;
@@ -33,6 +33,8 @@ const PDE_BOUNDARY_POINTS = 64;
 const PDE_OUT_SIZE = 7 + 2 * PDE_BOUNDARY_POINTS;
 /** Default finite-difference grid: log-spot nodes × time steps (second order; ~7e-6 relative on a 1y vanilla). */
 export const PDE_GRID = { nodes: 801, steps: 800 } as const;
+/** Monitoring dates one discretely monitored knock-out may solve for (core/include/quantcore/pde.hpp). */
+export const MAX_PDE_MONITORS = 2000;
 
 // Longstaff–Schwartz output: price, std_error, policy_price, european, european_se, policy paths, value paths,
 // dates, steps, exercise dates
@@ -51,12 +53,13 @@ export interface LsmResult {
 export type PdeKind = 'european' | 'american' | 'knockout';
 
 /**
- * An option for the finite-difference solver; H and up for a knock-out, monitored continuously. A knock-out's
- * `rebate` is paid on hitting the barrier unless `rebateAtHit` is false, when it is paid at expiry instead.
+ * An option for the finite-difference solver; H and up for a knock-out. A knock-out's `rebate` is paid on hitting the
+ * barrier unless `rebateAtHit` is false, when it is paid at expiry instead, and `monitors` tests the barrier on that
+ * many equally spaced dates rather than continuously — the only second method for a barrier watched on a schedule.
  */
 export interface PdeSpec {
   kind: PdeKind; call: boolean; K: number; T: number; H?: number; up?: boolean;
-  rebate?: number; rebateAtHit?: boolean;
+  rebate?: number; rebateAtHit?: boolean; monitors?: number;
 }
 
 /** Per unit of underlying; theta is ∂V/∂t per year. The boundary is an American option's exercise spot by time to expiry. */
@@ -184,7 +187,7 @@ interface Exports {
   qc_pde_out(): number;
   qc_pde_out_size(): number;
   qc_pde(kind: number, call: number, K: number, T: number, H: number, up: number, nodes: number, steps: number,
-         rebate: number, rebateAtHit: number): void;
+         rebate: number, rebateAtHit: number, monitors: number): void;
   qc_lsm_out(): number;
   qc_lsm_out_size(): number;
   qc_lsm(call: number, K: number, T: number, policyPaths: number, valuePaths: number, seed: number,
@@ -359,8 +362,10 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
           !setSurface(m)) return null;
       const rebate = knock ? spec.rebate ?? 0 : 0;
       if (!(rebate >= 0) || !Number.isFinite(rebate)) return null;
+      const monitors = knock ? spec.monitors ?? 0 : 0;   // 0 monitors the barrier continuously
+      if (!Number.isInteger(monitors) || monitors < 0 || monitors > MAX_PDE_MONITORS) return null;
       ex.qc_pde(spec.kind === 'american' ? 1 : knock ? 2 : 0, spec.call ? 1 : 0, spec.K, spec.T, knock ? spec.H! : 0,
-                spec.up ? 1 : 0, nodes, steps, rebate, spec.rebateAtHit === false ? 0 : 1);
+                spec.up ? 1 : 0, nodes, steps, rebate, spec.rebateAtHit === false ? 0 : 1, monitors);
       const o = new Float64Array(ex.memory.buffer, ex.qc_pde_out(), PDE_OUT_SIZE);
       if (!Number.isFinite(o[0]) || !Number.isFinite(o[1]) || !Number.isFinite(o[2]) || !Number.isFinite(o[3])) return null;
       const boundary = Array.from({ length: o[6] }, (_, j) => ({ tau: o[7 + j], S: finiteOrNull(o[7 + PDE_BOUNDARY_POINTS + j]) }));

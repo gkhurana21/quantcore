@@ -398,6 +398,9 @@ test.describe('QuantCore terminal flows', () => {
     await page.getByTestId('exo-monitoring-weekly').click();
     await expect(ref).toContainText('No closed form', { timeout: 30_000 });
     await expect(flat).not.toHaveAttribute('data-z', /\d/, { timeout: 30_000 });
+    // the solver applies the knock-out as a jump on those same dates, so it prices what the simulation prices and
+    // is the reference where no closed form exists
+    await expect(page.getByTestId('exo-row-pde')).toContainText('jump on', { timeout: 90_000 });
     await page.getByTestId('exo-monitoring-continuous').click();
     await page.getByTestId('exo-rebate').fill('0');
     await expect(ref).toContainText('Reiner–Rubinstein closed form', { timeout: 30_000 });
