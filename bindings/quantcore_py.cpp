@@ -84,6 +84,8 @@ static ExoticSpec exotic_from(const py::dict& d) {
         if (levels.empty() || levels.size() > kMaxBarrierLevels) throw std::invalid_argument("a barrier needs 1 to 16 levels");
         e.n_levels = static_cast<int>(levels.size());
         std::copy(levels.begin(), levels.end(), e.levels);
+        // absent, none or 0 monitors the barrier continuously
+        if (d.contains("monitors") && !d["monitors"].is_none()) e.n_monitors = d["monitors"].cast<int>();
     } else if (kind == "asian") {
         e.kind = ExoticKind::Asian;
         e.n_fixings = d["fixings"].cast<int>();
@@ -101,7 +103,7 @@ static py::dict exotic_dict(const ExoticResult& r) {
         out.append(r.out[j]); out_se.append(r.out_se[j]); out_fb.append(finite_or_none(r.out_fine_bias[j]));
         in.append(r.in[j]); in_se.append(r.in_se[j]);
     }
-    return py::dict("paths"_a = r.paths, "steps"_a = r.steps,
+    return py::dict("paths"_a = r.paths, "steps"_a = r.steps, "monitors"_a = r.n_monitors,
                     "vanilla"_a = finite_or_none(r.vanilla), "vanilla_se"_a = finite_or_none(r.vanilla_se),
                     "vanilla_fine_bias"_a = finite_or_none(r.vanilla_fine_bias),
                     "out"_a = out, "out_se"_a = out_se, "out_fine_bias"_a = out_fb, "in"_a = in, "in_se"_a = in_se,
@@ -398,6 +400,20 @@ PYBIND11_MODULE(quantcore, m) {
           py::arg("call"), py::arg("up"), py::arg("S"), py::arg("K"), py::arg("H"), py::arg("T"), py::arg("sigma"),
           py::arg("r"), py::arg("q") = 0.0,
           "Continuously monitored barrier option without rebate (Reiner & Rubinstein): knock-out, knock-in, vanilla.");
+
+    m.def("barrier_prices_discrete",
+          [](bool call, bool up, double S, double K, double H, double T, double sigma, double r, double q,
+             int monitors) {
+              const BarrierPrices p = barrier_prices_discrete(call ? OptionType::Call : OptionType::Put, up, S, K, H, T,
+                                                              sigma, r, q, monitors);
+              return py::dict("out"_a = p.out, "in"_a = p.in, "vanilla"_a = p.vanilla);
+          },
+          py::arg("call"), py::arg("up"), py::arg("S"), py::arg("K"), py::arg("H"), py::arg("T"), py::arg("sigma"),
+          py::arg("r"), py::arg("q") = 0.0, py::arg("monitors") = 0,
+          "Barrier option monitored at `monitors` equally spaced dates, by the Broadie-Glasserman-Kou correction: the "
+          "continuous formula with the barrier moved away from the spot to H*exp(+/-beta*sigma*sqrt(T/m)), "
+          "beta = -zeta(1/2)/sqrt(2*pi). A discretely monitored knock-out is worth more than the continuously "
+          "monitored one; monitors < 1 prices continuous monitoring.");
 
     m.def("geometric_asian_price",
           [](bool call, double S, double K, double T, int n_fixings, double sigma, double r, double q) {

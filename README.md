@@ -16,7 +16,7 @@ over WebSocket when it runs locally.
 | **Greeks & payoff** | Price, Δ, Γ, Θ, ν and P&L tiles; exact max profit / max loss and break-evens; an interactive payoff chart with P&L · Δ · Γ · Vega · Θ modes (hover or keyboard crosshair); a full-revaluation spot × vol P&L surface. |
 | **Pricing Models Lab** | The same portfolio priced with Black-Scholes-Merton, a 512-step Cox-Ross-Rubinstein lattice and seeded Monte Carlo at 10k / 50k / 200k paths — difference vs Black-Scholes, standard error, 95% interval, \|z\| and timing, with a convergence chart, the lattice's odd/even error curve, a per-leg breakdown and the American early-exercise premium from the same lattice — and, by finite differences in C++, each leg's American value under the volatility surface's local volatility against its implied volatility, with the early-exercise boundary and a Longstaff–Schwartz Monte Carlo check of it. A C++ cross-check simulates the whole portfolio — on the native engine when it is running, otherwise in WebAssembly — and, with a smile or term structure, a local-volatility Monte Carlo reprices it under Dupire's diffusion. |
 | **Monte Carlo** | Animated risk-neutral paths — GBM in a flat market, Dupire local volatility when a smile or term structure is on — with spot, strike, expiry and in-the-money markers; a 50,000-sample terminal distribution against its analytic lognormal or smile-implied density; simulated P(ITM) vs the analytic value; local against implied volatility across strikes. |
-| **Exotics** | Continuously monitored barrier options (down- and up-and-out, knock-in by parity) and arithmetic and geometric Asian options on the terminal's market. Reiner–Rubinstein and geometric-average closed forms under flat volatility; the C++ Monte Carlo kernel — Brownian-bridge monitoring, up to 16 barrier levels on the same paths — under that volatility as a check, and under the surface's Dupire local volatility, with the vanilla on the same paths as a repricing check, and barriers also solved as a PDE (a second method, with its Greeks). A knock-out-vs-barrier chart, the geometric control variate for arithmetic averages and fine-grid bias estimates; on the native engine or in WebAssembly. |
+| **Exotics** | Barrier options (down- and up-and-out, knock-in by parity), monitored continuously or on a monthly, weekly or daily schedule, and arithmetic and geometric Asian options on the terminal's market. Reiner–Rubinstein and geometric-average closed forms under flat volatility, with the Broadie–Glasserman–Kou correction when the barrier is monitored on a schedule; the C++ Monte Carlo kernel — Brownian-bridge monitoring, or an indicator on those same dates, up to 16 barrier levels on the same paths — under that volatility as a check, and under the surface's Dupire local volatility, with the vanilla on the same paths as a repricing check, and barriers also solved as a PDE (a second method, with its Greeks). A knock-out-vs-barrier chart, the geometric control variate for arithmetic averages and fine-grid bias estimates; on the native engine or in WebAssembly. |
 | **Stress Lab** | 2008-style credit crisis, COVID-style crash, volatility spike, rate shock, melt-up / vol crush, or a custom shock. Shows Spot → Vol → Greeks → P&L → VaR, P&L by leg, a P&L-vs-spot ladder and all scenarios side by side; apply a shock to the whole terminal and reset. |
 | **Risk / VaR** | 1-day 95% parametric VaR, plus delta-normal, delta-gamma and Monte Carlo full-revaluation VaR — spot only, and spot with correlated implied-vol shocks — with expected shortfall at 90 / 95 / 99% over 1 / 5 / 10 days, exposures and stated assumptions. |
 | **Portfolio Upload** | CSV, XLSX or XLS, parsed entirely in the browser. Tolerant column names (`option_type`, `cp`, `action`, `strike_price`, `dte`, `expiration`, `contracts`, `fill_price`, …), ISO / US / Excel dates, accounting negatives, a row-by-row preview with errors and warnings, and downloadable samples. |
@@ -119,6 +119,16 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   arithmetic Asian's standard error 29×. Under the equity-index smile with the upward term structure, a 91-day
   755-strike SPY down-and-out call with its barrier at 700 is worth $28.86 against $30.32 at the strike's implied
   volatility — 27 standard errors lower — while the vanilla on the same paths reprices within 0.07 standard errors.
+- **Discretely monitored barriers**: real barrier contracts are checked at daily or weekly closes, and a barrier tested
+  on only m dates is harder to breach, so its knock-out is worth strictly more than the continuously monitored one.
+  With `monitors` = m the simulation makes the m dates k·T/m grid anchors and tests the barrier by an indicator there
+  rather than by the bridge; in closed form the same effect is the Broadie–Glasserman–Kou correction, the continuous
+  formula with the barrier moved away from the spot to H·exp(±β σ √(T/m)), β = −ζ(½)/√(2π) ≈ 0.5826, whose error is
+  o(1/√m). In the C++ gate, Hull's 6-month down-and-out call at H = 92 is worth 6.9622 monitored 12 times against
+  6.0979 monitored continuously (+0.8643), 6.5766 at 52 dates and 6.3311 at 252, converging back to the continuous
+  value; the correction lands 0.16, 0.44 and 0.31 standard errors from the simulation at those frequencies, where the
+  uncorrected continuous formula is 73, 41 and 20 standard errors away. An up-and-out put behaves the same way with
+  the shift reversed, and in + out = vanilla on the same paths to 2e-14.
 - **Finite differences (local-volatility PDE)**: V_τ = ½σ²V_xx + (r − q − ½σ²)V_x − rV in log spot with σ² the surface's
   local variance (`core/src/pde.cpp`, native and WebAssembly) — European, American and continuously monitored knock-out
   options, with grid Greeks (Δ, Γ, Θ) and the early-exercise boundary. A uniform log-spot grid with the payoff averaged
@@ -199,7 +209,7 @@ of the market's SSVI surface (sent as the dashboard's market JSON), and reports 
 | `mc {id, call, S, K, r, sigma, T, paths ≤ 10M, seed}` | `mc_result {id, price, std_error, paths, ms, backend, device}` | v2 — Metal GPU, falling back to multithreaded CPU; runs off the event loop |
 | `mc_portfolio {id, S, r, q, legs[{call, K, T, sigma, weight}], paths ≤ 10M, seed, antithetic}` | `mc_portfolio_result {id, price, std_error, paths, ms, backend, device}` | v5 — every leg on one Brownian path at its own σ; multithreaded CPU |
 | `mc_local_vol {id, market{S, sigma, r, q, smile?, smileSpot?, term?}, legs[{call, K, T, weight}], paths ≤ 10M, seed, steps_per_year, extrapolate}` | `mc_local_vol_result {id, price, std_error, paths, steps, fine_bias, ms, backend, device}` | v6 — Dupire local volatility, log-Euler with coupled Richardson extrapolation; multithreaded CPU |
-| `mc_exotic {id, market{…}, spec{kind: "barrier" or "asian", call, K, T, up?, levels?[≤ 16], fixings?}, paths ≤ 10M, seed, steps_per_year, extrapolate}` | `mc_exotic_result {id, paths, steps, vanilla, vanilla_se, vanilla_fine_bias, out[], out_se[], out_fine_bias[], in[], in_se[], arith, arith_se, arith_fine_bias, geo, geo_se, arith_geo_cov, ms, backend, device}` | v7 — Brownian-bridge barrier monitoring at every level on the same paths, or arithmetic and geometric averages; per unit of underlying; multithreaded CPU |
+| `mc_exotic {id, market{…}, spec{kind: "barrier" or "asian", call, K, T, up?, levels?[≤ 16], monitors?, fixings?}, paths ≤ 10M, seed, steps_per_year, extrapolate}` | `mc_exotic_result {id, paths, steps, monitors, vanilla, vanilla_se, vanilla_fine_bias, out[], out_se[], out_fine_bias[], in[], in_se[], arith, arith_se, arith_fine_bias, geo, geo_se, arith_geo_cov, ms, backend, device}` | v7 — Brownian-bridge barrier monitoring at every level on the same paths, or arithmetic and geometric averages; per unit of underlying; multithreaded CPU. v8 — `spec.monitors` tests the barrier on that many equally spaced dates instead, and the result echoes it |
 
 Errors on v2 messages return `error {id, msg}` and keep the connection open.
 
@@ -434,10 +444,12 @@ tests/         C++ acceptance gate (BS prices, Greeks, MC convergence, portfolio
 - American early exercise is priced only in the Pricing Models Lab — the CRR lattice at each leg's implied volatility and
   finite differences under the surface; the Greeks tiles, charts, stress and VaR treat options as European. Close to today
   the local-volatility exercise boundary inherits the power-law smile's very high short-dated wing volatility.
-- Path-dependent payoffs are limited to continuously monitored barriers without rebates and Asian options on equally
-  spaced fixings, priced one at a time in the Exotics tab; strategies, the payoff chart, stress and VaR hold European
-  options. Under local volatility the barrier bridge uses each step's local variance, an approximation whose error
-  shrinks with the step. The Metal GPU kernel prices one contract per run; whole portfolios and exotics run on the
+- Path-dependent payoffs are limited to barriers without rebates — monitored continuously or on an equally spaced
+  schedule — and Asian options on equally spaced fixings, priced one at a time in the Exotics tab; strategies, the
+  payoff chart, stress and VaR hold European options. Under local volatility the barrier bridge uses each step's local
+  variance, an approximation whose error shrinks with the step. The Broadie–Glasserman–Kou correction is asymptotic in
+  the number of monitoring dates, so it is weakest at very few of them, and it assumes one flat volatility; the
+  simulation monitors discretely under any surface. The Metal GPU kernel prices one contract per run; whole portfolios and exotics run on the
   multithreaded CPU kernel or in WebAssembly.
 - The native engine (Metal GPU, Accelerate SIMD, multithreading) is a local service. In the browser the C++ core runs
   as single-threaded WebAssembly and prices the Greeks tiles, single-contract Monte Carlo, the Pricing Lab's

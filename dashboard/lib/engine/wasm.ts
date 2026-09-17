@@ -7,14 +7,14 @@
 // here: the C++ entry points assume positive S, K, sigma and T.
 
 import type { BarrierPrices, ExoticMcResult, ExoticSpec } from '../quant/exotics';
-import { MAX_ASIAN_FIXINGS, MAX_BARRIER_LEVELS } from '../quant/exotics';
+import { MAX_ASIAN_FIXINGS, MAX_BARRIER_LEVELS, MAX_BARRIER_MONITORS } from '../quant/exotics';
 import type { Greeks, Leg, Market } from '../quant/types';
 import { CONTRACT_MULT, signedQty } from '../quant/types';
 import { legSigma } from '../quant/volSurface';
 
 export const WASM_PATH = '/wasm/quantcore.wasm';
 export const WASM_MANIFEST_PATH = '/wasm/quantcore.json';
-export const WASM_ABI = 6;
+export const WASM_ABI = 7;
 export const MAX_WASM_PATHS = 50_000_000;
 /** Cap on paths × legs for one portfolio run, so a single-threaded run stays within seconds. */
 export const MAX_WASM_PORTFOLIO_WORK = 64_000_000;
@@ -23,9 +23,9 @@ export const MAX_WASM_LOCAL_VOL_WORK = 300_000_000;
 /** Term-structure pillars the module's surface buffer holds. */
 export const WASM_TERM_PILLARS = 32;
 const SURFACE_SIZE = 13 + 2 * WASM_TERM_PILLARS;
-// exotic input: kind, call, K, T, up, n_levels, levels × 16, n_fixings; output: see bindings/quantcore_wasm.cpp
-const EXOTIC_SPEC_SIZE = 7 + MAX_BARRIER_LEVELS;
-const EXOTIC_OUT_SIZE = 6 + 5 * MAX_BARRIER_LEVELS + 6;
+// exotic input: kind, call, K, T, up, n_levels, levels × 16, n_fixings, n_monitors; output: bindings/quantcore_wasm.cpp
+const EXOTIC_SPEC_SIZE = 8 + MAX_BARRIER_LEVELS;
+const EXOTIC_OUT_SIZE = 6 + 5 * MAX_BARRIER_LEVELS + 7;
 
 // PDE output: price, delta, gamma, theta, nodes, steps, n_boundary, boundary τ × 64, boundary S × 64
 const PDE_BOUNDARY_POINTS = 64;
@@ -61,7 +61,9 @@ export interface PdeResult {
 
 /** Evaluations for one exotic path as the engines count them: time steps (fixings add steps) × three a step with Richardson × barrier levels. */
 export function exoticWorkPerPath(spec: ExoticSpec, m: Market, stepsPerYear: number, extrapolate: boolean): number {
-  const steps = Math.ceil(spec.T * stepsPerYear) + (spec.kind === 'asian' ? spec.fixings : 0);
+  // a discretely monitored barrier lands on every monitoring date, so it never takes fewer steps than it has dates
+  const steps = Math.max(Math.ceil(spec.T * stepsPerYear), spec.kind === 'barrier' ? spec.monitors ?? 0 : 0) +
+                (spec.kind === 'asian' ? spec.fixings : 0);
   return steps * (extrapolate && m.smile ? 3 : 1) * (1 + (spec.kind === 'barrier' ? spec.levels.length : 0) / 4);
 }
 
@@ -100,11 +102,15 @@ export interface QuantcoreWasm {
   mcLocalVol(legs: Leg[], m: Market, paths: number, seed: number, stepsPerYear: number, extrapolate: boolean): WasmLocalVolResult | null;
   /** Continuously monitored barrier option in closed form — the C++ port of barrierPrices. */
   barrierPrices(call: boolean, up: boolean, S: number, K: number, H: number, T: number, sigma: number, r: number, q: number): BarrierPrices | null;
+  /** Barrier monitored at `monitors` equally spaced dates (Broadie–Glasserman–Kou) — the C++ port of barrierPricesDiscrete. */
+  barrierPricesDiscrete(call: boolean, up: boolean, S: number, K: number, H: number, T: number, sigma: number,
+                        r: number, q: number, monitors: number): BarrierPrices | null;
   /** Geometric-average Asian option on n equally spaced fixings — the C++ port of geometricAsianPrice. */
   geometricAsian(call: boolean, S: number, K: number, T: number, n: number, sigma: number, r: number, q: number): number | null;
   /**
-   * A barrier (Brownian-bridge monitoring, every level on the same paths) or Asian option under the market's local
-   * volatility, per unit of underlying: log-Euler, optionally with coupled Richardson extrapolation.
+   * A barrier (every level on the same paths — Brownian-bridge monitoring, or an indicator on the spec's monitoring
+   * dates when it has them) or Asian option under the market's local volatility, per unit of underlying: log-Euler,
+   * optionally with coupled Richardson extrapolation.
    */
   mcExotic(spec: ExoticSpec, m: Market, paths: number, seed: number, stepsPerYear: number, extrapolate: boolean): ExoticMcResult | null;
   /**
@@ -159,6 +165,8 @@ interface Exports {
   qc_exotic_out(): number;
   qc_exotic_out_size(): number;
   qc_barrier_prices(call: number, up: number, S: number, K: number, H: number, T: number, sigma: number, r: number, q: number): void;
+  qc_barrier_prices_discrete(call: number, up: number, S: number, K: number, H: number, T: number, sigma: number,
+                             r: number, q: number, monitors: number): void;
   qc_geometric_asian(call: number, S: number, K: number, T: number, n: number, sigma: number, r: number, q: number): number;
   qc_mc_exotic(paths: number, seed: number, stepsPerYear: number, extrapolate: number): void;
   qc_pde_out(): number;
@@ -277,6 +285,13 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
       const o = out();
       return Number.isFinite(o[0]) && Number.isFinite(o[1]) && Number.isFinite(o[2]) ? { out: o[0], in: o[1], vanilla: o[2] } : null;
     },
+    barrierPricesDiscrete(call, up, S, K, H, T, sigma, r, q, monitors) {
+      if (!validMarket(S, K, r, sigma, T, q) || !positive(H)) return null;
+      if (!Number.isInteger(monitors) || monitors < 0 || monitors > MAX_BARRIER_MONITORS) return null;
+      ex.qc_barrier_prices_discrete(call ? 1 : 0, up ? 1 : 0, S, K, H, T, sigma, r, q, monitors);
+      const o = out();
+      return Number.isFinite(o[0]) && Number.isFinite(o[1]) && Number.isFinite(o[2]) ? { out: o[0], in: o[1], vanilla: o[2] } : null;
+    },
     geometricAsian(call, S, K, T, n, sigma, r, q) {
       if (!validMarket(S, K, r, sigma, T, q) || !Number.isInteger(n) || n < 1 || n > MAX_ASIAN_FIXINGS) return null;
       return finiteOrNull(ex.qc_geometric_asian(call ? 1 : 0, S, K, T, n, sigma, r, q));
@@ -290,8 +305,11 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
       if (spec.kind === 'barrier') {
         const n = spec.levels.length;
         if (!n || n > MAX_BARRIER_LEVELS || !spec.levels.every(positive)) return null;
+        const monitors = spec.monitors ?? 0;   // 0 monitors the barrier continuously
+        if (!Number.isInteger(monitors) || monitors < 0 || monitors > MAX_BARRIER_MONITORS) return null;
         v[0] = 0; v[4] = spec.up ? 1 : 0; v[5] = n;
         v.set(spec.levels, 6);
+        v[7 + MAX_BARRIER_LEVELS] = monitors;
       } else {
         if (!Number.isInteger(spec.fixings) || spec.fixings < 1 || spec.fixings > MAX_ASIAN_FIXINGS) return null;
         v[0] = 1; v[6 + MAX_BARRIER_LEVELS] = spec.fixings;
@@ -304,7 +322,7 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
       const L = MAX_BARRIER_LEVELS, n = o[5], k = 6 + 5 * L;
       const block = (b: number) => Array.from(o.subarray(6 + b * L, 6 + b * L + n));
       return {
-        paths: o[0], steps: o[1], vanilla: o[2], vanillaSe: o[3], vanillaFineBias: finiteOrNull(o[4]),
+        paths: o[0], steps: o[1], monitors: o[k + 6], vanilla: o[2], vanillaSe: o[3], vanillaFineBias: finiteOrNull(o[4]),
         out: block(0), outSe: block(1), outFineBias: block(2).map(finiteOrNull), in: block(3), inSe: block(4),
         arith: finiteOrNull(o[k]), arithSe: finiteOrNull(o[k + 1]), arithFineBias: finiteOrNull(o[k + 2]),
         geo: finiteOrNull(o[k + 3]), geoSe: finiteOrNull(o[k + 4]), arithGeoCov: finiteOrNull(o[k + 5]),

@@ -407,6 +407,7 @@ struct ExoticPlan {
     bool   barrier = false, call = true, up = false;
     std::size_t M = 0;                        // barrier levels
     double h[kMaxBarrierLevels] = {};         // log barriers
+    std::size_t n_mon = 0;                    // barrier monitoring dates; 0 monitors continuously
     std::size_t n_fix = 0;
     double K = 0.0, df = 1.0;
 };
@@ -417,7 +418,7 @@ bool valid_exotic(const ExoticSpec& e, const VolSurface& s, long long paths, dou
     if (e.kind == ExoticKind::Barrier) {
         if (e.n_levels < 1 || e.n_levels > static_cast<int>(kMaxBarrierLevels)) return false;
         for (int j = 0; j < e.n_levels; ++j) if (!(e.levels[j] > 0.0) || !std::isfinite(e.levels[j])) return false;
-        return true;
+        return e.n_monitors >= 0 && e.n_monitors <= static_cast<int>(kMaxBarrierMonitors);
     }
     return e.kind == ExoticKind::Asian && e.n_fixings >= 1 && e.n_fixings <= static_cast<int>(kMaxAsianFixings);
 }
@@ -431,8 +432,19 @@ bool build_exotic_plan(ExoticPlan& p, const ExoticSpec& e, const VolSurface& s, 
     if (p.barrier) {
         p.M = static_cast<std::size_t>(e.n_levels);
         for (std::size_t j = 0; j < p.M; ++j) p.h[j] = std::log(e.levels[j]);
-        const double T = e.T;
-        return build_grid(p.g, &T, 1, s, spy, richardson);
+        p.n_mon = e.n_monitors > 0 ? static_cast<std::size_t>(e.n_monitors) : 0;
+        if (!p.n_mon) {
+            const double T = e.T;
+            return build_grid(p.g, &T, 1, s, spy, richardson);
+        }
+        // the monitoring dates are grid anchors, so every one of them is a step the path lands on exactly
+        double* anchors = static_cast<double*>(std::calloc(p.n_mon, sizeof(double)));
+        if (!anchors) return false;
+        for (std::size_t i = 0; i < p.n_mon; ++i) anchors[i] = (e.T * static_cast<double>(i + 1)) / static_cast<double>(p.n_mon);
+        anchors[p.n_mon - 1] = e.T;   // the last monitoring date is the expiry
+        const bool ok = build_grid(p.g, anchors, p.n_mon, s, spy, richardson);
+        std::free(anchors);
+        return ok;
     }
     p.n_fix = static_cast<std::size_t>(e.n_fixings);
     double* anchors = static_cast<double*>(std::calloc(p.n_fix, sizeof(double)));
@@ -485,6 +497,7 @@ ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, 
     const double rho = g.rho, omr2 = g.omr2, carry = g.carry;
     const double inv_n = p.n_fix ? 1.0 / static_cast<double>(p.n_fix) : 0.0;
     const bool up = p.up;
+    const bool discrete = p.n_mon > 0;   // the barrier is tested on the monitoring dates only, never between them
 
     const double kInf = std::numeric_limits<double>::infinity();
     double xn[kBlock], inv_var[kBlock];
@@ -511,7 +524,7 @@ ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, 
             const double var = v * h_dt;
             inv_var[b] = var > 0.0 ? 1.0 / var : kInf;
         }
-        if (M) bridge(st, B);
+        if (M && !discrete) bridge(st, B);
         std::copy(xn, xn + B, st.x);
     };
 
@@ -548,16 +561,28 @@ ExoticSums simulate_exotic(const ExoticPlan& p, long long paths, uint64_t seed, 
                         xn[b] = F.x[b] + drift + sd * z1[b];
                         inv_var[b] = inv;
                     }
-                    if (M) bridge(F, B);
+                    if (M && !discrete) bridge(F, B);
                     std::copy(xn, xn + B, F.x);
                 }
             }
-            if (p.n_fix && r < g.n_anchor && static_cast<std::size_t>(g.anchor_step[r]) == i + 1) {
+            if (r < g.n_anchor && static_cast<std::size_t>(g.anchor_step[r]) == i + 1) {
                 for (std::size_t k = 0; k < grids; ++k) {
                     const PathState st = k ? C : F;
-                    for (std::size_t b = 0; b < B; ++b) {
-                        st.asum[b] += std::exp(st.x[b]);
-                        st.gsum[b] += st.x[b];
+                    if (p.n_fix) {
+                        for (std::size_t b = 0; b < B; ++b) {
+                            st.asum[b] += std::exp(st.x[b]);
+                            st.gsum[b] += st.x[b];
+                        }
+                    }
+                    // discrete monitoring: survival is an indicator on this date, not a probability over the step
+                    if (discrete) {
+                        for (std::size_t j = 0; j < M; ++j) {
+                            const double h = p.h[j];
+                            double*      sv = st.sv + j * kBlock;
+                            for (std::size_t b = 0; b < B; ++b) {
+                                if (up ? st.x[b] >= h : st.x[b] <= h) sv[b] = 0.0;
+                            }
+                        }
                     }
                 }
                 ++r;
@@ -623,6 +648,7 @@ ExoticResult finish_exotic(const ExoticSums& s, long long paths, const ExoticPla
     r.vanilla_se = se(s.van, s.van2);
     r.vanilla_fine_bias = richardson ? mean(s.van_gap) : kNaN;
     r.n_levels = static_cast<int>(p.M);
+    r.n_monitors = static_cast<int>(p.n_mon);
     for (std::size_t j = 0; j < p.M; ++j) {
         r.out[j] = mean(s.out[j]);
         r.out_se[j] = se(s.out[j], s.out2[j]);

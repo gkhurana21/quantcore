@@ -1016,6 +1016,76 @@ static void section_dual() {
     printf("\n  %-22s  %s\n", "American upper bound:", all_ok ? "ALL PASS" : "FAIL");
 }
 
+// ── Section 11: discretely monitored barriers ───────────────────────────────
+//
+// Real barrier contracts are checked at daily or weekly closes, not continuously, and a barrier tested on only m
+// dates is harder to breach — so a discretely monitored knock-out is worth strictly more than the continuous one.
+// Two independent methods: the simulation tests the barrier on those same m dates (they are grid anchors, so every
+// path lands on them exactly), and the Broadie–Glasserman–Kou correction prices it in closed form by moving the
+// barrier away from the spot to H·exp(±β σ √(T/m)).
+//
+// Bounds fixed before the first run, as requirements on the correction rather than fits to it: it must sit within 4
+// standard errors of the simulation at every monitoring frequency; it must be strictly closer to the simulation than
+// the uncorrected continuous formula; the discrete value must exceed the continuous one and fall toward it as m
+// grows; in + out must equal the vanilla on the same paths; and the grid must land on every monitoring date.
+
+static void section_discrete_barrier() {
+    banner("11. DISCRETELY MONITORED BARRIERS  (Broadie-Glasserman-Kou against the same-dates simulation)");
+    bool all_ok = true;
+
+    VolSurface flat;
+    flat.S = 100.0; flat.r = 0.08; flat.q = 0.04; flat.sigma = 0.25;
+    const double K = 100.0, T = 0.5;
+    struct Case { OptionType type; bool up; double H; const char* name; };
+    const Case cases[] = { { OptionType::Call, false, 92.0,  "down-and-out call  H=92 " },
+                           { OptionType::Put,  true,  108.0, "up-and-out   put   H=108" } };
+
+    for (const Case& c : cases) {
+        ExoticSpec e;
+        e.kind = ExoticKind::Barrier; e.type = c.type; e.K = K; e.T = T; e.up = c.up;
+        e.n_levels = 1; e.levels[0] = c.H;
+        const ExoticResult  rc = mc_exotic_mt(e, flat, 1'000'000, 11, 365.0, true, -1);
+        const BarrierPrices cf = barrier_prices(c.type, c.up, flat.S, K, c.H, T, flat.sigma, flat.r, flat.q);
+        const double z_cont = zscore(rc.out[0], cf.out, rc.out_se[0]);
+        const bool   cont_ok = z_cont < 4.0 && rc.n_monitors == 0;
+        all_ok = all_ok && cont_ok;
+        printf("  %s: continuous MC %.4f ± %.4f vs closed form %.4f (|z| %.2f)  %s\n",
+               c.name, rc.out[0], rc.out_se[0], cf.out, z_cont, cont_ok ? "OK" : "*** FAIL ***");
+
+        double prev = INFINITY;   // each finer monitoring grid must price closer to continuous monitoring
+        for (int m : { 12, 52, 252 }) {
+            ExoticSpec d = e;
+            d.n_monitors = m;
+            const ExoticResult  rd = mc_exotic_mt(d, flat, 1'000'000, 11, 365.0, true, -1);
+            const BarrierPrices bgk =
+                barrier_prices_discrete(c.type, c.up, flat.S, K, c.H, T, flat.sigma, flat.r, flat.q, m);
+            const double z_bgk = zscore(bgk.out, rd.out[0], rd.out_se[0]);
+            const double z_unc = zscore(cf.out, rd.out[0], rd.out_se[0]);
+            const double parity = std::fabs(rd.out[0] + rd.in[0] - rd.vanilla);
+            const bool   ok = z_bgk < 4.0 && z_bgk < z_unc && rd.out[0] > rc.out[0] && rd.out[0] < prev &&
+                              parity < 1e-10 && rd.n_monitors == m && rd.steps >= m;
+            all_ok = all_ok && ok;
+            prev = rd.out[0];
+            printf("    %3d dates: MC %.4f ± %.4f (%+.4f over continuous) · corrected %.4f (|z| %.2f) · uncorrected %.4f (|z| %5.1f) · %lld steps, parity %.0e  %s\n",
+                   m, rd.out[0], rd.out_se[0], rd.out[0] - rc.out[0], bgk.out, z_bgk, cf.out, z_unc, rd.steps, parity,
+                   ok ? "OK" : "*** FAIL ***");
+        }
+    }
+
+    // more monitoring dates than the cap is rejected; no monitoring dates is continuous monitoring, unchanged
+    ExoticSpec bad;
+    bad.kind = ExoticKind::Barrier; bad.type = OptionType::Call; bad.K = K; bad.T = T; bad.n_levels = 1;
+    bad.levels[0] = 92.0; bad.n_monitors = static_cast<int>(kMaxBarrierMonitors) + 1;
+    const BarrierPrices zero_m = barrier_prices_discrete(OptionType::Call, false, 100.0, K, 92.0, T, 0.25, 0.08, 0.04, 0);
+    const BarrierPrices cont0 = barrier_prices(OptionType::Call, false, 100.0, K, 92.0, T, 0.25, 0.08, 0.04);
+    const bool invalid_ok = std::isnan(mc_exotic(bad, flat, 100, 1, 365.0, true).vanilla) && zero_m.out == cont0.out;
+    all_ok = all_ok && invalid_ok;
+    printf("  more monitoring dates than the cap → NaN · no monitoring dates prices continuous monitoring  %s\n",
+           invalid_ok ? "OK" : "*** FAIL ***");
+
+    printf("\n  %-22s  %s\n", "Discrete barriers:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -1033,6 +1103,7 @@ int main() {
     section_pde();
     section_lsm();
     section_dual();
+    section_discrete_barrier();
 
     banner("End of Phase 1 report");
     return 0;

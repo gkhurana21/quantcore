@@ -36,6 +36,11 @@ Server → Client  result:
     {"type":"result","price":...,"delta":...,"gamma":...,"theta":...,
      "vega":...,"pnl":...,"t_ns":<echo>,"calc_us":...}
 
+v8 — mc_exotic gains spec.monitors (1…2000): the barrier is tested only on that many equally spaced dates k·T/m
+instead of continuously, and mc_exotic_result carries "monitors" (0 when monitored continuously). A barrier checked
+on only m dates is harder to breach, so a discretely monitored knock-out is worth more than the continuous one.
+Absent, the barrier is monitored continuously and the exchange is exactly the v7 one.
+
 v7 — mc_exotic {id, market, spec:{kind: "barrier"|"asian", call, K, T, up?, levels?: [...≤ 16], fixings?},
 paths ≤ 10M, seed, steps_per_year?, extrapolate?} → mc_exotic_result {id, paths, steps, vanilla, vanilla_se,
 vanilla_fine_bias, out[], out_se[], out_fine_bias[], in[], in_se[], arith, arith_se, arith_fine_bias, geo, geo_se,
@@ -106,7 +111,7 @@ import quantcore
 
 app = FastAPI()
 
-PROTOCOL_VERSION = 7
+PROTOCOL_VERSION = 8
 MAX_LEGS         = 64
 MAX_PATHS        = 10_000_000
 MAX_LV_WORK      = 4_000_000_000    # paths × coarse steps for one local-vol run
@@ -277,6 +282,9 @@ def _exotic(raw) -> dict:
             raise ValueError("spec.levels must list 1 to 16 barrier levels")
         spec["up"] = bool(raw.get("up", False))
         spec["levels"] = [_number({"v": v}, "v", 0, lo_open=True) for v in levels]
+        # absent monitors the barrier continuously, which is what every client before protocol 8 asked for
+        if raw.get("monitors") is not None:
+            spec["monitors"] = int(_number(raw, "monitors", 1, 2000))
     else:
         spec["fixings"] = int(_number(raw, "fixings", 1, 2000))
     return spec

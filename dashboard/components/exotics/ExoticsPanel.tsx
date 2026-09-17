@@ -13,7 +13,8 @@ import { bsPrice } from '@/lib/quant/blackScholes';
 import { hasVolSurface, legSigma } from '@/lib/quant/volSurface';
 import type { ExoticMcResult, ExoticSpec } from '@/lib/quant/exotics';
 import {
-  barrierPrices, controlVariate, geometricAsianPrice, MAX_ASIAN_FIXINGS, MAX_BARRIER_LEVELS,
+  barrierPrices, barrierPricesDiscrete, controlVariate, geometricAsianPrice, MAX_ASIAN_FIXINGS, MAX_BARRIER_LEVELS,
+  MAX_BARRIER_MONITORS,
 } from '@/lib/quant/exotics';
 import { LV_MIN_STEPS, LV_STEPS_PER_YEAR, LV_WASM_WORK } from '@/lib/compute/tasks';
 import type { Engine } from '@/lib/engine/useEngine';
@@ -35,12 +36,18 @@ import css from './exotics.module.css';
 
 type Product = 'barrier' | 'asian';
 type Schedule = 'monthly' | 'weekly' | 'daily';
+type Monitoring = 'continuous' | Schedule;
 type Backend = 'native' | 'wasm';
 
 const SCHEDULES: { value: Schedule; label: string; perYear: number }[] = [
   { value: 'monthly', label: 'Monthly', perYear: 12 },
   { value: 'weekly', label: 'Weekly', perYear: 52 },
   { value: 'daily', label: 'Daily', perYear: 365 },
+];
+/** How often the barrier is tested. Continuous is what the closed forms assume, and stays the default. */
+const MONITORINGS: { value: Monitoring; label: string }[] = [
+  { value: 'continuous', label: 'Continuous' },
+  ...SCHEDULES.map(s => ({ value: s.value as Monitoring, label: s.label })),
 ];
 const BACKEND_LABEL = { native: 'C++ native', wasm: 'C++ WebAssembly' } as const;
 
@@ -58,6 +65,7 @@ interface Setup {
   key: string; product: Product; call: boolean; up: boolean; spec: ExoticSpec;
   S: number; r: number; q: number; K: number; H: number; hPct: number; T: number;
   fixings: number; schedule: Schedule; sigmaK: number; sigmaH: number;
+  monitoring: Monitoring; monitors: number;  // barrier monitoring dates; 0 is continuous monitoring
   levels: number[]; hIndex: number;          // barrier levels simulated on the same paths, and the selected one
   market: Market; flatMarket: Market; surface: boolean; stepsPerYear: number; seed: number;
 }
@@ -85,19 +93,22 @@ function barrierLadder(S: number, H: number, up: boolean, sdT: number): number[]
 }
 
 function buildSetup(product: Product, call: boolean, up: boolean, kPct: number, hPct: number, dayCount: number,
-                    schedule: Schedule, market: Market, seed: number): Setup {
+                    schedule: Schedule, monitoring: Monitoring, market: Market, seed: number): Setup {
   const { S, r, q } = market;
   const T = dayCount / 365, K = (S * kPct) / 100, H = (S * hPct) / 100;
   const sigmaK = legSigma(market, K, T), sigmaH = legSigma(market, H, T);
   const perYear = SCHEDULES.find(s => s.value === schedule)?.perYear ?? 52;
   const fixings = Math.min(MAX_ASIAN_FIXINGS, Math.max(1, Math.round(T * perYear)));
+  // continuous monitoring carries no dates, and the spec then omits the field entirely
+  const monPerYear = SCHEDULES.find(s => s.value === monitoring)?.perYear ?? 0;
+  const monitors = monPerYear ? Math.min(MAX_BARRIER_MONITORS, Math.max(1, Math.round(T * monPerYear))) : 0;
   const levels = product === 'barrier' ? barrierLadder(S, H, up, sigmaK * Math.sqrt(T)) : [];
   const spec: ExoticSpec = product === 'barrier'
-    ? { kind: 'barrier', call, K, T, up, levels }
+    ? { kind: 'barrier', call, K, T, up, levels, ...(monitors ? { monitors } : {}) }
     : { kind: 'asian', call, K, T, fixings };
   return {
-    key: [product, call, up, kPct, hPct, dayCount, schedule, marketKeyOf(market), seed].join('|'),
-    product, call, up, spec, S, r, q, K, H, hPct, T, fixings, schedule, sigmaK, sigmaH,
+    key: [product, call, up, kPct, hPct, dayCount, schedule, monitoring, marketKeyOf(market), seed].join('|'),
+    product, call, up, spec, S, r, q, K, H, hPct, T, fixings, schedule, sigmaK, sigmaH, monitoring, monitors,
     levels, hIndex: levels.indexOf(H), market,
     flatMarket: { S, r, q, sigma: sigmaK, smile: null, term: null },
     surface: hasVolSurface(market),
@@ -211,8 +222,10 @@ const BarrierChart = memo(function BarrierChart({ setup: s, flat, local, pde }: 
     for (let i = 0; i <= 120; i++) {
       const H = lo + ((hi - lo) * i) / 120;
       hs.push(H);
-      atK.push(barrierPrices(s.call, s.up, s.S, s.K, H, s.T, s.sigmaK, s.r, s.q).out);
-      if (s.surface) atH.push(barrierPrices(s.call, s.up, s.S, s.K, H, s.T, legSigma(s.market, H, s.T), s.r, s.q).out);
+      atK.push(barrierPricesDiscrete(s.call, s.up, s.S, s.K, H, s.T, s.sigmaK, s.r, s.q, s.monitors).out);
+      if (s.surface) {
+        atH.push(barrierPricesDiscrete(s.call, s.up, s.S, s.K, H, s.T, legSigma(s.market, H, s.T), s.r, s.q, s.monitors).out);
+      }
     }
     return { hs, atK, atH };
   }, [s, lo, hi]);
@@ -278,8 +291,11 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
   const { setup: s, flat, local } = view;
   const j = s.hIndex;
   const name = `${s.up ? 'up' : 'down'}-and-out ${s.call ? 'call' : 'put'}`;
-  const cfK = barrierPrices(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaK, s.r, s.q);
-  const cfH = barrierPrices(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaH, s.r, s.q);
+  // with monitoring dates these carry the Broadie–Glasserman–Kou correction; with none they are the continuous
+  // formulas unchanged, so the default view is exactly what it was
+  const cfK = barrierPricesDiscrete(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaK, s.r, s.q, s.monitors);
+  const cfH = barrierPricesDiscrete(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaH, s.r, s.q, s.monitors);
+  const cont = s.monitors ? barrierPrices(s.call, s.up, s.S, s.K, s.H, s.T, s.sigmaK, s.r, s.q) : null;
   const gap = (v: number, se: number | null) => (
     <>
       <span className={l.valueMain}>{signed(v - cfK.out, 4)}</span>
@@ -288,11 +304,21 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
   );
 
   const rows: Row[] = [
-    { id: 'bs-k', model: `Black-Scholes · σ(K) ${pct(s.sigmaK, 2)}`, detail: 'Reiner–Rubinstein closed form · reference',
+    { id: 'bs-k', model: `Black-Scholes · σ(K) ${pct(s.sigmaK, 2)}`,
+      detail: s.monitors ? `Broadie–Glasserman–Kou · ${s.monitors} monitoring dates · reference`
+                         : 'Reiner–Rubinstein closed form · reference',
       cells: [<Price key="out" v={cfK.out} />, <Price key="in" v={cfK.in} />, <Price key="van" v={cfK.vanilla} />,
               <span key="gap" className={css.dash}>—</span>],
       z: null, ms: null, verdict: REFERENCE },
   ];
+  if (cont) {
+    rows.push({ id: 'continuous', model: 'Continuous monitoring',
+                detail: 'Reiner–Rubinstein · the same barrier watched without pause',
+                cells: [<Price key="out" v={cont.out} />, <Price key="in" v={cont.in} />, <Price key="van" v={cont.vanilla} />,
+                        gap(cont.out, null)],
+                z: null, ms: null, verdict: { tone: 'muted', text: 'Continuous' },
+                attrs: { 'data-continuous-out': cont.out } });
+  }
   if (s.surface) {
     rows.push({ id: 'bs-h', model: `Black-Scholes · σ(H) ${pct(s.sigmaH, 2)}`, detail: 'closed form at the barrier’s implied volatility',
                 cells: [<Price key="out" v={cfH.out} />, <Price key="in" v={cfH.in} />, <Price key="van" v={cfH.vanilla} />,
@@ -302,7 +328,8 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
   let flatZ: number | null = null;
   if (flat) {
     flatZ = Math.max(zOf(flat.out[j], cfK.out, flat.outSe[j]), zOf(flat.in[j], cfK.in, flat.inSe[j]));
-    rows.push({ id: 'mc-flat', model: 'Monte Carlo · flat σ(K)', detail: runDetail(flat, 'Brownian bridge'),
+    rows.push({ id: 'mc-flat', model: 'Monte Carlo · flat σ(K)',
+                detail: runDetail(flat, s.monitors ? `${s.monitors} monitoring dates` : 'Brownian bridge'),
                 cells: [<Price key="out" v={flat.out[j]} se={flat.outSe[j]} />, <Price key="in" v={flat.in[j]} se={flat.inSe[j]} />,
                         <Price key="van" v={flat.vanilla} se={flat.vanillaSe} />, gap(flat.out[j], flat.outSe[j])],
                 z: flatZ, ms: flat.ms, verdict: agreement(flatZ) });
@@ -313,7 +340,8 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
   if (s.surface && local) {
     const z = zOf(local.vanilla, cfK.vanilla, local.vanillaSe);
     const d = local.out[j] - cfK.out, dz = local.outSe[j] > 0 ? d / local.outSe[j] : 0;
-    rows.push({ id: 'local', model: 'Local vol (Dupire)', detail: runDetail(local, 'bridge at the step’s local variance'),
+    rows.push({ id: 'local', model: 'Local vol (Dupire)',
+                detail: runDetail(local, s.monitors ? `${s.monitors} monitoring dates` : 'bridge at the step’s local variance'),
                 cells: [<Price key="out" v={local.out[j]} se={local.outSe[j]} />, <Price key="in" v={local.in[j]} se={local.inSe[j]} />,
                         <Price key="van" v={local.vanilla} se={local.vanillaSe} />, gap(local.out[j], local.outSe[j])],
                 z, ms: local.ms, verdict: repricing(z), local: true, attrs: { 'data-gap': d, 'data-gap-z': dz } });
@@ -375,7 +403,8 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
         <BarrierChart setup={s} flat={flat} local={local} pde={pde} />
       </div>
       <dl className={l.mcStats}>
-        <Stat label="Barrier" value={usd(s.H, 2)} sub={`${num(s.hPct, 1)}% of spot · ${s.up ? 'above' : 'below'}`} />
+        <Stat label="Barrier" value={usd(s.H, 2)}
+              sub={`${num(s.hPct, 1)}% of spot · ${s.monitors ? `${s.monitors} dates` : 'continuous'}`} />
         <Stat label="Implied volatility" value={`${pct(s.sigmaK, 2)} at K`} sub={`${pct(s.sigmaH, 2)} at H`} />
         <Stat label="Simulation" value={shown ? `${fmtPaths(shown.paths)} paths` : '—'}
               sub={shown ? `${shown.steps} step${shown.steps === 1 ? '' : 's'} · ${BACKEND_LABEL[shown.backend]}` : pendingText} />
@@ -485,12 +514,13 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
   const [hPct, setHPct] = useState(90);
   const [dayCount, setDayCount] = useState(91);
   const [schedule, setSchedule] = useState<Schedule>('weekly');
+  const [monitoring, setMonitoring] = useState<Monitoring>('continuous');
   const [seed, setSeed] = useState(11);
 
   const native = engine.status === 'connected' && (engine.info?.protocol ?? 0) >= 7;
   const backend: Backend | null = native ? 'native' : wasm.status === 'ready' ? 'wasm' : null;
-  const setup = useMemo(() => buildSetup(product, call, up, kPct, hPct, dayCount, schedule, market, seed),
-                        [product, call, up, kPct, hPct, dayCount, schedule, market, seed]);
+  const setup = useMemo(() => buildSetup(product, call, up, kPct, hPct, dayCount, schedule, monitoring, market, seed),
+                        [product, call, up, kPct, hPct, dayCount, schedule, monitoring, market, seed]);
   const setupRef = useRef(setup);
   setupRef.current = setup;
   const key = `${setup.key}|${backend ?? 'none'}`;
@@ -563,8 +593,9 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
   return (
     <div>
       <p className={l.intro}>
-        Path-dependent options on the terminal’s market, per share. Barriers are monitored continuously and pay no rebate;
-        Asian options average on equally spaced fixings, the last at expiry. The closed forms assume one flat volatility. The
+        Path-dependent options on the terminal’s market, per share. Barriers pay no rebate and are monitored continuously
+        unless a monitoring schedule is chosen, when the barrier is tested only on those dates — and is worth more, being
+        harder to breach; Asian options average on equally spaced fixings, the last at expiry. The closed forms assume one flat volatility. The
         same C++ Monte Carlo kernel runs under that volatility, where it must agree with them, and under the surface’s Dupire
         local volatility — the one diffusion consistent with every vanilla on the surface — where no closed form exists.
       </p>
@@ -575,13 +606,17 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
         <Segmented size="sm" label="Option type" testid="exo-type" value={call ? 'call' : 'put'}
                    options={[{ value: 'call', label: 'Call' }, { value: 'put', label: 'Put' }]} onChange={v => setCall(v === 'call')} />
         {product === 'barrier' ? (
-          <Segmented size="sm" label="Barrier side" testid="exo-side" value={up ? 'up' : 'down'}
-                     options={[{ value: 'down', label: 'Down-and-out' }, { value: 'up', label: 'Up-and-out' }]}
-                     onChange={v => {
-                       if ((v === 'up') === up) return;
-                       setUp(v === 'up');
-                       setHPct(p => 200 - p);   // mirror the barrier to the other side of spot
-                     }} />
+          <>
+            <Segmented size="sm" label="Barrier side" testid="exo-side" value={up ? 'up' : 'down'}
+                       options={[{ value: 'down', label: 'Down-and-out' }, { value: 'up', label: 'Up-and-out' }]}
+                       onChange={v => {
+                         if ((v === 'up') === up) return;
+                         setUp(v === 'up');
+                         setHPct(p => 200 - p);   // mirror the barrier to the other side of spot
+                       }} />
+            <Segmented size="sm" label="Monitoring" testid="exo-monitoring" value={monitoring}
+                       options={MONITORINGS.map(x => ({ value: x.value, label: x.label }))} onChange={setMonitoring} />
+          </>
         ) : (
           <Segmented size="sm" label="Fixing schedule" testid="exo-fixings" value={schedule}
                      options={SCHEDULES.map(x => ({ value: x.value, label: x.label }))} onChange={setSchedule} />
@@ -601,7 +636,7 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
         {product === 'barrier' && (
           <SliderField label="Barrier" symbol="H" value={hPct} min={up ? 100.5 : 50} max={up ? 150 : 99.5} step={0.5}
                        format={pctAndUsd} onChange={setHPct} inputDecimals={1} testid="exo-h" displayTestid="exo-h-display"
-                       tip="Monitored continuously: the option is extinguished the first time the price trades through the barrier."
+                       tip="The option is extinguished the first time the price is through the barrier — at any instant under continuous monitoring, or only on the monitoring dates when a schedule is chosen."
                        rangeLabels={up ? ['100.5%', '150%'] : ['50%', '99.5%']} />
         )}
         <SliderField label="Expiry" symbol="T" value={dayCount} min={7} max={730} step={1} format={v => `${v} days`}
@@ -645,6 +680,18 @@ knock-out payoff × Π over steps P(no touch)`}</pre>
             <p>
               Exact under flat volatility, so one step prices the barrier. Under local volatility the step’s local variance stands
               in for σ²Δt; that error shrinks with the step, and 2·fine − coarse is applied to the barrier payoffs as to the vanilla.
+            </p>
+          </div>
+          <div className={l.formula}>
+            <h4>Discrete monitoring · Broadie–Glasserman–Kou</h4>
+            <pre>{`m dates k·T/m;  β = −ζ(½)/√(2π) ≈ 0.5826
+H → H·exp(+βσ√(T/m))   up barrier
+H → H·exp(−βσ√(T/m))   down barrier`}</pre>
+            <p>
+              A barrier tested on only m dates is harder to breach, so the knock-out is worth more than the continuously
+              monitored one. Moving the barrier away from the spot by βσ√Δt in the continuous formula prices that, with
+              error o(1/√m). The simulation tests the barrier on the same m dates instead of the bridge, and the unit
+              tests require the correction to sit within Monte Carlo error of it at monthly, weekly and daily monitoring.
             </p>
           </div>
           <div className={l.formula}>

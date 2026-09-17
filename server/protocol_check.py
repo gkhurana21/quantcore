@@ -54,8 +54,8 @@ async def main():
         pong = await rpc(ws, {"type": "ping", "t_ns": 987654321}, "pong")
         check("ping → pong echo", pong.get("t_ns") == 987654321)
         info = await rpc(ws, {"type": "info"}, "info")
-        check("info (protocol 7, dividends, per-leg sigma, portfolio MC, local vol, exotics)",
-              info.get("protocol") == 7 and info.get("dividends") is True and info.get("leg_sigma") is True
+        check("info (protocol 8, dividends, per-leg sigma, portfolio MC, local vol, exotics)",
+              info.get("protocol") == 8 and info.get("dividends") is True and info.get("leg_sigma") is True
               and info.get("portfolio_mc") is True and info.get("local_vol") is True and info.get("exotics") is True,
               json.dumps(info))
 

@@ -42,6 +42,17 @@ BarrierPrices barrier_prices(OptionType type, bool up, double S, double K, doubl
     return BarrierPrices{out, vanilla - out, vanilla};
 }
 
+BarrierPrices barrier_prices_discrete(OptionType type, bool up, double S, double K, double H, double T,
+                                      double sigma, double r, double q, int n_monitors) {
+    if (n_monitors < 1 || !(T > 0.0) || !(sigma > 0.0) || !(H > 0.0)) {
+        return barrier_prices(type, up, S, K, H, T, sigma, r, q);
+    }
+    // the barrier moves away from the spot, so it is breached less often than under continuous monitoring
+    const double dt = T / static_cast<double>(n_monitors);
+    const double shift = std::exp((up ? 1.0 : -1.0) * kBgkBeta * sigma * std::sqrt(dt));
+    return barrier_prices(type, up, S, K, H * shift, T, sigma, r, q);
+}
+
 double geometric_asian_price(OptionType type, double S, double K, double T, int n_fixings,
                              double sigma, double r, double q) {
     if (!(T > 0.0) || !(sigma > 0.0) || n_fixings < 1) return intrinsic(type, S, K);

@@ -29,12 +29,13 @@ double g_legs[kMaxLegs * 5];   // portfolio input: [call (0/1), K, T, sigma, wei
 // ratio, half_life, n_pillars, pillar T × 32, pillar w × 32
 double g_surface[kSurfaceSize];
 constexpr int kLevels = static_cast<int>(quantcore::kMaxBarrierLevels);
-// exotic input: kind (0 barrier, 1 asian), call (0/1), K, T, up (0/1), n_levels, levels × 16, n_fixings
-constexpr int kExoticSpecSize = 7 + kLevels;
+constexpr int kMonitors = static_cast<int>(quantcore::kMaxBarrierMonitors);
+// exotic input: kind (0 barrier, 1 asian), call (0/1), K, T, up (0/1), n_levels, levels × 16, n_fixings, n_monitors
+constexpr int kExoticSpecSize = 8 + kLevels;
 double g_exotic_spec[kExoticSpecSize];
 // exotic output: paths, steps, vanilla, vanilla_se, vanilla_fine_bias, n_levels, out × 16, out_se × 16,
-// out_fine_bias × 16, in × 16, in_se × 16, arith, arith_se, arith_fine_bias, geo, geo_se, arith_geo_cov
-constexpr int kExoticOutSize = 6 + 5 * kLevels + 6;
+// out_fine_bias × 16, in × 16, in_se × 16, arith, arith_se, arith_fine_bias, geo, geo_se, arith_geo_cov, n_monitors
+constexpr int kExoticOutSize = 6 + 5 * kLevels + 7;
 double g_exotic_out[kExoticOutSize];
 constexpr int kPdePoints = static_cast<int>(quantcore::kPdeBoundaryPoints);
 // PDE output: price, delta, gamma, theta, nodes, steps, n_boundary, boundary_tau × 64, boundary_S × 64
@@ -68,7 +69,7 @@ quantcore::VolSurface read_surface() {
 extern "C" {
 
 // Bumped whenever a signature or the output layout changes.
-EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 6; }
+EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 7; }
 
 EMSCRIPTEN_KEEPALIVE double* qc_out() { return g_out; }
 
@@ -157,6 +158,18 @@ EMSCRIPTEN_KEEPALIVE void qc_barrier_prices(int call, int up, double S, double K
     g_out[2] = p.vanilla;
 }
 
+// out: knock-out, knock-in, vanilla — monitored at n_monitors equally spaced dates by the Broadie-Glasserman-Kou
+// correction; n_monitors < 1 prices continuous monitoring.
+EMSCRIPTEN_KEEPALIVE void qc_barrier_prices_discrete(int call, int up, double S, double K, double H, double T,
+                                                     double sigma, double r, double q, int n_monitors) {
+    const quantcore::BarrierPrices p =
+        quantcore::barrier_prices_discrete(call ? OptionType::Call : OptionType::Put, up != 0, S, K, H, T, sigma, r, q,
+                                           n_monitors);
+    g_out[0] = p.out;
+    g_out[1] = p.in;
+    g_out[2] = p.vanilla;
+}
+
 EMSCRIPTEN_KEEPALIVE double qc_geometric_asian(int call, double S, double K, double T, int n, double sigma, double r, double q) {
     return quantcore::geometric_asian_price(call ? OptionType::Call : OptionType::Put, S, K, T, n, sigma, r, q);
 }
@@ -174,6 +187,8 @@ EMSCRIPTEN_KEEPALIVE void qc_mc_exotic(double paths, double seed, double steps_p
     e.n_levels = n_levels < 0 ? 0 : (n_levels > kLevels ? kLevels + 1 : n_levels);   // more than 16 fails validation
     for (int j = 0; j < kLevels; ++j) e.levels[j] = v[6 + j];
     e.n_fixings = static_cast<int>(v[6 + kLevels]);
+    const int n_monitors = static_cast<int>(v[7 + kLevels]);
+    e.n_monitors = n_monitors < 0 ? -1 : (n_monitors > kMonitors ? kMonitors + 1 : n_monitors);   // out of range fails validation
     const quantcore::ExoticResult r =
         quantcore::mc_exotic(e, read_surface(), static_cast<long long>(paths), static_cast<uint64_t>(seed), steps_per_year, extrapolate != 0);
     double* o = g_exotic_out;
@@ -197,6 +212,7 @@ EMSCRIPTEN_KEEPALIVE void qc_mc_exotic(double paths, double seed, double steps_p
     o[k + 3] = r.geo;
     o[k + 4] = r.geo_se;
     o[k + 5] = r.arith_geo_cov;
+    o[k + 6] = static_cast<double>(r.n_monitors);
 }
 
 EMSCRIPTEN_KEEPALIVE double* qc_pde_out() { return g_pde_out; }

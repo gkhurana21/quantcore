@@ -39,7 +39,7 @@ const [outDir, emscripten, flags, ...files] = process.argv.slice(2);
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 const wasm = readFileSync(`${outDir}/quantcore.wasm`);
 const manifest = {
-  abi: 6,
+  abi: 7,
   emscripten,
   flags: flags.split(' '),
   bytes: wasm.length,

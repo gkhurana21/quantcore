@@ -374,6 +374,17 @@ test.describe('QuantCore terminal flows', () => {
     expect(Number(await chart.getAttribute('data-points'))).toBe(Number(await chart.getAttribute('data-levels')));
     expect(Number(await chart.getAttribute('data-levels'))).toBeGreaterThan(10);
 
+    // weekly monitoring: the reference becomes the Broadie–Glasserman–Kou correction, the continuous price is kept
+    // for contrast, and the simulation testing the barrier on those same dates still agrees with it
+    await page.getByTestId('exo-monitoring-weekly').click();
+    await expect(page.getByTestId('exo-row-continuous')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('exo-row-bs-k')).toContainText('monitoring dates');
+    await expect(flat).toContainText('monitoring dates', { timeout: 30_000 });
+    await expect(flat).toHaveAttribute('data-z', /\d/, { timeout: 30_000 });
+    expect(Number(await flat.getAttribute('data-z'))).toBeLessThan(4);
+    await page.getByTestId('exo-monitoring-continuous').click();
+    await expect(page.getByTestId('exo-row-continuous')).toHaveCount(0);
+
     // equity skew: local vol reprices the vanilla on its own paths and cheapens the down-and-out call
     await page.getByTestId('smile-Equity index').click();
     const local = page.getByTestId('exo-row-local');

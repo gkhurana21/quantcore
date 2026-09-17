@@ -1,5 +1,5 @@
 {
-  "abi": 6,
+  "abi": 7,
   "emscripten": "6.0.9",
   "flags": [
     "-std=c++17",
@@ -18,8 +18,8 @@
     "-sINITIAL_MEMORY=8388608",
     "-sALLOW_MEMORY_GROWTH=0"
   ],
-  "bytes": 84160,
-  "sha256": "ad8f2c36fb87256556e994614665c6afe503258a90800815cdda9dda8bcb1e8b",
+  "bytes": 85457,
+  "sha256": "e54e60151647e10bc2d5c7dd0697e250f73ffb06853db25add559aa3c12c73bf",
   "sources": [
     {
       "path": "core/src/black_scholes.cpp",
@@ -35,11 +35,11 @@
     },
     {
       "path": "core/src/local_vol.cpp",
-      "sha256": "6506dedf0dd78c05ef385b8e13458fe6ab3ca99f4212c7c6a84e26d0389cc745"
+      "sha256": "1f5024b942d09ab27bae890d18e8dc72a7ba89e33218cf41cfbc1fefd83638b3"
     },
     {
       "path": "core/src/exotics.cpp",
-      "sha256": "f61b43f5c1966353057889466519e05d2d5f24d1c041aede529797330c0deff0"
+      "sha256": "8238a6a4dd123542e6f0b29108955d4f24027d2a27490ac753a9acc710746d4f"
     },
     {
       "path": "core/src/pde.cpp",
@@ -51,7 +51,7 @@
     },
     {
       "path": "bindings/quantcore_wasm.cpp",
-      "sha256": "5768f8a7438557551ac6dfb0b99840a7af52136c0cc788e80201b9447407bcd7"
+      "sha256": "61a539390de5ce91e629ec3f6e16d324125e88a79a1fac30bee59c5565243105"
     },
     {
       "path": "core/include/quantcore/black_scholes.hpp",
@@ -75,7 +75,7 @@
     },
     {
       "path": "core/include/quantcore/exotics.hpp",
-      "sha256": "df227d7baaf042eb22ab4e0a7475078f31c8bc15d70bb87d0d132488fce03ac5"
+      "sha256": "5689d6aae7b1a8f83b6e5858e22fbb5bd08fdb86391d8fdbd6a18980e197b27f"
     },
     {
       "path": "core/include/quantcore/pde.hpp",

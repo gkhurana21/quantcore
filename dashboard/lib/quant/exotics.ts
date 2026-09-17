@@ -50,6 +50,23 @@ export function barrierPrices(call: boolean, up: boolean, S: number, K: number, 
   return { out, in: vanilla - out, vanilla };
 }
 
+/** β = −ζ(½)/√(2π), the Broadie–Glasserman–Kou barrier shift in units of σ√Δt. */
+export const BGK_BETA = 0.5825971579390106;
+
+/**
+ * Barrier option monitored at `monitors` equally spaced dates k·T/m, by the Broadie–Glasserman–Kou correction: the
+ * continuous formula with the barrier moved away from the spot to H·exp(±β σ √(T/m)). A barrier tested on only m
+ * dates is harder to breach, so the discretely monitored knock-out is worth more than the continuous one. The
+ * correction's error is o(1/√m) — far smaller than the discrete-vs-continuous gap it removes, but it is asymptotic
+ * and weakest at very few monitoring dates. m < 1 prices continuous monitoring.
+ */
+export function barrierPricesDiscrete(call: boolean, up: boolean, S: number, K: number, H: number, T: number,
+                                      sigma: number, r: number, q: number, monitors: number): BarrierPrices {
+  if (!(monitors >= 1) || !(T > 0) || !(sigma > 0) || !(H > 0)) return barrierPrices(call, up, S, K, H, T, sigma, r, q);
+  const shift = Math.exp((up ? 1 : -1) * BGK_BETA * sigma * Math.sqrt(T / monitors));
+  return barrierPrices(call, up, S, K, H * shift, T, sigma, r, q);
+}
+
 /** Geometric-average Asian option on n equally spaced fixings T·i/n, i = 1..n (flat volatility). */
 export function geometricAsianPrice(call: boolean, S: number, K: number, T: number, n: number,
                                     sigma: number, r: number, q: number): number {
@@ -76,10 +93,15 @@ export function geometricAverageMean(S: number, T: number, n: number, sigma: num
 /** Barrier levels one simulation prices on the same paths, and the most Asian fixings (core/include/quantcore/exotics.hpp). */
 export const MAX_BARRIER_LEVELS = 16;
 export const MAX_ASIAN_FIXINGS = 2000;
+/** Monitoring dates one discretely monitored barrier run may use (daily over eight years). */
+export const MAX_BARRIER_MONITORS = 2000;
 
-/** A continuously monitored barrier option at one or more levels, or an Asian option on n equally spaced fixings. */
+/**
+ * A barrier option at one or more levels, or an Asian option on n equally spaced fixings. `monitors` is the number of
+ * equally spaced dates the barrier is tested on; absent or 0 monitors it continuously.
+ */
 export type ExoticSpec =
-  | { kind: 'barrier'; call: boolean; K: number; T: number; up: boolean; levels: number[] }
+  | { kind: 'barrier'; call: boolean; K: number; T: number; up: boolean; levels: number[]; monitors?: number }
   | { kind: 'asian'; call: boolean; K: number; T: number; fixings: number };
 
 /**
@@ -90,6 +112,7 @@ export type ExoticSpec =
 export interface ExoticMcResult {
   paths: number;
   steps: number;
+  monitors: number;             // barrier monitoring dates used; 0 when the barrier was monitored continuously
   vanilla: number; vanillaSe: number; vanillaFineBias: number | null;
   out: number[]; outSe: number[]; outFineBias: (number | null)[];
   in: number[]; inSe: number[];

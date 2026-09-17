@@ -62,7 +62,7 @@ const numList = (v: unknown): number[] => (Array.isArray(v) ? v.map(Number) : []
 
 function exoticFromWire(msg: Record<string, unknown>, rttMs: number): EngineExoticResult {
   return {
-    paths: Number(msg.paths), steps: Number(msg.steps),
+    paths: Number(msg.paths), steps: Number(msg.steps), monitors: Number(msg.monitors ?? 0),
     vanilla: Number(msg.vanilla), vanillaSe: Number(msg.vanilla_se), vanillaFineBias: numOrNull(msg.vanilla_fine_bias),
     out: numList(msg.out), outSe: numList(msg.out_se),
     outFineBias: Array.isArray(msg.out_fine_bias) ? msg.out_fine_bias.map(numOrNull) : [],

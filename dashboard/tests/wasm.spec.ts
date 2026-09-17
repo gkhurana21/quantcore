@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { bsGreeks, bsPrice } from '../lib/quant/blackScholes';
 import type { ExoticSpec } from '../lib/quant/exotics';
-import { barrierPrices, controlVariate, geometricAsianPrice } from '../lib/quant/exotics';
+import { barrierPrices, barrierPricesDiscrete, controlVariate, geometricAsianPrice } from '../lib/quant/exotics';
 import { localVol, mcLocalVol } from '../lib/quant/localVol';
 import { mulberry32 } from '../lib/quant/rng';
 import type { Leg, Market, Smile, TermStructure } from '../lib/quant/types';
@@ -294,6 +294,15 @@ test.describe('C++ core compiled to WebAssembly', () => {
         cmp(`out ${tag}`, a.out, b.out);
         cmp(`in ${tag}`, a.in, b.in);
         cmp(`vanilla ${tag}`, a.vanilla, b.vanilla);
+        // the same barrier monitored on a finite number of dates; 0 must be the continuous price exactly
+        for (const monitors of [0, 12, 252]) {
+          const d = w.barrierPricesDiscrete(call, up, 100, K, H, T, sigma, 0.045, q, monitors);
+          const e = barrierPricesDiscrete(call, up, 100, K, H, T, sigma, 0.045, q, monitors);
+          if (!d) { bad.push(`null discrete m=${monitors} ${tag}`); continue; }
+          cmp(`out m=${monitors} ${tag}`, d.out, e.out);
+          cmp(`in m=${monitors} ${tag}`, d.in, e.in);
+          if (monitors === 0 && d.out !== a.out) bad.push(`m=0 is not the continuous price ${tag}: ${d.out} vs ${a.out}`);
+        }
       }
     for (const call of [true, false]) for (const fixings of [1, 2, 12, 52, 365]) for (const K of [80, 100, 120]) for (const T of [0.1, 1, 3]) {
       cmp(`asian ${JSON.stringify({ call, fixings, K, T })}`, w.geometricAsian(call, 100, K, T, fixings, 0.3, 0.045, 0.02) ?? NaN,
@@ -309,10 +318,12 @@ test.describe('C++ core compiled to WebAssembly', () => {
     const specs: ExoticSpec[] = [
       { kind: 'barrier', call: true, K: 756, T: 0.25, up: false, levels: [640, 680, 700, 720, 740] },
       { kind: 'barrier', call: false, K: 740, T: 0.4, up: true, levels: [780, 820] },
+      // tested on 13 dates instead of continuously: the spec buffer's monitoring slot, through the browser build
+      { kind: 'barrier', call: true, K: 756, T: 0.25, up: false, levels: [640, 700, 740], monitors: 13 },
       { kind: 'asian', call: true, K: 750, T: 0.5, fixings: 26 },
     ];
     interface NativeExotic {
-      steps: number; vanilla: number; vanilla_se: number; vanilla_fine_bias: number | null;
+      steps: number; monitors: number; vanilla: number; vanilla_se: number; vanilla_fine_bias: number | null;
       out: number[]; out_se: number[]; out_fine_bias: (number | null)[]; in: number[]; in_se: number[];
       arith: number | null; arith_se: number | null; arith_fine_bias: number | null;
       geo: number | null; geo_se: number | null; arith_geo_cov: number | null;
@@ -326,6 +337,7 @@ test.describe('C++ core compiled to WebAssembly', () => {
       const ref = native<NativeExotic>('quantcore.mc_exotic(x["spec"], x["market"], x["paths"], x["seed"], x["spy"], x["extrapolate"], 0)',
                                        { spec, market: m, paths: 50_000, seed: 13, spy: 365, extrapolate });
       expect(a.steps).toBe(ref.steps);
+      expect(a.monitors).toBe(ref.monitors);
       expect(a.out.length).toBe(ref.out.length);
       const pairs: [string, number | null | undefined, number | null][] = [
         ['vanilla', a.vanilla, ref.vanilla], ['vanilla_se', a.vanillaSe, ref.vanilla_se],
