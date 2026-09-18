@@ -14,7 +14,7 @@ import { legSigma } from '../quant/volSurface';
 
 export const WASM_PATH = '/wasm/quantcore.wasm';
 export const WASM_MANIFEST_PATH = '/wasm/quantcore.json';
-export const WASM_ABI = 9;
+export const WASM_ABI = 10;
 export const MAX_WASM_PATHS = 50_000_000;
 /** Cap on paths × legs for one portfolio run, so a single-threaded run stays within seconds. */
 export const MAX_WASM_PORTFOLIO_WORK = 64_000_000;
@@ -28,9 +28,10 @@ const SURFACE_SIZE = 13 + 2 * WASM_TERM_PILLARS;
 const EXOTIC_SPEC_SIZE = 10 + MAX_BARRIER_LEVELS;
 const EXOTIC_OUT_SIZE = 6 + 5 * MAX_BARRIER_LEVELS + 7;
 
-// PDE output: price, delta, gamma, theta, nodes, steps, n_boundary, boundary τ × 64, boundary S × 64
+// PDE output: price, delta, gamma, theta, nodes, steps, n_boundary, boundary τ × 64, boundary S × 64, vega
+// (appended, so the existing offsets do not move)
 const PDE_BOUNDARY_POINTS = 64;
-const PDE_OUT_SIZE = 7 + 2 * PDE_BOUNDARY_POINTS;
+const PDE_OUT_SIZE = 7 + 2 * PDE_BOUNDARY_POINTS + 1;
 /** Default finite-difference grid: log-spot nodes × time steps (second order; ~7e-6 relative on a 1y vanilla). */
 export const PDE_GRID = { nodes: 801, steps: 800 } as const;
 /** Monitoring dates one discretely monitored knock-out may solve for (core/include/quantcore/pde.hpp). */
@@ -60,11 +61,16 @@ export type PdeKind = 'european' | 'american' | 'knockout';
 export interface PdeSpec {
   kind: PdeKind; call: boolean; K: number; T: number; H?: number; up?: boolean;
   rebate?: number; rebateAtHit?: boolean; monitors?: number;
+  /** ∂V/∂σ by a central bump of the surface's level, re-solved: three solves instead of one, so ask per option. */
+  vega?: boolean;
 }
 
-/** Per unit of underlying; theta is ∂V/∂t per year. The boundary is an American option's exercise spot by time to expiry. */
+/**
+ * Per unit of underlying; theta is ∂V/∂t per year. The boundary is an American option's exercise spot by time to
+ * expiry. `vega` is ∂V/∂σ per 1.00 of volatility, and 0 unless the spec asked for it.
+ */
 export interface PdeResult {
-  price: number; delta: number; gamma: number; theta: number;
+  price: number; delta: number; gamma: number; theta: number; vega: number;
   nodes: number; steps: number;
   boundary: { tau: number; S: number | null }[];
 }
@@ -187,7 +193,7 @@ interface Exports {
   qc_pde_out(): number;
   qc_pde_out_size(): number;
   qc_pde(kind: number, call: number, K: number, T: number, H: number, up: number, nodes: number, steps: number,
-         rebate: number, rebateAtHit: number, monitors: number): void;
+         rebate: number, rebateAtHit: number, monitors: number, wantVega: number): void;
   qc_lsm_out(): number;
   qc_lsm_out_size(): number;
   qc_lsm(call: number, K: number, T: number, policyPaths: number, valuePaths: number, seed: number,
@@ -365,11 +371,13 @@ export async function instantiateQuantcore(bytes: BufferSource): Promise<Quantco
       const monitors = knock ? spec.monitors ?? 0 : 0;   // 0 monitors the barrier continuously
       if (!Number.isInteger(monitors) || monitors < 0 || monitors > MAX_PDE_MONITORS) return null;
       ex.qc_pde(spec.kind === 'american' ? 1 : knock ? 2 : 0, spec.call ? 1 : 0, spec.K, spec.T, knock ? spec.H! : 0,
-                spec.up ? 1 : 0, nodes, steps, rebate, spec.rebateAtHit === false ? 0 : 1, monitors);
+                spec.up ? 1 : 0, nodes, steps, rebate, spec.rebateAtHit === false ? 0 : 1, monitors,
+                spec.vega ? 1 : 0);
       const o = new Float64Array(ex.memory.buffer, ex.qc_pde_out(), PDE_OUT_SIZE);
       if (!Number.isFinite(o[0]) || !Number.isFinite(o[1]) || !Number.isFinite(o[2]) || !Number.isFinite(o[3])) return null;
       const boundary = Array.from({ length: o[6] }, (_, j) => ({ tau: o[7 + j], S: finiteOrNull(o[7 + PDE_BOUNDARY_POINTS + j]) }));
-      return { price: o[0], delta: o[1], gamma: o[2], theta: o[3], nodes: o[4], steps: o[5], boundary };
+      return { price: o[0], delta: o[1], gamma: o[2], theta: o[3], vega: o[7 + 2 * PDE_BOUNDARY_POINTS],
+               nodes: o[4], steps: o[5], boundary };
     },
     lsm(call, K, T, m, policyPaths, valuePaths, seed, dates, stepsPerYear) {
       if (!positive(K) || !positive(T) || !Number.isInteger(policyPaths) || policyPaths < 100 ||

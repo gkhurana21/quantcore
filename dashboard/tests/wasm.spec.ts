@@ -476,17 +476,23 @@ test.describe('C++ core compiled to WebAssembly', () => {
       { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false, monitors: 13 },
       { kind: 'knockout', call: false, K: 740, T: 0.4, H: 800, up: true, monitors: 26 },
       { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false, monitors: 13, rebate: 15, rebateAtHit: true },
+      // vega: three solves sharing one grid, and the number must match the native solver exactly
+      { kind: 'european', call: true, K: 760, T: 0.25, vega: true },
+      { kind: 'knockout', call: true, K: 755, T: 0.25, H: 700, up: false, vega: true },
     ];
-    interface NativePde { price: number; delta: number; gamma: number; theta: number; nodes: number; steps: number;
+    interface NativePde { price: number; delta: number; gamma: number; theta: number; vega: number;
+                          nodes: number; steps: number;
                           boundary_tau: number[]; boundary_S: (number | null)[]; }
     const near = (a: number | null, b: number | null) => (a === null || b === null ? a === b : Math.abs(a - b) <= 1e-12 * Math.abs(b) + 1e-9);
     const bad: string[] = [];
     for (const spec of specs) {
       const a = w.pde(spec, m, 401, 400)!;
-      const ref = native<NativePde>('quantcore.pde_price(x["spec"], x["market"], 401, 400)',
+      // vega is a spec field here but an argument to the bindings, so it has to be read back out of the spec
+      const ref = native<NativePde>('quantcore.pde_price(x["spec"], x["market"], 401, 400, bool(x["spec"].get("vega", False)))',
                                     { spec: toNative(spec), market: m });
       const pairs: [string, number | null, number | null][] = [
         ['price', a.price, ref.price], ['delta', a.delta, ref.delta], ['gamma', a.gamma, ref.gamma], ['theta', a.theta, ref.theta],
+        ['vega', a.vega, ref.vega],
         ['nodes', a.nodes, ref.nodes], ['steps', a.steps, ref.steps], ['boundary length', a.boundary.length, ref.boundary_tau.length],
         ...a.boundary.flatMap((b, j): [string, number | null, number | null][] =>
           [[`tau[${j}]`, b.tau, ref.boundary_tau[j]], [`S[${j}]`, b.S, ref.boundary_S[j]]]),

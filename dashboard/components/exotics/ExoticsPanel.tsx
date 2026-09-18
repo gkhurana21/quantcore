@@ -437,7 +437,9 @@ function BarrierView({ view, pendingText, pde, pdeStatus }: { view: Results; pen
         <Stat label="Fine-grid bias" value={bias != null ? signed(bias, 4) : '—'}
               sub={bias != null ? 'coarse − fine, knock-out' : s.surface ? 'no smile: exact variance steps' : 'exact bridge under flat σ'} />
         <Stat label="PDE Greeks · knock-out" value={pdeOut ? `Δ ${num(pdeOut.delta, 4)}` : '—'}
-              sub={pdeOut ? `Γ ${num(pdeOut.gamma, 5)} · Θ ${signed(pdeOut.theta / 365, 4)}/day` : pdeStatus} />
+              sub={pdeOut
+                ? `Γ ${num(pdeOut.gamma, 5)} · Θ ${signed(pdeOut.theta / 365, 4)}/day · ν ${signed(pdeOut.vega / 100, 3)}/vol pt`
+                : pdeStatus} />
       </dl>
     </>
   );
@@ -610,8 +612,11 @@ export function ExoticsPanel({ market, engine, wasm, active }: { market: Market;
     };
     return [
       { spec: { kind: 'european', call: setup.call, K: setup.K, T: setup.T }, market: m },
-      ...setup.levels.map((H): PdeItem => ({
-        spec: { kind: 'knockout', call: setup.call, K: setup.K, T: setup.T, H, up: setup.up, ...extra }, market: m,
+      // vega is three solves instead of one, so only the level actually on screen asks for it
+      ...setup.levels.map((H, i): PdeItem => ({
+        spec: { kind: 'knockout', call: setup.call, K: setup.K, T: setup.T, H, up: setup.up, ...extra,
+                ...(i === setup.hIndex ? { vega: true } : {}) },
+        market: m,
       })),
     ];
   }, [setup]);

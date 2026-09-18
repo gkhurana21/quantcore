@@ -31,6 +31,17 @@ namespace quantcore {
  *
  * Greeks at S₀ from the grid: Δ = V_x/S, Γ = (V_xx − V_x)/S², Θ = ∂V/∂t per year from the PDE itself
  * (r·V − (r − q − ½σ²)·V_x − ½σ²·V_xx at t = 0; zero where an American option is exercised).
+ *
+ * Vega is not a grid derivative: it is ∂V/∂σ by a central bump of the surface's ATM level, re-solved. The smile and
+ * term structure are expressed relative to that level, so they ride along and the number is the value's sensitivity
+ * to the whole surface shifting — a model vega, not a Black-Scholes one, though under flat volatility the two
+ * coincide and the solver reproduces S·e^{−qT}·φ(d₁)·√T to within 5e-5 relative at the default grid — 4e-7 at the
+ * money, the wings worst. The bump is chosen where the difference's own O(h²) bias and the price error amplified by
+ * 1/2h meet: at half a vol point the wings carry 1.6e-4, at two tenths of a point 4.5e-5. Refining the grid
+ * four-fold then improves it only about twice, so what is left is part bump and part grid. It costs two extra
+ * solves, so it is asked for explicitly rather than always computed. A knock-out's vega can be negative: close to
+ * the barrier (spot 756, barrier 752) it is −7.68, more volatility making the breach likelier by more than the
+ * extra optionality is worth.
  */
 
 enum class PdeKind : int { European = 0, American = 1, KnockOut = 2 };
@@ -56,6 +67,7 @@ inline constexpr std::size_t kPdeBoundaryPoints = 64;
 
 struct PdeResult {
     double price = 0.0, delta = 0.0, gamma = 0.0, theta = 0.0;   // per unit of underlying; theta = ∂V/∂t per year
+    double vega = 0.0;                                           // ∂V/∂σ per 1.00 of volatility; 0 unless asked for
     int    nodes = 0, steps = 0;                                 // grid actually used
     int    lcp_iterations = 0;                                   // American: most policy iterations in one step
     int    n_boundary = 0;                                       // American: early-exercise boundary samples
@@ -67,6 +79,6 @@ struct PdeResult {
  * The option on the surface's local volatility; `nodes` log-spot nodes (21–4001) and `steps` time steps (4–20000).
  * NaN values on invalid input. A knock-out whose barrier spot has already crossed is worth 0.
  */
-PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int steps);
+PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int steps, bool want_vega = false);
 
 } // namespace quantcore

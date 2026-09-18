@@ -141,6 +141,17 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   3.6e-6, and on Hull's down-and-out call with a rebate of 3 the simulation gives 7.9541 ± 0.0167 at the hit against
   7.9630 and 7.9032 ± 0.0167 at expiry against 7.9118. With a single time step the only possible hit time is the
   expiry, and the two payment times then price identically to the last digit.
+- **Vega under the surface**: the one Greek the grid does not give. It is ∂V/∂σ by a central bump of the surface's
+  ATM level, re-solved on the same nodes — the smile and term structure are written relative to that level, so they
+  ride along and the number is the value's sensitivity to the whole surface shifting, not to one Black-Scholes
+  parameter. Under flat volatility the two coincide and the solver reproduces S·e^(−qT)·φ(d₁)·√T to 4.5e-5 relative
+  at the default grid (4e-7 at the money, the wings worst), with a call and a put agreeing to 1.4e-6 because all
+  three solves share one grid. That accuracy is set by the bump, not the grid: refining four-fold barely moves it,
+  while halving the bump from half a vol point to two tenths cut the wing error from 1.6e-4 to 4.5e-5 — above that
+  the central difference's own O(h²) bias dominates, below it the price error amplified by 1/2h takes over, and the
+  bump sits where they meet. Three solves instead of one, so it is asked for per option rather than always computed:
+  the Exotics tab requests it only for the barrier level on screen. A knock-out's vega turns **negative** near its
+  barrier — spot 756, barrier 752 gives −7.68 — where more volatility destroys more by breaching than it creates.
 - **Monitored barriers by finite differences**: between its dates a scheduled barrier is simply a vanilla, so the
   solver drops the absorbing boundary, makes the barrier an interior node with the grid running past it, merges the
   monitoring dates into the graded time grid so the march lands on each exactly, and applies the knock-out as a jump

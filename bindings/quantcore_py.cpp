@@ -465,13 +465,13 @@ PYBIND11_MODULE(quantcore, m) {
           "local volatility; values per unit of underlying.");
 
     m.def("pde_price",
-          [](const py::dict& spec, const py::dict& market, int nodes, int steps) {
+          [](const py::dict& spec, const py::dict& market, int nodes, int steps, bool vega) {
               const PdeSpec p = pde_from(spec);
               const VolSurface s = surface_from(market);
               PdeResult r;
               {
                   py::gil_scoped_release release;
-                  r = pde_price(p, s, nodes, steps);
+                  r = pde_price(p, s, nodes, steps, vega);
               }
               py::list tau, spot;
               for (int j = 0; j < r.n_boundary; ++j) {
@@ -480,12 +480,15 @@ PYBIND11_MODULE(quantcore, m) {
               }
               return py::dict("price"_a = finite_or_none(r.price), "delta"_a = finite_or_none(r.delta),
                               "gamma"_a = finite_or_none(r.gamma), "theta"_a = finite_or_none(r.theta),
+                              "vega"_a = finite_or_none(r.vega),
                               "nodes"_a = r.nodes, "steps"_a = r.steps, "lcp_iterations"_a = r.lcp_iterations,
                               "boundary_tau"_a = tau, "boundary_S"_a = spot);
           },
-          py::arg("spec"), py::arg("market"), py::arg("nodes") = 801, py::arg("steps") = 800,
-          "European, American or knock-out option under the market's local volatility by Crank-Nicolson finite "
-          "differences: price, grid Greeks and the early-exercise boundary; values per unit of underlying.");
+          py::arg("spec"), py::arg("market"), py::arg("nodes") = 801, py::arg("steps") = 800, py::arg("vega") = false,
+          "European, American or knock-out option under the market's local volatility by finite differences: price, "
+          "grid Greeks and the early-exercise boundary; values per unit of underlying. vega=True also returns dV/dsigma "
+          "by a central bump of the surface's ATM level re-solved on the same grid, which costs two extra solves; "
+          "without it the returned vega is 0.");
 
     m.def("lsm_american",
           [](bool call, double K, double T, const py::dict& market, long long policy_paths, long long value_paths,

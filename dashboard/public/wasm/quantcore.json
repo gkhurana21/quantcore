@@ -1,5 +1,5 @@
 {
-  "abi": 9,
+  "abi": 10,
   "emscripten": "6.0.9",
   "flags": [
     "-std=c++17",
@@ -18,8 +18,8 @@
     "-sINITIAL_MEMORY=8388608",
     "-sALLOW_MEMORY_GROWTH=0"
   ],
-  "bytes": 87665,
-  "sha256": "4b89eb948cd66562fc55540e059196acca22b9ed77f57d128472ffc9e629f1e7",
+  "bytes": 88070,
+  "sha256": "0f6bfad868c1d765ad7c4259597e13cc02a1e340297e655da7a13d1b610dad62",
   "sources": [
     {
       "path": "core/src/black_scholes.cpp",
@@ -43,7 +43,7 @@
     },
     {
       "path": "core/src/pde.cpp",
-      "sha256": "0581d843a66978637079501f7f5d0036c8cfa9c8cd1cb0c9d446eea4b66876b7"
+      "sha256": "2acde6047cb389ef0c74518310ba86f3a79159a9d0bfdfff1a9887fbfb149ae5"
     },
     {
       "path": "core/src/lsm.cpp",
@@ -51,7 +51,7 @@
     },
     {
       "path": "bindings/quantcore_wasm.cpp",
-      "sha256": "d2f7fd7367514858bbfe41cce3ad1c71f44f16682908de648835c203d5accfe8"
+      "sha256": "b542e859dd2e92d275c07dfed69221c63e186ab3cdf472490c5f473c589a8388"
     },
     {
       "path": "core/include/quantcore/black_scholes.hpp",
@@ -79,7 +79,7 @@
     },
     {
       "path": "core/include/quantcore/pde.hpp",
-      "sha256": "b144f08913bdd20c4c8345dbfda3c26abb76392c1be8ab383ab7267b825e5246"
+      "sha256": "cf245392f67c39f5d145ae5866649f39fea66e68e0ca745a0c818f5687b0e6d5"
     },
     {
       "path": "core/include/quantcore/lsm.hpp",

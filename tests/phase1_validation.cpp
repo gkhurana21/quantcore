@@ -1266,6 +1266,78 @@ static void section_monitored_pde() {
     printf("\n  %-22s  %s\n", "Monitored PDE:", all_ok ? "ALL PASS" : "FAIL");
 }
 
+// ── Section 14: vega ────────────────────────────────────────────────────────
+//
+// Vega is the one Greek the grid does not give: it is ∂V/∂σ by a central bump of the surface's ATM level, re-solved
+// on the same nodes. Under flat volatility that bump is a Black-Scholes volatility bump, so S·e^{−qT}·φ(d₁)·√T is an
+// exact reference; under a smile the whole surface moves with the level and there is no closed form at all.
+//
+// Bounds fixed before the first run, as requirements: the solver matches the closed form to 1e-4 relative across
+// strikes and maturities; a call and a put on the same strike agree to 1e-5, since all three solves share one grid;
+// vega is exactly 0 when it was not asked for and NaN on invalid input; and a knock-out's vega is positive far from
+// its barrier but negative close to it, where more volatility destroys more by breaching than it creates.
+
+static void section_vega() {
+    banner("14. VEGA  (a bump of the surface's level, against the closed form)");
+    bool all_ok = true;
+
+    VolSurface flat;
+    flat.S = 100.0; flat.r = 0.05; flat.q = 0.02; flat.sigma = 0.25;
+    double worst = 0.0, worst_pair = 0.0;
+    for (const double K : { 80.0, 100.0, 120.0 }) {
+        for (const double T : { 0.25, 1.0 }) {
+            PdeSpec c;
+            c.kind = PdeKind::European; c.type = OptionType::Call; c.K = K; c.T = T;
+            PdeSpec p = c;
+            p.type = OptionType::Put;
+            const double vc = pde_price(c, flat, 801, 800, true).vega;
+            const double vp = pde_price(p, flat, 801, 800, true).vega;
+            const double bs = bsm_full(OptionType::Call, flat.S, K, flat.r, flat.sigma, T, flat.q).greeks.vega;
+            worst = std::max({ worst, std::fabs(vc - bs) / bs, std::fabs(vp - bs) / bs });
+            worst_pair = std::max(worst_pair, std::fabs(vc - vp) / bs);
+        }
+    }
+    const bool flat_ok = worst < 1e-4 && worst_pair < 1e-5;
+    all_ok = all_ok && flat_ok;
+    printf("  flat σ, 3 strikes × 2 maturities: worst |PDE − closed form| %.1e relative · a call and a put agree to %.1e  %s\n",
+           worst, worst_pair, flat_ok ? "OK" : "*** FAIL ***");
+
+    PdeSpec e;
+    e.kind = PdeKind::European; e.type = OptionType::Call; e.K = 100.0; e.T = 1.0;
+    PdeSpec bad = e;
+    bad.K = -1.0;
+    const bool off_ok = pde_price(e, flat, 801, 800).vega == 0.0 &&
+                        std::isnan(pde_price(bad, flat, 801, 800, true).vega);
+    all_ok = all_ok && off_ok;
+    printf("  exactly 0 when it was not asked for, NaN on invalid input  %s\n", off_ok ? "OK" : "*** FAIL ***");
+
+    // under the surface there is no closed form: what can be required is the shape
+    VolSurface lv;
+    lv.S = 756.48; lv.r = 0.045; lv.q = 0.0; lv.sigma = 0.138;
+    lv.smile = true; lv.rho = -0.7; lv.eta = 1.0; lv.gamma = 0.45;
+    lv.term = TermKind::Curve; lv.ratio = 0.5; lv.half_life = 0.15;
+    PdeSpec ap;
+    ap.kind = PdeKind::American; ap.type = OptionType::Put; ap.K = 756.0; ap.T = 1.0;
+    PdeSpec ep = ap;
+    ep.kind = PdeKind::European;
+    const double va = pde_price(ap, lv, 801, 800, true).vega, ve = pde_price(ep, lv, 801, 800, true).vega;
+    PdeSpec far_, near_;
+    far_.kind = near_.kind = PdeKind::KnockOut;
+    far_.type = near_.type = OptionType::Call;
+    far_.K = near_.K = 755.0;
+    far_.T = near_.T = 0.25;
+    far_.up = near_.up = false;
+    far_.H = 640.0;
+    near_.H = 752.0;
+    const double vfar = pde_price(far_, lv, 801, 800, true).vega, vnear = pde_price(near_, lv, 801, 800, true).vega;
+    const bool shape_ok = va > 0.0 && ve > 0.0 && vfar > 0.0 && vnear < 0.0;
+    all_ok = all_ok && shape_ok;
+    printf("  under the surface: American put %.2f · European %.2f · down-and-out call H 640 %+.2f, H 752 %+.2f (negative at the barrier)  %s\n",
+           va, ve, vfar, vnear, shape_ok ? "OK" : "*** FAIL ***");
+
+    printf("\n  %-22s  %s\n", "Vega:", all_ok ? "ALL PASS" : "FAIL");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -1286,6 +1358,7 @@ int main() {
     section_discrete_barrier();
     section_rebate();
     section_monitored_pde();
+    section_vega();
 
     banner("End of Phase 1 report");
     return 0;

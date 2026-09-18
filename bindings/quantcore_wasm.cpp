@@ -39,8 +39,9 @@ double g_exotic_spec[kExoticSpecSize];
 constexpr int kExoticOutSize = 6 + 5 * kLevels + 7;
 double g_exotic_out[kExoticOutSize];
 constexpr int kPdePoints = static_cast<int>(quantcore::kPdeBoundaryPoints);
-// PDE output: price, delta, gamma, theta, nodes, steps, n_boundary, boundary_tau × 64, boundary_S × 64
-constexpr int kPdeOutSize = 7 + 2 * kPdePoints;
+// PDE output: price, delta, gamma, theta, nodes, steps, n_boundary, boundary_tau × 64, boundary_S × 64, vega
+// (appended, so the existing offsets do not move)
+constexpr int kPdeOutSize = 7 + 2 * kPdePoints + 1;
 double g_pde_out[kPdeOutSize];
 // Longstaff–Schwartz output: price, std_error, policy_price, european, european_se, policy_paths, value_paths,
 // dates, steps, exercise_dates
@@ -70,7 +71,7 @@ quantcore::VolSurface read_surface() {
 extern "C" {
 
 // Bumped whenever a signature or the output layout changes.
-EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 9; }
+EMSCRIPTEN_KEEPALIVE int qc_abi_version() { return 10; }
 
 EMSCRIPTEN_KEEPALIVE double* qc_out() { return g_out; }
 
@@ -237,7 +238,7 @@ EMSCRIPTEN_KEEPALIVE int qc_pde_out_size() { return kPdeOutSize; }
 // is paid at the hit when rebate_at_hit, otherwise at expiry, and n_monitors tests the barrier on that many equally
 // spaced dates instead of continuously. Results in qc_pde_out().
 EMSCRIPTEN_KEEPALIVE void qc_pde(int kind, int call, double K, double T, double H, int up, int nodes, int steps,
-                                 double rebate, int rebate_at_hit, int n_monitors) {
+                                 double rebate, int rebate_at_hit, int n_monitors, int want_vega) {
     quantcore::PdeSpec p;
     p.kind = kind == 1 ? quantcore::PdeKind::American : kind == 2 ? quantcore::PdeKind::KnockOut : quantcore::PdeKind::European;
     p.type = call ? OptionType::Call : OptionType::Put;
@@ -248,7 +249,7 @@ EMSCRIPTEN_KEEPALIVE void qc_pde(int kind, int call, double K, double T, double 
     p.rebate = rebate;
     p.rebate_at_hit = rebate_at_hit != 0;
     p.n_monitors = n_monitors < 0 ? -1 : n_monitors;   // out of range fails validation
-    const quantcore::PdeResult r = quantcore::pde_price(p, read_surface(), nodes, steps);
+    const quantcore::PdeResult r = quantcore::pde_price(p, read_surface(), nodes, steps, want_vega != 0);
     double* o = g_pde_out;
     o[0] = r.price;
     o[1] = r.delta;
@@ -261,6 +262,7 @@ EMSCRIPTEN_KEEPALIVE void qc_pde(int kind, int call, double K, double T, double 
         o[7 + j] = r.boundary_tau[j];
         o[7 + kPdePoints + j] = r.boundary_S[j];
     }
+    o[7 + 2 * kPdePoints] = r.vega;
 }
 
 EMSCRIPTEN_KEEPALIVE double* qc_lsm_out() { return g_lsm_out; }

@@ -12,7 +12,7 @@ const double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 PdeResult invalid_pde() {
     PdeResult r;
-    r.price = r.delta = r.gamma = r.theta = kNaN;
+    r.price = r.delta = r.gamma = r.theta = r.vega = kNaN;
     return r;
 }
 
@@ -44,7 +44,14 @@ void thomas(int n, const double* l, const double* d, const double* u, const doub
 
 } // namespace
 
-PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int steps) {
+namespace {
+
+// The whole solve, with the grid's half-width scale supplied from outside. Vega re-solves on a bumped surface, and
+// re-deriving that scale from the bumped volatility would put the three solves on slightly different nodes; sharing
+// it keeps them on identical ones, so the difference reflects the volatility change alone and a call and a put agree
+// on vega to about 1e-6. It is not what sets vega's accuracy, though: refining the grid four-fold barely moves the
+// error, because what remains is the central difference's own bias, which the bump size controls instead.
+PdeResult pde_solve(const PdeSpec& spec, const VolSurface& s, int nodes, int steps, double sd_in) {
     const bool knock = spec.kind == PdeKind::KnockOut, american = spec.kind == PdeKind::American;
     if (!vol_surface_valid(s) || !(spec.K > 0.0) || !(spec.T > 0.0) || !std::isfinite(spec.K) || !std::isfinite(spec.T) ||
         nodes < kMinPdeNodes || nodes > kMaxPdeNodes || steps < 4 || steps > kMaxPdeSteps ||
@@ -69,7 +76,7 @@ PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int ste
     }
 
     // uniform log-spot grid with ln S₀ on a node — in the middle for a vanilla, m nodes from ln H for a knock-out
-    const double sd = std::max(implied_vol(s, S, T), 0.05) * std::sqrt(T);
+    const double sd = sd_in > 0.0 ? sd_in : std::max(implied_vol(s, S, T), 0.05) * std::sqrt(T);
     const double W = std::max(6.0 * sd, std::fabs(lnK - x0) + 3.0 * sd);
     int n = nodes - 1;                                        // intervals
     double lo = 0.0, dx = 0.0;
@@ -308,6 +315,33 @@ PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int ste
     const bool at_exercise = american && exercise[i0] != 0.0 && ex[i0] > 0.0;
     res.theta = at_exercise ? 0.0 : r * V0 - (r - q - 0.5 * v0) * Vx - 0.5 * v0 * Vxx;
     std::free(block);
+    return res;
+}
+
+} // namespace
+
+PdeResult pde_price(const PdeSpec& spec, const VolSurface& s, int nodes, int steps, bool want_vega) {
+    // One grid for all three solves: the half-width scale comes from the base surface, so a vega bump moves the
+    // volatility without moving the nodes and the difference reflects that change alone.
+    const double sd = spec.T > 0.0 ? std::max(implied_vol(s, s.S, spec.T), 0.05) * std::sqrt(spec.T) : 0.0;
+    PdeResult res = pde_solve(spec, s, nodes, steps, sd);
+    if (!want_vega || std::isnan(res.price)) return res;
+
+    // Vega is not a grid derivative: bump the surface's ATM level either side and re-solve. The smile and term
+    // structure are written relative to that level, so they move with it and this is the value's sensitivity to the
+    // whole surface shifting. Two extra solves, which is why the caller has to ask.
+    // Two tenths of a vol point, and never enough to take sigma to zero. Measured against the closed form: above
+    // this the central difference's own O(h²) bias dominates (1.6e-4 relative in the wings at half a point), below it
+    // the price's error amplified by 1/2h does. At 0.002 the solver's vega is within 4.5e-5 of the closed form in
+    // the wings and 4e-7 at the money.
+    const double h = std::min(0.002, 0.5 * s.sigma);
+    if (!(h > 0.0)) return res;
+    VolSurface up = s, down = s;
+    up.sigma = s.sigma + h;
+    down.sigma = s.sigma - h;
+    const double vu = pde_solve(spec, up, nodes, steps, sd).price;
+    const double vd = pde_solve(spec, down, nodes, steps, sd).price;
+    res.vega = (vu - vd) / (2.0 * h);
     return res;
 }
 
