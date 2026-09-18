@@ -483,6 +483,51 @@ test.describe('QuantCore terminal flows', () => {
     expect(Number(await page.getByTestId('exo-chart').getAttribute('data-pde-points'))).toBeGreaterThan(10);
   });
 
+  test('20. Vega by strike: a bump of the surface level is not a bump of one strike’s volatility', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.routeWebSocket('ws://localhost:8765/ws', ws => ws.close({ code: 1000, reason: 'no native engine' }));
+    await open(page);
+    await page.getByTestId('lab-row-mc200k').waitFor();
+    await page.getByTestId('lab-ladder-row-15').waitFor({ timeout: 60_000 });
+
+    const headline = page.getByTestId('lab-ladder-headline');
+    const r = async (a: string) => Number(await headline.getAttribute(a));
+    const ladder = async () => {
+      const out: { model: number; bs: number }[] = [];
+      for (let i = 0; i < 16; i++) {
+        const row = page.getByTestId(`lab-ladder-row-${i}`);
+        out.push({ model: Number(await row.getAttribute('data-model')), bs: Number(await row.getAttribute('data-bs')) });
+      }
+      return out;
+    };
+
+    // Flat volatility: shifting the level and shifting one strike's σ are the same bump, so the ladder must come back
+    // at 1 everywhere. Bound fixed before the first run, as a requirement — a fixed 80-130% span at this expiry
+    // reaches strikes with no vega left and the ratio there is noise, which read as 0.038 before the span was set in σ√T.
+    expect(Math.abs(await r('data-ratio-lo') - 1)).toBeLessThan(0.01);
+    expect(Math.abs(await r('data-ratio-hi') - 1)).toBeLessThan(0.01);
+    expect(Number(await page.getByTestId('lab-ladder-chart').getAttribute('data-points'))).toBe(16);
+
+    // and the same requirement stated on the ladder itself: no point sits where Black-Scholes vega has vanished
+    const flat = await ladder();
+    const peak = Math.max(...flat.map(p => p.bs));
+    expect(Math.min(...flat.map(p => p.bs)) / peak).toBeGreaterThan(0.005);
+
+    // Equity skew: the level carries the smile with it, so the two definitions part company by a real margin
+    await page.getByTestId('smile-Equity index').click();
+    await page.getByTestId('lab-row-mc200k').waitFor();
+    await expect
+      .poll(async () => (await r('data-ratio-hi')) - (await r('data-ratio-lo')), { timeout: 60_000 })
+      .toBeGreaterThan(0.2);
+
+    // the divergence has the surface's shape: richest where the skew is steepest, falling away as the smile flattens
+    const skewed = await ladder();
+    const top = Math.max(...skewed.map(p => p.bs));
+    const ratios = skewed.filter(p => p.bs > 0.02 * top).map(p => p.model / p.bs);
+    expect(ratios.length).toBeGreaterThan(10);
+    for (let i = 1; i < ratios.length; i++) expect(ratios[i]).toBeLessThan(ratios[i - 1]);
+  });
+
   test('15. ATM term structure: each expiry reads its own ATM vol, σ stays the 30-day level, Flat restores', async ({ page }) => {
     await open(page);
     const chart = page.getByTestId('term-chart');

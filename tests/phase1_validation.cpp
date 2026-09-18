@@ -1335,6 +1335,29 @@ static void section_vega() {
     printf("  under the surface: American put %.2f · European %.2f · down-and-out call H 640 %+.2f, H 752 %+.2f (negative at the barrier)  %s\n",
            va, ve, vfar, vnear, shape_ok ? "OK" : "*** FAIL ***");
 
+    // A level bump is not a Black-Scholes volatility bump once the surface is skewed: the smile moves with the level,
+    // so vega by strike is a different shape from Black-Scholes vega taken at each strike's own implied volatility.
+    // With no skew the two must coincide exactly — that control is what makes the difference the surface's doing.
+    VolSurface fs;
+    fs.S = lv.S; fs.r = lv.r; fs.q = lv.q; fs.sigma = 0.138;
+    double lo = 1e300, hi = 0.0, flo = 1e300, fhi = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        const double K = lv.S * (0.85 + 0.05 * i);
+        PdeSpec ec;
+        ec.kind = PdeKind::European; ec.type = OptionType::Call; ec.K = K; ec.T = 0.5;
+        const double bl = bsm_full(OptionType::Call, lv.S, K, lv.r, implied_vol(lv, K, 0.5), 0.5, lv.q).greeks.vega;
+        const double bf = bsm_full(OptionType::Call, fs.S, K, fs.r, fs.sigma, 0.5, fs.q).greeks.vega;
+        if (!(bl > 1e-8) || !(bf > 1e-8)) continue;
+        const double rl = pde_price(ec, lv, 801, 800, true).vega / bl;
+        const double rf = pde_price(ec, fs, 801, 800, true).vega / bf;
+        lo = std::min(lo, rl); hi = std::max(hi, rl);
+        flo = std::min(flo, rf); fhi = std::max(fhi, rf);
+    }
+    const bool ladder_ok = hi - lo > 0.2 && std::fabs(flo - 1.0) < 2e-3 && std::fabs(fhi - 1.0) < 2e-3;
+    all_ok = all_ok && ladder_ok;
+    printf("  model ν ÷ Black-Scholes ν at σ(K), 85%%–120%% of spot: %.3f–%.3f skewed · %.4f–%.4f flat (1 without skew)  %s\n",
+           lo, hi, flo, fhi, ladder_ok ? "OK" : "*** FAIL ***");
+
     printf("\n  %-22s  %s\n", "Vega:", all_ok ? "ALL PASS" : "FAIL");
 }
 

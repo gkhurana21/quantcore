@@ -17,6 +17,7 @@ import type { Tone } from '@/components/ui/primitives';
 import { Badge, Button, cx, InfoTip, Segmented, ui } from '@/components/ui/primitives';
 import { ConvergenceChart, CrrChart } from './ConvergenceChart';
 import { EarlyExercise } from './EarlyExercise';
+import { GreeksLadder } from './GreeksLadder';
 import { SeedInput } from './SeedInput';
 import { fmtMs, fmtPaths, Z95 } from './labFormat';
 import l from './lab.module.css';
@@ -349,6 +350,8 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
           </div>
 
           <EarlyExercise legs={legs} market={market} wasm={wasm} active={active} lab={r} labCurrent={current} />
+
+          <GreeksLadder legs={legs} market={market} wasm={wasm} active={active} />
 
           <div className={l.card} style={{ marginTop: 14 }}>
             <div className={l.cardHead}>

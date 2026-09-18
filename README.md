@@ -152,6 +152,16 @@ Go proxy (`proxy/`, Alpaca) supplies live quotes and option chains when configur
   bump sits where they meet. Three solves instead of one, so it is asked for per option rather than always computed:
   the Exotics tab requests it only for the barrier level on screen. A knock-out's vega turns **negative** near its
   barrier — spot 756, barrier 752 gives −7.68 — where more volatility destroys more by breaching than it creates.
+- **Greeks by strike**: the Lab solves a ladder of European calls on the leg's expiry and plots vega two ways — the
+  solver's, which shifts the whole surface so the smile and term structure ride along, and Black-Scholes at each
+  strike's own σ(K, T), which moves one strike's volatility alone. The ladder spans ±2.5 σ√T rather than a fixed
+  share of spot: at a fixed 80–130% a 47-day expiry reaches five standard deviations out, where both vegas are
+  numerically zero and their ratio is noise over a vanishing denominator. The ratio falls away with strike, largest
+  where the skew is steepest and smallest where the smile has flattened — but how far it travels, and whether it
+  crosses 1 at all, depends on the expiry: the C++ gate measures **1.156 to 1.454** across 85–120% of spot at six
+  months, while the 47-day ladder on screen runs **0.70 to 1.15** across 87–113%. With no skew the two coincide —
+  0.9999 to 1.0001 in the gate, within 7e-4 in WebAssembly — and that flat control is what shows the difference
+  belongs to the surface rather than to the bump. Sixteen strikes with vega is 48 solves, about 0.6 s in WebAssembly.
 - **Monitored barriers by finite differences**: between its dates a scheduled barrier is simply a vanilla, so the
   solver drops the absorbing boundary, makes the barrier an interior node with the grid running past it, merges the
   monitoring dates into the graded time grid so the march lands on each exactly, and applies the knock-out as a jump
