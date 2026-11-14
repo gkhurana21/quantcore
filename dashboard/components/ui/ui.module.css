@@ -1,10 +1,22 @@
 /* ── panel ─────────────────────────────────────────────────────────── */
 .panel {
-  background: var(--surface);
+  position: relative; min-width: 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .018), transparent 90px), var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  min-width: 0;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 10px 26px -20px rgba(0, 0, 0, .85);
+  transition: box-shadow .25s var(--ease), border-color .25s;
 }
+/* a 1px gradient border that fades in on hover, over a softer, deeper shadow */
+.panel::before {
+  content: ''; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; pointer-events: none;
+  background: linear-gradient(140deg, rgba(245, 199, 126, .55), rgba(255, 255, 255, .05) 42%, rgba(114, 169, 251, .3));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  opacity: 0; transition: opacity .25s var(--ease);
+}
+.panel:hover { border-color: transparent; box-shadow: 0 1px 0 rgba(255, 255, 255, .04) inset, 0 18px 38px -20px rgba(0, 0, 0, .95); }
+.panel:hover::before, .panel:focus-within::before { opacity: 1; }
 .panelHead {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 9px 14px; min-height: 42px;

@@ -9,6 +9,7 @@ import { netPremium, pnlAtFirstExpiry, portfolioGreeks } from '@/lib/strategy/po
 import { fixed, signed, usd, usdSigned } from '@/lib/format';
 import type { ChartMode } from '@/components/terminal/useTerminalState';
 import { cx, InfoTip } from '@/components/ui/primitives';
+import { Trend } from '@/components/ui/Trend';
 import c from './analytics.module.css';
 
 export type CalcSourceKind = 'engine-stream' | 'engine-batch' | 'wasm' | 'browser';
@@ -67,7 +68,7 @@ function Tile({ label, testid, value, sub, tone, tip, raw, mode, active, onMode,
         {spark && <Spark values={spark} active={!!active} />}
       </span>
       <span data-testid={testid} data-value={raw} className={cx(c.tileValue, tone)}>
-        <span key={value} className="flash">{value}</span>
+        <Trend value={raw} text={value}>{value}</Trend>
       </span>
       {sub && <span className={c.tileSub}>{sub}</span>}
     </>

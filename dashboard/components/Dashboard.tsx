@@ -176,7 +176,11 @@ export default function Dashboard() {
   const setTab = useCallback((tab: TabId) => dispatch({ type: 'tab', tab }), [dispatch]);
   const showTab = useCallback((tab: TabId) => {
     setTab(tab);
-    requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' }));
+    requestAnimationFrame(() => {
+      const behavior = prefersReducedMotion() ? 'auto' : 'smooth';
+      window.scrollTo({ top: 0, behavior });
+      document.querySelector<HTMLElement>('[data-scroller]')?.scrollTo({ top: 0, behavior });   // the phone layout scrolls in here
+    });
   }, [setTab]);
 
   // deep links: /#risk opens the Risk workspace, and switching keeps the address in step
@@ -347,6 +351,7 @@ export default function Dashboard() {
       <TopBar instrument={state.instrument} dataMode={live.mode} engineStatus={engine.status} engineReason={engine.reason}
               wasmStatus={wasm.status} workspace={workspace} onWorkspace={setTab} onCommand={() => setPaletteOpen(true)} />
 
+      <div className={t.scroller} data-scroller>
       <PositionStrip state={state} dispatch={dispatch} value={positionValue} pnl={quote.pnl} volModel={volModel}
                      onOpenMarket={openMarket} onOpenSurface={openSurface} />
 
@@ -412,6 +417,7 @@ export default function Dashboard() {
           <a href="https://gaurangkhurana.ca" target="_blank" rel="noopener noreferrer">Gaurang Khurana</a>
         </span>
       </footer>
+      </div>
 
       <p className="sr-only" aria-live="polite">{announce}</p>
     </div>

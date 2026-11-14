@@ -9,6 +9,7 @@ import { firstExpiry } from '@/lib/strategy/portfolio';
 import { cx } from '@/components/ui/primitives';
 import { Icon } from '@/components/ui/Icon';
 import { useScrub } from '@/components/ui/useScrub';
+import { Trend } from '@/components/ui/Trend';
 import s from './layout.module.css';
 
 /** "Preset · Iron Condor", "Imported · broker-export.csv", "Stress · COVID-style Crash". */
@@ -112,11 +113,11 @@ export function PositionStrip({ state, dispatch, value, pnl, volModel, onOpenMar
         <div className={s.metrics}>
           <div className={s.metric}>
             <span className={s.metricLabel}>Value</span>
-            <span className={s.metricValue}>{usd(value)}</span>
+            <span className={s.metricValue}><Trend value={value} text={usd(value)}>{usd(value)}</Trend></span>
           </div>
           <div className={s.metric}>
             <span className={s.metricLabel}>P&amp;L</span>
-            <span className={cx(s.metricValue, pnl > 0.5 ? 'pos' : pnl < -0.5 ? 'neg' : undefined)}>{usdSigned(pnl)}</span>
+            <span className={cx(s.metricValue, pnl > 0.5 ? 'pos' : pnl < -0.5 ? 'neg' : undefined)}><Trend value={pnl} text={usdSigned(pnl)}>{usdSigned(pnl)}</Trend></span>
           </div>
         </div>
       </div>

@@ -1,6 +1,7 @@
 .workspace {
   display: flex; flex-direction: column; gap: 16px;
   width: 100%; max-width: 2200px; margin: 0 auto; padding: 22px 20px 28px;
+  animation: qc-enter .18s var(--ease);
 }
 .head { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
 .heading { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

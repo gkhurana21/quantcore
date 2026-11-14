@@ -1,4 +1,6 @@
 .app { min-height: 100vh; display: flex; flex-direction: column; }
+/* wraps the strip, the workspace and the footer: invisible on wide screens, the one scroll area on phones */
+.scroller { display: contents; }
 
 .skip {
   position: absolute; left: 8px; top: -48px; z-index: 100;
@@ -9,7 +11,7 @@
 .main { flex: 1; min-width: 0; }
 .main:focus { outline: none; }
 
-.source { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--ink-3); }
+.source { display: inline-flex; align-items: center; justify-content: flex-end; gap: 2px 6px; flex-wrap: wrap; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--ink-3); }
 .sourceDot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .sourceEngine { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .sourceBrowser { background: var(--blue); }
@@ -26,4 +28,11 @@
 
 @media (max-width: 767px) {
   .footer { padding: 12px 12px 20px; }
+  /* phones: the bar on top and the tab bar below stay put; only this region scrolls, so nothing slides under the tab bar */
+  .app { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
+  .scroller {
+    display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto;
+    overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch;
+    margin-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+  }
 }
