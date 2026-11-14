@@ -30,7 +30,7 @@
 }
 /* tooltips on the right-hand tiles open leftwards so they stay inside the viewport */
 .tile:nth-child(n+4) [role='note'] > span { left: auto; right: -6px; transform: none; }
-.tileSub { display: block; font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tileSub { display: block; font-family: var(--mono); font-size: 11px; line-height: 1.4; color: var(--ink-3); white-space: normal; overflow-wrap: anywhere; }
 
 .facts { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 10px 14px; align-items: baseline; }
 .fact { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
@@ -60,6 +60,10 @@
 .axisText { font-family: var(--mono); font-size: 10.5px; fill: var(--ink-4); }
 .axisUnit { font-family: var(--sans); font-size: 10.5px; fill: var(--ink-3); font-weight: 600; letter-spacing: .04em; }
 .markerText { font-family: var(--mono); font-size: 10.5px; }
+.crosshair { filter: drop-shadow(0 0 3px rgba(245, 199, 126, .85)) drop-shadow(0 0 8px rgba(245, 199, 126, .45)); }
+.dataPath { filter: drop-shadow(0 0 5px rgba(229, 169, 71, .32)); }
+.spotPulse { transform-box: fill-box; transform-origin: center; animation: spotPing 2.4s var(--ease) infinite; pointer-events: none; }
+@keyframes spotPing { 0% { transform: scale(1); opacity: .5; } 75%, 100% { transform: scale(3.2); opacity: 0; } }
 .tooltip {
   position: absolute; top: 8px; z-index: 5; pointer-events: none;
   min-width: 150px; padding: 8px 10px; border-radius: 6px;

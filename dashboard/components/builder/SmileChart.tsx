@@ -1,14 +1,14 @@
 'use client';
 
-import { memo } from 'react';
+import { memo, useRef } from 'react';
 import type { Leg, Market } from '@/lib/quant/types';
 import { legSigma } from '@/lib/quant/volSurface';
 import { firstExpiry } from '@/lib/strategy/portfolio';
 import { days, pct } from '@/lib/format';
+import { useElementWidth } from '@/components/ui/useElementWidth';
 import b from './builder.module.css';
 
-const W = 300, H = 92;
-const PAD = { l: 34, r: 8, t: 8, b: 18 };
+const PAD = { l: 38, r: 14, t: 10, b: 22 };
 const LO = 0.7, HI = 1.3, N = 60;
 
 export interface MarketIv { K: number; ivMarket: number; call: boolean; }
@@ -20,6 +20,10 @@ export interface MarketIv { K: number; ivMarket: number; call: boolean; }
 export const SmileChart = memo(function SmileChart({ market: m, legs, quotes }: {
   market: Market; legs: Leg[]; quotes?: MarketIv[];
 }) {
+  // drawn in real pixels: the SVG is as wide as its box, so 10px text is 10px text in a 300px rail and a 900px row alike
+  const figRef = useRef<HTMLElement | null>(null);
+  const W = useElementWidth(figRef, 300);
+  const H = Math.round(Math.min(168, Math.max(112, W * 0.26)));
   const T = legs.length ? Math.max(firstExpiry(legs), 1 / 365) : 30 / 365;
   const at = (x: number) => legSigma(m, x * m.S, T);
   const xs = Array.from({ length: N + 1 }, (_, i) => LO + ((HI - LO) * i) / N);
@@ -38,12 +42,14 @@ export const SmileChart = memo(function SmileChart({ market: m, legs, quotes }: 
   const strikes = legs.filter(l => l.K / m.S > LO && l.K / m.S < HI && Math.abs(Math.max(l.T, 1 / 365) - T) < 1e-9);
 
   return (
-    <figure className={b.smileFig}>
-      <svg viewBox={`0 0 ${W} ${H}`} className={b.smileChart} role="img" data-testid="smile-chart"
+    <figure ref={figRef} className={b.smileFig}>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className={b.smileChart} role="img" data-testid="smile-chart"
            data-down={down} data-atm={atm} data-up={up} data-quotes={shownQuotes.length}
            aria-label={`Implied volatility at ${days(T)} days: ${pct(down, 1)} at 90% of spot, ${pct(atm, 1)} at the money (forward), ${pct(up, 1)} at 110% of spot`}>
+        <line x1={PAD.l} x2={W - PAD.r} y1={PAD.t} y2={PAD.t} stroke="var(--line)" opacity={0.6} />
+        <line x1={PAD.l} x2={W - PAD.r} y1={H - PAD.b} y2={H - PAD.b} stroke="var(--line)" opacity={0.6} />
         <line x1={X(fwd)} x2={X(fwd)} y1={PAD.t} y2={H - PAD.b} stroke="var(--line-2)" strokeDasharray="3 3" />
-        <text x={X(fwd) + 4} y={PAD.t + 8} className={b.smileTick}>ATM</text>
+        <text x={X(fwd) + 5} y={PAD.t + 9} className={b.smileTick}>ATM</text>
         {shownQuotes.map(p => (
           <circle key={`${p.call ? 'c' : 'p'}${p.K}`} cx={X(p.K / m.S)} cy={Y(p.ivMarket)} r={2.2}
                   fill="none" stroke="var(--ink-2)" strokeWidth={1} />
@@ -53,10 +59,10 @@ export const SmileChart = memo(function SmileChart({ market: m, legs, quotes }: 
           <circle key={l.id} cx={X(l.K / m.S)} cy={Y(legSigma(m, l.K, T))} r={3}
                   fill={l.call ? 'var(--green)' : 'var(--red)'} stroke="var(--bg-raise)" strokeWidth={1} />
         ))}
-        <text x={PAD.l - 5} y={PAD.t + 8} textAnchor="end" className={b.smileTick}>{pct(hi, 0)}</text>
-        <text x={PAD.l - 5} y={H - PAD.b} textAnchor="end" className={b.smileTick}>{pct(lo, 0)}</text>
+        <text x={PAD.l - 6} y={PAD.t + 4} textAnchor="end" className={b.smileTick}>{pct(hi, 0)}</text>
+        <text x={PAD.l - 6} y={H - PAD.b + 3} textAnchor="end" className={b.smileTick}>{pct(lo, 0)}</text>
         {[0.8, 1, 1.2].map(x => (
-          <text key={x} x={X(x)} y={H - 4} textAnchor="middle" className={b.smileTick}>{x === 1 ? 'spot' : `${Math.round(x * 100)}%`}</text>
+          <text key={x} x={X(x)} y={H - 6} textAnchor="middle" className={b.smileTick}>{x === 1 ? 'spot' : `${Math.round(x * 100)}%`}</text>
         ))}
       </svg>
       <figcaption className={b.smileCap}>

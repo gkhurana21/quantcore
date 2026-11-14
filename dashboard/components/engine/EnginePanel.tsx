@@ -247,13 +247,13 @@ export function EnginePanel({ engine, wasm, legs, market, source }: {
       {!connected && (
         <>
           <div className={e.sectionTitle}>Run the engine locally</div>
-          <pre className={e.cmd} data-testid="engine-offline-help">{`# Apple Silicon · CMake ≥ 3.21 · Python 3.9+ with pybind11 numpy fastapi uvicorn
+          <div className={e.cmdWrap}><pre className={e.cmd} data-testid="engine-offline-help">{`# Apple Silicon · CMake ≥ 3.21 · Python 3.9+ with pybind11 numpy fastapi uvicorn
 git clone https://github.com/gkhurana21/quantcore && cd quantcore
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
 python3 server/ws_server.py 8765
 
 # second terminal
-cd dashboard && npm install && npm run dev     # open http://localhost:3000`}</pre>
+cd dashboard && npm install && npm run dev     # open http://localhost:3000`}</pre></div>
         </>
       )}
 
