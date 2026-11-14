@@ -1,32 +1,37 @@
 'use client';
 
-// QuantCore terminal: Build → Price → Simulate → Stress → Risk.
-// Orchestrates state, the local C++ engine connection and the views. All
-// analytics live in lib/; components only compose and present them.
+// QuantCore terminal: one position, seven workspaces — Build, Price, Simulate, Exotics, Stress,
+// Risk, Engine. The bar switches them, the strip carries the market and the position through all
+// of them, and the analytics all live in lib/; components only compose and present them.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { bsGreeks } from '@/lib/quant/blackScholes';
 import { hasVolSurface, legSigma } from '@/lib/quant/volSurface';
 import type { Greeks, Leg, Market } from '@/lib/quant/types';
 import { CONTRACT_MULT as M, signedQty } from '@/lib/quant/types';
-import { firstExpiry, netPremium, payoffAnalytics, portfolioGreeks } from '@/lib/strategy/portfolio';
-import { legsKeyOf } from '@/lib/strategy/labels';
-import { findInstrument } from '@/lib/market/instruments';
+import { netPremium, payoffAnalytics, portfolioGreeks } from '@/lib/strategy/portfolio';
+import { legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
+import { findInstrument, INSTRUMENTS } from '@/lib/market/instruments';
+import { PRESETS } from '@/lib/strategy/presets';
+import { SCENARIOS } from '@/lib/risk/stress';
+import { useWorkerTask } from '@/lib/compute/useWorkerTask';
 import type { EnginePortfolioResult } from '@/lib/engine/useEngine';
 import { useEngine } from '@/lib/engine/useEngine';
 import { useWasmEngine } from '@/lib/engine/useWasmEngine';
 import { wasmLegGreeks } from '@/lib/engine/wasm';
-import { days, usdSigned } from '@/lib/format';
-import { cx, Panel, prefersReducedMotion, Segmented, tabId, tabPanelId, Tabs } from './ui/primitives';
-import type { QuickAction, StepId } from './layout/TopBar';
+import { usdSigned } from '@/lib/format';
+import { cx, prefersReducedMotion, tabId, tabPanelId } from './ui/primitives';
 import { TopBar } from './layout/TopBar';
-import { MarketInputs } from './builder/MarketInputs';
-import { StrategyBuilder } from './builder/StrategyBuilder';
-import { PortfolioUpload } from './io/PortfolioUpload';
+import { PositionStrip } from './layout/PositionStrip';
+import { Sheet } from './layout/Sheet';
+import type { Command } from './layout/CommandPalette';
+import { CommandPalette } from './layout/CommandPalette';
+import { MarketControls } from './builder/MarketControls';
+import { SurfaceControls } from './builder/SurfaceControls';
+import { ImportDialog } from './io/ImportDialog';
+import { BuildWorkspace } from './build/BuildWorkspace';
+import { WorkspaceView } from './workspace/WorkspaceView';
 import type { CalcSource, TileQuote } from './analytics/SummaryTiles';
-import { PositionFacts, SummaryTiles } from './analytics/SummaryTiles';
-import { StrategyChart } from './analytics/StrategyChart';
-import { PnlSurface } from './analytics/PnlSurface';
 import { PricingLab } from './lab/PricingLab';
 import { MonteCarloPanel } from './lab/MonteCarloPanel';
 import { ExoticsPanel } from './exotics/ExoticsPanel';
@@ -34,9 +39,12 @@ import { StressLab } from './stress/StressLab';
 import { RiskPanel } from './risk/RiskPanel';
 import { EnginePanel } from './engine/EnginePanel';
 import type { TabId } from './terminal/useTerminalState';
-import { CHART_MODES, isCanonicalPosition, TABS, useTerminalState } from './terminal/useTerminalState';
+import { isCanonicalPosition, TABS, useTerminalState, WORKSPACES } from './terminal/useTerminalState';
 import { useLiveData } from './terminal/useLiveData';
 import t from './terminal/terminal.module.css';
+
+const MC_VAR_SCENARIOS = 20_000;
+const MC_VAR_SEED = 11;
 
 function aggregate(legs: Leg[], perShare: Greeks[]): { greeks: Greeks; pnl: number; perShare: boolean } {
   if (legs.length === 1) {
@@ -158,27 +166,78 @@ export default function Dashboard() {
     const source: CalcSource = { kind: 'browser', label: 'Browser · TypeScript', reason };
     quote = { ...browser, calcUs: browserUs, source };
   }
+  const positionValue = quote.perShare && legs.length === 1
+    ? quote.greeks.price * signedQty(legs[0]) * M : quote.greeks.price;
+  const dollarDelta = (quote.perShare && legs.length === 1
+    ? quote.greeks.delta * signedQty(legs[0]) * M : quote.greeks.delta) * market.S;
 
-  // ── views, tabs and keyboard shortcuts ───────────────────────────────────
-  const [scenarioId, setScenarioId] = useState('covid');
-  const [varConf, setVarConf] = useState(0.95);
-  const [varHorizon, setVarHorizon] = useState(1);
-  const deckRef = useRef<HTMLElement | null>(null);
-
+  // ── workspaces ───────────────────────────────────────────────────────────
+  const workspace = state.tab;
   const setTab = useCallback((tab: TabId) => dispatch({ type: 'tab', tab }), [dispatch]);
   const showTab = useCallback((tab: TabId) => {
     setTab(tab);
-    requestAnimationFrame(() => deckRef.current?.scrollIntoView({
-      behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' }));
+    requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' }));
   }, [setTab]);
 
+  // deep links: /#risk opens the Risk workspace, and switching keeps the address in step
+  useEffect(() => {
+    const id = window.location.hash.replace('#', '') as TabId;
+    if (WORKSPACES.some(w => w.id === id)) setTab(id);
+  }, [setTab]);
+  useEffect(() => {
+    const url = workspace === 'build' ? window.location.pathname + window.location.search : `#${workspace}`;
+    window.history.replaceState(null, '', url);
+  }, [workspace]);
+
+  // ── sheets, palette and the importer ─────────────────────────────────────
+  const [sheet, setSheet] = useState<{ which: 'market' | 'surface'; anchor: HTMLElement | null } | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const closeSheet = useCallback(() => setSheet(null), []);
+  const openMarket = useCallback((anchor: HTMLElement | null) => setSheet(s => (s?.which === 'market' ? null : { which: 'market', anchor })), []);
+  const openSurface = useCallback((anchor: HTMLElement | null) => {
+    // on Build the surface already has a panel in the rail: go to it rather than open a second copy
+    if (state.tab === 'build') {
+      const el = document.getElementById('surface');
+      el?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'nearest' });
+      el?.querySelector<HTMLElement>('[role="radio"]')?.focus({ preventScroll: true });
+      return;
+    }
+    setSheet(s => (s?.which === 'surface' ? null : { which: 'surface', anchor }));
+  }, [state.tab]);
+
+  // ── research state shared across workspaces ──────────────────────────────
+  const [scenarioId, setScenarioId] = useState('covid');
+  const [varConf, setVarConf] = useState(0.95);
+  const [varHorizon, setVarHorizon] = useState(1);
+  const [seed, setSeed] = useState(42);
+  const [antithetic, setAntithetic] = useState(false);
+
+  // The Pricing Lab's models also answer the Build workspace's "do the models agree?" line, so the
+  // task runs for both and switching between them shows a result that is already there.
+  const labActive = workspace === 'build' || workspace === 'lab';
+  const labKey = `${legsKey}|${marketKeyOf(market)}|${seed}|${antithetic ? 1 : 0}`;
+  const lab = useWorkerTask('lab', labActive ? { legs, market, seed, antithetic } : null, labKey, 120);
+
+  // Full-revaluation VaR for the glance column; the Risk workspace runs its own at its own confidence.
+  const varKey = `${legsKey}|${marketKeyOf(market)}|glance`;
+  const glanceVar = useWorkerTask('mcvar', workspace === 'build'
+    ? { legs, market, conf: 0.95, hDays: 1, nScen: MC_VAR_SCENARIOS, seed: MC_VAR_SEED } : null, varKey, 200);
+
+  // ── keyboard: number keys switch workspace, ⌘K opens the palette ─────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+      if (e.altKey || e.repeat) return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen(true);
+        return;
+      }
+      if (e.metaKey || e.ctrlKey) return;
       const el = e.target as HTMLElement | null;
       if (el?.closest('input, textarea, select, [contenteditable="true"]')) return;
       const i = Number(e.key) - 1;
-      if (Number.isInteger(i) && i >= 0 && i < TABS.length) setTab(TABS[i].id);
+      if (Number.isInteger(i) && i >= 0 && i < WORKSPACES.length) setTab(WORKSPACES[i].id);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -211,31 +270,64 @@ export default function Dashboard() {
     tweenMarket(market, to);
   };
 
-  const onStep = (id: StepId) => {
-    if (id === 'build') {
-      const el = document.getElementById('builder');
-      el?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
-      el?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true });
-    } else {
-      showTab(id);
+  // ── everything the terminal can do, by name ──────────────────────────────
+  const commands: Command[] = useMemo(() => {
+    const out: Command[] = [];
+    for (const [i, w] of WORKSPACES.entries()) {
+      out.push({ id: `ws-${w.id}`, group: 'Workspaces', glyph: String(i + 1), label: w.label,
+                 meta: `key ${i + 1}`, keywords: w.nav, run: () => showTab(w.id) });
     }
-  };
-
-  const quick: QuickAction[] = [
-    { id: 'condor', label: 'Iron Condor on NVDA', run: () => {
-      const nvda = findInstrument('NVDA');
-      if (nvda) dispatch({ type: 'instrument', instrument: nvda });
-      dispatch({ type: 'preset', name: 'Iron Condor' });
-      showTab('lab');
-    } },
-    { id: 'covid', label: 'COVID-style crash', run: () => { setScenarioId('covid'); showTab('stress'); } },
-    { id: 'paths', label: '200k-path convergence', run: () => {
-      setTab('lab');
-      requestAnimationFrame(() => document.getElementById('convergence')?.scrollIntoView({
-        behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' }));
-    } },
-    { id: 'var99', label: '99% VaR', run: () => { setVarConf(0.99); showTab('risk'); } },
-  ];
+    out.push(
+      { id: 'quick-condor', group: 'Try', glyph: '↗', label: 'Iron Condor on NVDA', meta: 'Price',
+        testid: 'quick-condor', keywords: 'example preset nvda',
+        run: () => {
+          const nvda = findInstrument('NVDA');
+          if (nvda) dispatch({ type: 'instrument', instrument: nvda });
+          dispatch({ type: 'preset', name: 'Iron Condor' });
+          showTab('lab');
+        } },
+      { id: 'quick-covid', group: 'Try', glyph: '↘', label: 'COVID-style crash on this position', meta: 'Stress',
+        testid: 'quick-covid', keywords: 'example scenario crash',
+        run: () => { setScenarioId('covid'); showTab('stress'); } },
+      { id: 'quick-paths', group: 'Try', glyph: '≈', label: '200k-path Monte Carlo convergence', meta: 'Price',
+        testid: 'quick-paths', keywords: 'example monte carlo convergence',
+        run: () => {
+          setTab('lab');
+          requestAnimationFrame(() => document.getElementById('convergence')?.scrollIntoView({
+            behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' }));
+        } },
+      { id: 'quick-var99', group: 'Try', glyph: '%', label: '99% Value at Risk', meta: 'Risk',
+        testid: 'quick-var99', keywords: 'example var risk',
+        run: () => { setVarConf(0.99); showTab('risk'); } },
+    );
+    for (const name of PRESETS) {
+      out.push({ id: `preset-${name}`, group: 'Presets', glyph: '⌥', label: name, meta: 'build position',
+                 keywords: 'strategy preset legs',
+                 run: () => { dispatch({ type: 'preset', name }); showTab('build'); } });
+    }
+    for (const inst of [...INSTRUMENTS, ...state.searched]) {
+      out.push({ id: `inst-${inst.sym}`, group: 'Tickers', glyph: inst.sym.slice(0, 2), label: inst.sym,
+                 meta: inst.name, keywords: 'underlying instrument ticker',
+                 run: () => { dispatch({ type: 'instrument', instrument: inst }); showTab('build'); } });
+    }
+    for (const sc of SCENARIOS) {
+      out.push({ id: `scenario-${sc.id}`, group: 'Scenarios', glyph: '!', label: sc.name, meta: 'Stress',
+                 keywords: `shock ${sc.tag}`,
+                 run: () => { setScenarioId(sc.id); showTab('stress'); } });
+    }
+    out.push(
+      { id: 'cmd-import', group: 'Actions', glyph: '↑', label: 'Import a portfolio file', meta: 'CSV · XLSX · XLS',
+        testid: 'cmd-import', keywords: 'upload csv excel', run: () => setImportOpen(true) },
+      { id: 'cmd-market', group: 'Actions', glyph: 'S', label: 'Market controls — spot, vol, rate, dividend',
+        testid: 'cmd-market', keywords: 'spot volatility rate dividend ticker',
+        run: () => setSheet({ which: 'market', anchor: null }) },
+      { id: 'cmd-reset', group: 'Actions', glyph: '↺', label: 'Reset the market to its reference', testid: 'cmd-reset',
+        keywords: 'undo restore', run: () => dispatch({ type: 'resetMarket' }) },
+      { id: 'cmd-draw', group: 'Actions', glyph: '⟳', label: 'New Monte Carlo draw', testid: 'cmd-draw',
+        keywords: 'seed reseed random', run: () => setSeed(Math.floor(Math.random() * 1_000_000)) },
+    );
+    return out;
+  }, [dispatch, showTab, setTab, state.searched]);
 
   // ── screen-reader summary (debounced) ────────────────────────────────────
   const [announce, setAnnounce] = useState('');
@@ -245,73 +337,69 @@ export default function Dashboard() {
     return () => clearTimeout(id);
   }, [pnlRounded]);
 
-  const dollarDelta = (quote.perShare && legs.length === 1
-    ? quote.greeks.delta * signedQty(legs[0]) * M : quote.greeks.delta) * market.S;
+  const volModel = market.smile && market.term ? 'SSVI surface' : market.smile ? 'SSVI smile'
+    : market.term ? 'ATM term structure' : 'flat σ';
 
   return (
     <div className={t.app}>
       <a className={t.skip} href="#workspace">Skip to workspace</a>
 
-      <TopBar instrument={state.instrument} market={market} horizonDays={days(firstExpiry(legs))} pnl={quote.pnl}
-              dataMode={live.mode} engineStatus={engine.status} engineReason={engine.reason} wasmStatus={wasm.status}
-              activeTab={state.tab} onStep={onStep} quick={quick} />
+      <TopBar instrument={state.instrument} dataMode={live.mode} engineStatus={engine.status} engineReason={engine.reason}
+              wasmStatus={wasm.status} workspace={workspace} onWorkspace={setTab} onCommand={() => setPaletteOpen(true)} />
 
-      <div className={t.body}>
-        <aside className={t.rail} aria-label="Market, strategy and portfolio inputs">
-          <Panel id="market" index="01" title="Market">
-            <MarketInputs state={state} dispatch={dispatch} live={live} />
-          </Panel>
-          <Panel id="builder" index="02" title="Strategy Builder" meta={<span data-testid="builder-vol-model">{state.instrument.sym} · {market.smile && market.term ? 'SSVI surface' : market.smile ? 'SSVI smile' : market.term ? 'ATM term structure' : 'flat σ'}</span>}>
-            <StrategyBuilder state={state} dispatch={dispatch} live={live} />
-          </Panel>
-          <Panel id="upload" index="03" title="Portfolio Upload">
-            <PortfolioUpload market={market} symbol={state.instrument.sym}
-                             onApply={(imported, label) => dispatch({ type: 'importLegs', legs: imported, label })} />
-          </Panel>
-        </aside>
+      <PositionStrip state={state} dispatch={dispatch} value={positionValue} pnl={quote.pnl} volModel={volModel}
+                     onOpenMarket={openMarket} onOpenSurface={openSurface} />
 
-        <main id="workspace" className={t.main} tabIndex={-1}>
-          <Panel title="Position & Greeks" flush meta={<SourceMeta quote={quote} />}>
-            <SummaryTiles quote={quote} legs={legs} spot={market.S} />
-            <PositionFacts legs={legs} analytics={analytics} spotDollarDelta={dollarDelta} />
-          </Panel>
+      <Sheet open={sheet?.which === 'market'} onClose={closeSheet} title="Market" anchor={sheet?.anchor ?? null}
+             meta={state.instrument.sym} testid="market-sheet">
+        <MarketControls state={state} dispatch={dispatch} live={live} />
+      </Sheet>
+      {sheet?.which === 'surface' && (
+        <Sheet open onClose={closeSheet} title="Volatility surface" anchor={sheet.anchor} meta={volModel} testid="surface-sheet">
+          <SurfaceControls state={state} dispatch={dispatch} live={live} />
+        </Sheet>
+      )}
 
-          <div className={t.row2}>
-            <Panel title="Strategy Payoff"
-                   meta={<Segmented size="sm" label="Chart mode" testid="chart-mode" value={state.chartMode}
-                                    options={CHART_MODES.map(m => ({ value: m.id, label: m.label, title: m.title }))}
-                                    onChange={mode => dispatch({ type: 'chartMode', mode })} />}>
-              <StrategyChart legs={legs} market={market} anchorS={state.base.S} mode={state.chartMode} analytics={analytics} />
-            </Panel>
-            <Panel title="P&L Surface" meta={<span>spot × vol · USD</span>}>
-              <PnlSurface legs={legs} market={market} />
-            </Panel>
+      <main id="workspace" className={t.main} tabIndex={-1}>
+        {workspace === 'build' && (
+          <div role="tabpanel" id={tabPanelId('ws', 'build')} aria-labelledby={tabId('ws', 'build')} data-testid="panel-build">
+            <BuildWorkspace state={state} dispatch={dispatch} live={live} quote={quote} analytics={analytics}
+                            source={<SourceMeta quote={quote} />} mcVar={glanceVar.result}
+                            lab={lab.result} labCurrent={lab.resultKey === labKey}
+                            onWorkspace={showTab} onScenario={setScenarioId} onImport={() => setImportOpen(true)} />
           </div>
+        )}
 
-          <section ref={deckRef} className={t.deck} aria-label="Research tools">
-            <Tabs prefix="deck" label="Research tools" showKeys active={state.tab} onChange={setTab}
-                  tabs={TABS.map(x => ({ id: x.id, label: x.label, badge: x.id === 'engine' && (engine.status === 'connected' || wasm.status === 'ready') }))} />
-            {TABS.map(x => state.visited.includes(x.id) && (
-              <div key={x.id} role="tabpanel" id={tabPanelId('deck', x.id)} aria-labelledby={tabId('deck', x.id)}
-                   hidden={state.tab !== x.id} className={t.deckPanel} data-testid={`panel-${x.id}`}>
-                {x.id === 'lab' && <PricingLab legs={legs} market={market} engine={engine} wasm={wasm} active={state.tab === 'lab'} />}
-                {x.id === 'mc' && <MonteCarloPanel legs={legs} market={market} active={state.tab === 'mc'} />}
-                {x.id === 'exotics' && <ExoticsPanel market={market} engine={engine} wasm={wasm} active={state.tab === 'exotics'} />}
-                {x.id === 'stress' && (
-                  <StressLab legs={legs} market={market} scenarioId={scenarioId} onScenario={setScenarioId}
-                             onApply={onStressApply} onRestore={() => dispatch({ type: 'stressRestore' })}
-                             canRestore={state.stressBackup != null} />
-                )}
-                {x.id === 'risk' && (
-                  <RiskPanel legs={legs} market={market} conf={varConf} horizon={varHorizon}
-                             onConf={setVarConf} onHorizon={setVarHorizon} active={state.tab === 'risk'} />
-                )}
-                {x.id === 'engine' && <EnginePanel engine={engine} wasm={wasm} legs={legs} market={market} source={quote.source} />}
-              </div>
-            ))}
-          </section>
-        </main>
-      </div>
+        {TABS.map(x => state.visited.includes(x.id) && (
+          <div key={x.id} role="tabpanel" id={tabPanelId('ws', x.id)} aria-labelledby={tabId('ws', x.id)}
+               hidden={workspace !== x.id} data-testid={`panel-${x.id}`}>
+            <WorkspaceView id={x.id}>
+              {x.id === 'lab' && (
+                <PricingLab legs={legs} market={market} engine={engine} wasm={wasm} active={workspace === 'lab'}
+                            task={lab} taskKey={labKey} seed={seed} onSeed={setSeed}
+                            antithetic={antithetic} onAntithetic={setAntithetic} />
+              )}
+              {x.id === 'mc' && <MonteCarloPanel legs={legs} market={market} active={workspace === 'mc'} />}
+              {x.id === 'exotics' && <ExoticsPanel market={market} engine={engine} wasm={wasm} active={workspace === 'exotics'} />}
+              {x.id === 'stress' && (
+                <StressLab legs={legs} market={market} scenarioId={scenarioId} onScenario={setScenarioId}
+                           onApply={onStressApply} onRestore={() => dispatch({ type: 'stressRestore' })}
+                           canRestore={state.stressBackup != null} />
+              )}
+              {x.id === 'risk' && (
+                <RiskPanel legs={legs} market={market} conf={varConf} horizon={varHorizon}
+                           onConf={setVarConf} onHorizon={setVarHorizon} active={workspace === 'risk'} />
+              )}
+              {x.id === 'engine' && <EnginePanel engine={engine} wasm={wasm} legs={legs} market={market} source={quote.source} />}
+            </WorkspaceView>
+          </div>
+        ))}
+      </main>
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
+      <ImportDialog open={importOpen} onOpen={() => setImportOpen(true)} onClose={() => setImportOpen(false)}
+                    market={market} symbol={state.instrument.sym}
+                    onApply={(imported, label) => dispatch({ type: 'importLegs', legs: imported, label })} />
 
       <footer className={t.footer}>
         <span>

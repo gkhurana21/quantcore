@@ -12,6 +12,7 @@ import type { PresetName } from '@/lib/strategy/presets';
 import { buildPreset, MAX_LEGS, PRESETS } from '@/lib/strategy/presets';
 import { usdSigned } from '@/lib/format';
 import { Button, cx, Segmented } from '@/components/ui/primitives';
+import { Icon } from '@/components/ui/Icon';
 import type { TerminalAction, TerminalState } from '@/components/terminal/useTerminalState';
 import type { LiveData } from '@/components/terminal/useLiveData';
 import b from './builder.module.css';
@@ -99,13 +100,13 @@ const LegRow = memo(function LegRow({ leg, index, state, dispatch, live, canRemo
     <div className={b.leg} data-testid="leg-row">
       <div className={b.legTop}>
         <span className={b.legIdx}>{index + 1}</span>
+        <Segmented size="sm" label={`Leg ${index + 1} side`} testid={`leg-${index}-side`} value={leg.side}
+                   options={[{ value: 'buy', label: 'Buy', ariaLabel: 'Buy' }, { value: 'sell', label: 'Sell', ariaLabel: 'Sell' }]}
+                   onChange={side => update({ side })} />
         <Segmented size="sm" label={`Leg ${index + 1} option type`} testid={`leg-${index}-type`}
                    value={leg.call ? 'call' : 'put'}
-                   options={[{ value: 'call', label: 'Call' }, { value: 'put', label: 'Put' }]}
+                   options={[{ value: 'call', label: 'C', ariaLabel: 'Call' }, { value: 'put', label: 'P', ariaLabel: 'Put' }]}
                    onChange={v => update({ call: v === 'call' })} />
-        <Segmented size="sm" label={`Leg ${index + 1} side`} testid={`leg-${index}-side`} value={leg.side}
-                   options={[{ value: 'buy', label: 'Buy' }, { value: 'sell', label: 'Sell' }]}
-                   onChange={side => update({ side })} />
         <span className={b.legMark}
               title={`Implied volatility of the entry premium: ${iv ? ivText : 'none (premium outside no-arbitrage bounds)'} · model volatility ${(modelVol * 100).toFixed(1)}%${m.smile ? ' (smile)' : ''} · model price ${mark.toFixed(2)} · leg P&L at the current market`}>
           <span data-testid={`leg-${index}-iv`} data-value={iv?.sigma ?? ''}>IV {ivText}</span>
@@ -145,8 +146,8 @@ const LegRow = memo(function LegRow({ leg, index, state, dispatch, live, canRemo
   );
 });
 
-export function StrategyBuilder({ state, dispatch, live }: {
-  state: TerminalState; dispatch: Dispatch<TerminalAction>; live: LiveData;
+export function StrategyBuilder({ state, dispatch, live, onImport }: {
+  state: TerminalState; dispatch: Dispatch<TerminalAction>; live: LiveData; onImport: () => void;
 }) {
   const { legs, preset, source } = state;
   return (
@@ -160,7 +161,7 @@ export function StrategyBuilder({ state, dispatch, live }: {
 
       <div className={b.sectionLabel}>
         <span>Legs</span>
-        <span className={b.sourceTag} data-testid="legs-source">
+        <span className={b.sourceTag}>
           {source.kind === 'import' ? `Imported · ${source.label}` : source.kind === 'stress' ? source.label
             : source.kind === 'custom' ? 'Custom' : `Preset · ${source.label}`}
         </span>
@@ -185,8 +186,9 @@ export function StrategyBuilder({ state, dispatch, live }: {
 
       <div className={b.legActions}>
         <Button size="sm" data-testid="add-leg" disabled={legs.length >= MAX_LEGS}
-                onClick={() => dispatch({ type: 'addLeg' })}>+ Add leg</Button>
-        <span className={b.subtle} data-testid="leg-count">{legs.length} / {MAX_LEGS} legs</span>
+                onClick={() => dispatch({ type: 'addLeg' })}><Icon name="plus" size={13} />Add leg</Button>
+        <Button size="sm" data-testid="upload-open" onClick={onImport}><Icon name="upload" size={13} />Import file</Button>
+        <span className={b.subtle} data-testid="leg-count">{legs.length} / {MAX_LEGS}</span>
       </div>
     </div>
   );

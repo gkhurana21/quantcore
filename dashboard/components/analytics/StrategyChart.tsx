@@ -43,7 +43,7 @@ const fmtTick = (mode: ChartMode, v: number): string =>
   mode === 'pnl' || mode === 'vega' || mode === 'theta' ? usdTick(v) : numTick(v);
 
 /** Spot axis range: anchored on the instrument's reference spot and the strikes, so it holds still while spot moves. */
-function spotRange(legs: Leg[], anchorS: number, S: number): [number, number] {
+export function spotRange(legs: Leg[], anchorS: number, S: number): [number, number] {
   const ks = legs.map(l => l.K);
   let lo = Math.min(anchorS * 0.8, ...ks.map(k => k * 0.93));
   let hi = Math.max(anchorS * 1.2, ...ks.map(k => k * 1.07));

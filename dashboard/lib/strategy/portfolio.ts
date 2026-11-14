@@ -1,5 +1,7 @@
 import { bsGreeks, bsPrice, intrinsic } from '../quant/blackScholes';
-import { atSpot, legSigma } from '../quant/volSurface';
+import { atmVariance, atSpot, legSigma } from '../quant/volSurface';
+import { smileDistribution } from '../quant/impliedDensity';
+import { normCdf } from '../quant/normal';
 import type { Greeks, Leg, Market } from '../quant/types';
 import { CONTRACT_MULT as M, signedQty } from '../quant/types';
 
@@ -163,4 +165,41 @@ function numericPayoff(legs: Leg[], m: Market, horizonT: number): PayoffAnalytic
     maxLoss: tailSlope < -0.5 ? -Infinity : min,
     breakevens, exact: false, horizonT,
   };
+}
+
+/**
+ * What the model says about the position at its first expiry: the risk-neutral probability of
+ * ending in profit, and the expected P&L there.
+ *
+ * Both are closed form rather than sampled. The payoff is piecewise linear with kinks at the
+ * strikes, so the profitable region is the union of the intervals between break-evens whose
+ * midpoint pays; each interval's probability is read off the terminal distribution — the
+ * smile-implied one (Breeden–Litzenberger) when there is a smile, the lognormal otherwise. The
+ * expected P&L follows from the discounted value being a martingale: E[V_T] = e^{rT}·V₀.
+ */
+export function profitOutlook(legs: Leg[], m: Market, analytics: PayoffAnalytics):
+  { pProfit: number; expectedPnl: number; T: number } {
+  const T = analytics.horizonT;
+  const expectedPnl = Math.exp(m.r * T) * portfolioValue(legs, m) - netPremium(legs);
+  if (!(T > 0) || !legs.length) return { pProfit: 0, expectedPnl, T };
+
+  const dist = smileDistribution(m, T);
+  const F = (m.smileSpot ?? m.S) * Math.exp((m.r - m.q) * T);
+  const sd = Math.sqrt(atmVariance(m, T));
+  const probAbove = (K: number): number => {
+    if (K <= 0) return 1;
+    if (dist) return dist.probAbove(K);
+    if (!(sd > 0)) return F > K ? 1 : 0;
+    return normCdf(Math.log(F / K) / sd - sd / 2);
+  };
+
+  const edges = [0, ...analytics.breakevens.filter(b => b > 0), Infinity];
+  let p = 0;
+  for (let i = 0; i < edges.length - 1; i++) {
+    const lo = edges[i], hi = edges[i + 1];
+    const mid = !Number.isFinite(hi) ? Math.max(lo * 1.5, lo + m.S * 0.5) : (lo + hi) / 2;
+    if (pnlAtFirstExpiry(legs, atSpot(m, mid)) <= 0) continue;
+    p += probAbove(lo) - (Number.isFinite(hi) ? probAbove(hi) : 0);
+  }
+  return { pProfit: Math.min(1, Math.max(0, p)), expectedPnl, T };
 }

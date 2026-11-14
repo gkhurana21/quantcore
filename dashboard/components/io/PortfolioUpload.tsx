@@ -24,8 +24,11 @@ function saveBlob(blob: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
-export function PortfolioUpload({ market, symbol, onApply }: {
+export function PortfolioUpload({ market, symbol, onApply, onFile, onDiscard }: {
   market: Market; symbol: string; onApply: (legs: Leg[], label: string) => void;
+  /** A file arrived — the importer opens, whether it parses or not. */
+  onFile?: () => void;
+  onDiscard?: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [drag, setDrag] = useState(false);
@@ -36,6 +39,7 @@ export function PortfolioUpload({ market, symbol, onApply }: {
 
   const handleFile = async (file: File | null | undefined) => {
     if (!file) return;
+    onFile?.();
     setError(''); setStatus(''); setPreview(null);
     if (file.size > MAX_BYTES) { setError(`${file.name} is larger than 5 MB.`); return; }
     const isSheet = /\.(xlsx|xlsm|xls|ods)$/i.test(file.name);
@@ -111,7 +115,13 @@ export function PortfolioUpload({ market, symbol, onApply }: {
         </Button>
       </div>
 
-      {error && <p className={io.error} role="alert" data-testid="upload-error">{error}</p>}
+      {error && (
+        <div className={io.errorBox}>
+          <p className={io.error} role="alert" data-testid="upload-error">{error}</p>
+          <Button size="sm" variant="ghost" data-testid="upload-discard"
+                  onClick={() => { setError(''); setStatus(''); onDiscard?.(); }}>Close</Button>
+        </div>
+      )}
       <p className="sr-only" role="status" data-testid="upload-status">{status}</p>
 
       {r && (
@@ -172,7 +182,8 @@ export function PortfolioUpload({ market, symbol, onApply }: {
             <Button variant="primary" size="sm" data-testid="upload-apply" disabled={!r.legs.length} onClick={apply}>
               Apply {r.legs.length || ''} position{r.legs.length === 1 ? '' : 's'}
             </Button>
-            <Button size="sm" variant="ghost" data-testid="upload-discard" onClick={() => { setPreview(null); setStatus('Import discarded'); }}>
+            <Button size="sm" variant="ghost" data-testid="upload-discard"
+                    onClick={() => { setPreview(null); setStatus('Import discarded'); onDiscard?.(); }}>
               Discard
             </Button>
           </div>

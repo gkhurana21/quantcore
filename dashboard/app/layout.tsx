@@ -1,5 +1,12 @@
 import type { Metadata, Viewport } from 'next';
+import { IBM_Plex_Mono, Instrument_Sans, Instrument_Serif } from 'next/font/google';
 import './globals.css';
+
+// Self-hosted at build time by next/font: the interface face, the tabular face every number is set in,
+// and the display face used only for workspace titles.
+const sans = Instrument_Sans({ subsets: ['latin'], display: 'swap', variable: '--font-sans' });
+const mono = IBM_Plex_Mono({ subsets: ['latin'], weight: ['400', '500', '600'], display: 'swap', variable: '--font-mono' });
+const serif = Instrument_Serif({ subsets: ['latin'], weight: '400', display: 'swap', variable: '--font-serif' });
 
 const TITLE = 'QuantCore — Options Pricing & Risk Research Terminal';
 const DESCRIPTION =
@@ -22,7 +29,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${sans.variable} ${mono.variable} ${serif.variable}`}>
       <body>{children}</body>
     </html>
   );

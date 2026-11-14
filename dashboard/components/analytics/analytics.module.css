@@ -1,24 +1,36 @@
-/* ── summary tiles ─────────────────────────────────────────────────── */
+/* ── summary tiles: price, Greeks, and the chart's mode switch ─────── */
 .tiles {
   display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
-  border-bottom: 1px solid var(--line);
 }
-.tile { padding: 11px 14px 12px; min-width: 0; border-right: 1px solid var(--line); }
+.tile {
+  position: relative; display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  padding: 11px 14px 12px; border-right: 1px solid var(--line); text-align: left;
+}
 .tile:last-child { border-right: 0; }
+.tileButton { transition: background .15s; }
+.tileButton:hover { background: var(--hover); }
+.tileButton::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: transparent;
+  transition: background .15s;
+}
+.tileActive { background: rgba(229, 169, 71, 0.06); }
+.tileActive::after { background: var(--amber); }
+.tileActive .tileLabel { color: var(--amber-2); }
 .tileSym { text-transform: none; letter-spacing: 0; }   /* keep ν from uppercasing to a Latin-looking Ν */
 .tileLabel {
   display: flex; align-items: center; gap: 6px;
   font-size: 10.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3);
   white-space: nowrap;
 }
+.tileSpark { margin-left: auto; opacity: .9; }
 .tileValue {
-  margin-top: 4px; font-family: var(--mono); font-variant-numeric: tabular-nums;
-  font-size: 19px; font-weight: 620; color: var(--ink); letter-spacing: -.01em;
+  display: block; font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-size: 19px; font-weight: 600; color: var(--ink); letter-spacing: -.01em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* tooltips on the right-hand tiles open leftwards so they stay inside the viewport */
 .tile:nth-child(n+4) [role='note'] > span { left: auto; right: -6px; transform: none; }
-.tileSub { margin-top: 2px; font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tileSub { display: block; font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .facts { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 10px 14px; align-items: baseline; }
 .fact { display: flex; align-items: baseline; gap: 7px; min-width: 0; }

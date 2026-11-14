@@ -1,0 +1,15 @@
+.workspace {
+  display: flex; flex-direction: column; gap: 16px;
+  width: 100%; max-width: 2200px; margin: 0 auto; padding: 22px 20px 28px;
+}
+.head { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
+.heading { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.title { font-family: var(--serif); font-size: 34px; font-weight: 400; line-height: 1; letter-spacing: 0; color: var(--ink); }
+.dek { max-width: 78ch; font-size: 13.5px; line-height: 1.55; color: var(--ink-3); }
+.actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+
+@media (max-width: 767px) {
+  .workspace { padding: 16px 12px 22px; gap: 12px; }
+  .title { font-size: 27px; }
+  .actions { margin-left: 0; }
+}

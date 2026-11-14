@@ -15,22 +15,46 @@ import {
   atmStrike, buildPreset, canonicalLeg, DEFAULT_QTY, DEFAULT_T, makeLeg, MAX_LEGS,
 } from '@/lib/strategy/presets';
 
-export const TABS = [
-  { id: 'lab', label: 'Pricing Models Lab' },
-  { id: 'mc', label: 'Monte Carlo' },
-  { id: 'exotics', label: 'Exotics' },
-  { id: 'stress', label: 'Stress Lab' },
-  { id: 'risk', label: 'Risk / VaR' },
-  { id: 'engine', label: 'C++ Engine' },
+/**
+ * The workspaces: one position, seven views of it. `nav` is the word in the top bar (and its
+ * position there is its number key), `label` the title the workspace itself carries, `dek` the
+ * line under that title. Build is the home — the others are the research deck, mounted on first
+ * visit and kept mounted so their workers keep their results.
+ */
+export const WORKSPACES = [
+  { id: 'build', nav: 'Build', label: 'Build', dek: 'Market, legs and payoff — the position everything else works on.' },
+  { id: 'lab', nav: 'Price', label: 'Pricing Models Lab',
+    dek: 'One portfolio, three models. Black-Scholes-Merton is the closed-form reference; the 512-step lattice and seeded Monte Carlo must converge to it, and their error is shown rather than hidden.' },
+  { id: 'mc', nav: 'Simulate', label: 'Monte Carlo',
+    dek: 'Risk-neutral paths of the underlying, and the distribution they imply for this position.' },
+  { id: 'exotics', nav: 'Exotics', label: 'Exotics',
+    dek: 'Barrier and Asian options on the terminal’s market — closed form, simulation and a PDE solve, side by side.' },
+  { id: 'stress', nav: 'Stress', label: 'Stress Lab',
+    dek: 'Instantaneous shocks with every leg fully repriced. Illustrative, in the spirit of historical episodes rather than calibrated replays.' },
+  { id: 'risk', nav: 'Risk', label: 'Risk / VaR',
+    dek: 'What the position can lose in a day, four ways. For an options book the methods disagree, and the disagreement is the finding.' },
+  { id: 'engine', nav: 'Engine', label: 'C++ Engine',
+    dek: 'The pricing core itself: native over WebSocket when it runs locally, WebAssembly in this tab otherwise.' },
 ] as const;
-export type TabId = typeof TABS[number]['id'];
+
+export type TabId = typeof WORKSPACES[number]['id'];
+
+/** The research workspaces — every workspace but Build. */
+export const TABS = WORKSPACES.filter(w => w.id !== 'build') as readonly { id: TabId; nav: string; label: string; dek: string }[];
+
+export const workspaceOf = (id: TabId) => WORKSPACES.find(w => w.id === id) ?? WORKSPACES[0];
 
 export const CHART_MODES = [
-  { id: 'pnl', label: 'P&L', title: 'Profit and loss ($)' },
-  { id: 'delta', label: 'Δ', title: 'Delta (share-equivalents)' },
-  { id: 'gamma', label: 'Γ', title: 'Gamma (Δ shares per $1 move)' },
-  { id: 'vega', label: 'Vega', title: 'Vega ($ per 1 vol point)' },
-  { id: 'theta', label: 'Θ', title: 'Theta ($ per calendar day)' },
+  { id: 'pnl', label: 'P&L', title: 'Profit and loss ($)',
+    chartTitle: 'P&L across spot', chartMeta: 'today and at expiry' },
+  { id: 'delta', label: 'Δ', title: 'Delta (share-equivalents)',
+    chartTitle: 'Delta across spot', chartMeta: 'share-equivalents' },
+  { id: 'gamma', label: 'Γ', title: 'Gamma (Δ shares per $1 move)',
+    chartTitle: 'Gamma across spot', chartMeta: 'Δ shares per $1 move' },
+  { id: 'vega', label: 'Vega', title: 'Vega ($ per 1 vol point)',
+    chartTitle: 'Vega across spot', chartMeta: '$ per +1 vol point' },
+  { id: 'theta', label: 'Θ', title: 'Theta ($ per calendar day)',
+    chartTitle: 'Theta across spot', chartMeta: '$ per calendar day' },
 ] as const;
 export type ChartMode = typeof CHART_MODES[number]['id'];
 
@@ -80,7 +104,7 @@ export function initialTerminalState(): TerminalState {
   return {
     instrument: spy, searched: [], base: market, market,
     legs: [canonicalLeg()], preset: 'Long Call', source: { kind: 'preset', label: 'Long Call' },
-    tab: 'lab', visited: ['lab'], chartMode: 'pnl', stressBackup: null,
+    tab: 'build', visited: ['build'], chartMode: 'pnl', stressBackup: null,
   };
 }
 

@@ -35,6 +35,8 @@ export function Panel({ title, index, meta, children, flush, id, className, body
 
 export interface SegOption<T extends string | number> {
   value: T; label: ReactNode; title?: string; disabled?: boolean;
+  /** Spoken name when the label is an abbreviation — "Call" behind a C, "Buy" behind a B. */
+  ariaLabel?: string;
 }
 
 export function Segmented<T extends string | number>({
@@ -63,9 +65,9 @@ export function Segmented<T extends string | number>({
          className={cx(s.seg, size === 'sm' && s.segSm, accent && s.segAccent, full && s.segFull, className)}>
       {options.map((o, i) => (
         <button key={String(o.value)} ref={el => { refs.current[i] = el; }} type="button" role="radio"
-                aria-checked={o.value === value}
+                aria-checked={o.value === value} aria-label={o.ariaLabel}
                 tabIndex={o.value === value || (selected < 0 && i === 0) ? 0 : -1}
-                disabled={o.disabled} title={o.title}
+                disabled={o.disabled} title={o.title ?? o.ariaLabel}
                 data-testid={testid ? `${testid}-${o.value}` : undefined}
                 className={s.segBtn}
                 onClick={() => onChange(o.value)} onKeyDown={e => onKey(e, i)}>

@@ -8,6 +8,7 @@ import type { LabResult, LocalVolRequest } from '@/lib/compute/tasks';
 import {
   LAB_PATHS, localVolStepsPerYear, localVolWasmPaths, LV_MIN_STEPS, LV_NATIVE_PATHS, LV_PATHS, LV_STEPS_PER_YEAR,
 } from '@/lib/compute/tasks';
+import type { WorkerTaskState } from '@/lib/compute/useWorkerTask';
 import { useWorkerTask } from '@/lib/compute/useWorkerTask';
 import type { Engine } from '@/lib/engine/useEngine';
 import type { WasmEngine } from '@/lib/engine/useWasmEngine';
@@ -147,14 +148,58 @@ function LocalVolCheck({ legs, market, seed, runKey, stale, engine, wasm, onResu
   );
 }
 
-export function PricingLab({ legs, market, engine, wasm, active }: {
-  legs: Leg[]; market: Market; engine: Engine; wasm: WasmEngine; active: boolean;
+/** The scale every row's interval is drawn on: wide enough for every value, its interval and the reference. */
+function agreementSpan(rows: Row[], reference: number): [number, number] {
+  const vals = [reference];
+  for (const row of rows) {
+    vals.push(row.value);
+    if (row.se != null) vals.push(row.value - Z95 * row.se, row.value + Z95 * row.se);
+  }
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = Math.max((hi - lo) * 0.12, Math.abs(reference) * 2e-4, 1e-6);
+  return [lo - pad, hi + pad];
+}
+
+const AGREE_W = 208, AGREE_H = 34;
+
+/**
+ * One row's price against the closed form: the dashed line is Black-Scholes, the dot is this
+ * model's value, the whisker its 95% interval. Convergence is then something you see rather than
+ * something you work out from four columns of numbers.
+ */
+function Agreement({ value, se, reference, span, accent }: {
+  value: number; se: number | null; reference: number; span: [number, number]; accent?: boolean;
 }) {
-  const [seed, setSeed] = useState(42);
-  const [antithetic, setAntithetic] = useState(false);
+  const x = (v: number) => 4 + ((v - span[0]) / (span[1] - span[0] || 1)) * (AGREE_W - 8);
+  const ci = se == null ? null : [value - Z95 * se, value + Z95 * se] as const;
+  const label = se == null
+    ? `${usd(value, 2)} against the reference ${usd(reference, 2)}`
+    : `${usd(value, 2)}, 95% interval ${usd(value - Z95 * se, 2)} to ${usd(value + Z95 * se, 2)}, against the reference ${usd(reference, 2)}`;
+  return (
+    <svg width={AGREE_W} height={AGREE_H} viewBox={`0 0 ${AGREE_W} ${AGREE_H}`} role="img" aria-label={label}
+         className={l.agree}>
+      <line x1={x(reference)} x2={x(reference)} y1={0} y2={AGREE_H} stroke="var(--amber)" strokeOpacity={0.6} strokeDasharray="3 3" />
+      {ci && (
+        <g stroke="var(--ink-3)" strokeWidth={1.5}>
+          <line x1={x(ci[0])} x2={x(ci[1])} y1={AGREE_H / 2} y2={AGREE_H / 2} />
+          <line x1={x(ci[0])} x2={x(ci[0])} y1={AGREE_H / 2 - 5} y2={AGREE_H / 2 + 5} />
+          <line x1={x(ci[1])} x2={x(ci[1])} y1={AGREE_H / 2 - 5} y2={AGREE_H / 2 + 5} />
+        </g>
+      )}
+      <circle cx={x(value)} cy={AGREE_H / 2} r={accent ? 5 : 4} fill={accent ? 'var(--amber)' : 'var(--blue)'}
+              stroke="var(--surface)" strokeWidth={1.5} />
+    </svg>
+  );
+}
+
+export function PricingLab({ legs, market, engine, wasm, active, task, taskKey, seed, onSeed, antithetic, onAntithetic }: {
+  legs: Leg[]; market: Market; engine: Engine; wasm: WasmEngine; active: boolean;
+  /** The lab task runs in the Dashboard: the Build workspace reads the same result. */
+  task: WorkerTaskState<LabResult>; taskKey: string;
+  seed: number; onSeed: (seed: number) => void; antithetic: boolean; onAntithetic: (on: boolean) => void;
+}) {
   const legsKey = legsKeyOf(legs);
-  const key = `${legsKey}|${marketKeyOf(market)}|${seed}|${antithetic ? 1 : 0}`;
-  const task = useWorkerTask('lab', active ? { legs, market, seed, antithetic } : null, key, 120);
+  const key = taskKey;
   const r = task.result;
   const rows = useMemo(() => (r ? buildRows(r) : []), [r]);
   const ref = r?.bs.value ?? 0;
@@ -219,24 +264,19 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
               value, se, ms: lv.res.ms, ...compare(value, se), engine: true };
   }
   const allRows = [...rows, ...(lvRow ? [lvRow] : []), ...(engRow ? [engRow] : [])];
+  const span = agreementSpan(allRows, ref);
   const head = rows.find(x => x.id === 'mc200k');
   const final = r ? r.mc[r.mc.length - 1] : null;
 
   return (
     <div>
-      <p className={l.intro}>
-        One portfolio, three pricing models. Black-Scholes-Merton is the closed-form reference; the CRR lattice and
-        Monte Carlo must converge to it. Monte Carlo error is reported as standard error, a 95% interval and |z| against
-        the reference, so an unlucky draw is visible rather than hidden.
-      </p>
-
       <div className={l.controls}>
-        <SeedInput value={seed} onChange={setSeed} testid="lab-seed" />
+        <SeedInput value={seed} onChange={onSeed} testid="lab-seed" />
         <Button size="sm" variant="ghost" data-testid="lab-reseed"
-                onClick={() => setSeed(Math.floor(Math.random() * 1_000_000))}>New draw</Button>
+                onClick={() => onSeed(Math.floor(Math.random() * 1_000_000))}>New draw</Button>
         <Segmented size="sm" label="Variance reduction" testid="lab-antithetic" value={antithetic ? 'on' : 'off'}
                    options={[{ value: 'off', label: 'Plain MC' }, { value: 'on', label: 'Antithetic' }]}
-                   onChange={v => setAntithetic(v === 'on')} />
+                   onChange={v => onAntithetic(v === 'on')} />
         <span className={l.status}>
           {task.running ? <><span className={l.spinner} aria-hidden="true" />Pricing…</>
             : r ? `${task.mode === 'worker' ? 'Web Worker' : 'Main thread'} · MC total ${fmtMs(r.mc.reduce((a, x) => a + x.ms, 0))}` : ''}
@@ -266,7 +306,10 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
                   <th className={ui.num}>Δ vs BS</th>
                   <th className={ui.num}>bp <InfoTip text="Difference relative to gross position value Σ|qty × 100 × BS price|, in basis points." align="end" /></th>
                   <th className={ui.num}>Std error</th>
-                  <th className={ui.num}>95% CI</th>
+                  <th className={l.agreeHead}>
+                    <span>Agreement vs Black-Scholes</span>
+                    <span className={l.agreeAxis} aria-hidden="true"><span>{usd(span[0], 0)}</span><span>{usd(span[1], 0)}</span></span>
+                  </th>
                   <th className={ui.num}>|z|</th>
                   <th className={ui.num}>Time</th>
                   <th>Verdict</th>
@@ -288,8 +331,8 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
                       <td className={ui.num} data-testid={`lab-se-${row.id}`} data-value={row.se ?? ''}>
                         {row.se == null ? '—' : usd(row.se, 2)}
                       </td>
-                      <td className={ui.num}>
-                        {row.se == null ? '—' : `${usd(row.value - Z95 * row.se, 2)} – ${usd(row.value + Z95 * row.se, 2)}`}
+                      <td className={l.agreeCell}>
+                        <Agreement value={row.value} se={row.se} reference={ref} span={span} accent={row.id === 'bs'} />
                       </td>
                       <td className={ui.num} data-testid={`lab-z-${row.id}`}>{row.z == null ? '—' : row.z.toFixed(2)}</td>
                       <td className={ui.num}>{fmtMs(row.ms)}</td>
@@ -297,6 +340,30 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
                     </tr>
                   );
                 })}
+                {!engRow && (
+                  <tr className={l.engineRow} data-testid="lab-row-engine-pending">
+                    <td>
+                      <span className={l.modelName}>C++ Monte Carlo · {fmtPaths(ENGINE_PATHS)}</span>
+                      <span className={l.modelDetail} data-testid="lab-engine-backend">
+                        {backend} · seed {seed}{antithetic ? ' · antithetic' : ''}
+                      </span>
+                    </td>
+                    <td className={ui.num}>
+                      {engineBlocker ? '—' : (
+                        <Button size="sm" onClick={runEngine} disabled={eng?.busy} data-testid="lab-engine-run">
+                          {eng?.busy ? 'Simulating…' : 'Run in C++'}
+                        </Button>
+                      )}
+                    </td>
+                    <td colSpan={5} className={l.engineNote}>
+                      {engineBlocker ?? 'The same portfolio through the C++ core — natively on every CPU thread when the engine runs, otherwise WebAssembly in this tab.'}
+                      {eng?.error && eng.key === engKey && <span className="neg"> {eng.error}</span>}
+                      {eng?.res && eng.key !== engKey && <span> Inputs changed since the last C++ run.</span>}
+                    </td>
+                    <td className={ui.num}>{eng?.res && eng.key === engKey ? fmtMs(eng.res.ms) : '—'}</td>
+                    <td><Badge tone="muted">{eng?.busy ? 'Running' : 'Not run'}</Badge></td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -392,20 +459,6 @@ export function PricingLab({ legs, market, engine, wasm, active }: {
           </div>
         </div>
       )}
-
-      <div className={l.engineBox} data-testid="lab-engine">
-        <strong>C++ engine cross-check</strong>
-        {engineBlocker ? <span>{engineBlocker}</span> : (
-          <>
-            <Button size="sm" variant="primary" onClick={runEngine} disabled={eng?.busy} data-testid="lab-engine-run">
-              {eng?.busy ? 'Simulating in C++…' : `Run ${fmtPaths(ENGINE_PATHS)} paths of this portfolio in C++`}
-            </Button>
-            <span data-testid="lab-engine-backend">{backend} · seed {seed}{antithetic ? ' · antithetic' : ''}</span>
-            {eng?.error && eng.key === engKey && <span className="neg">{eng.error}</span>}
-            {eng?.res && eng.key !== engKey && <span>Inputs changed since the last C++ run.</span>}
-          </>
-        )}
-      </div>
 
       {surface && r && (
         <LocalVolCheck legs={legs} market={market} seed={seed + 3} runKey={lvKey} onResult={onLocalVol}
