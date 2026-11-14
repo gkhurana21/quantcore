@@ -1,0 +1,84 @@
+/* ── the Build workspace: position rail, charts, answers ───────────── */
+.build {
+  display: grid; grid-template-columns: 340px minmax(0, 1fr) 312px; gap: 14px; align-items: start;
+  width: 100%; max-width: 2200px; margin: 0 auto; padding: 14px 16px 20px;
+  animation: qc-enter .18s var(--ease);
+}
+.rail { display: grid; gap: 12px; min-width: 0; }
+/* The rail and the answers scroll with the page. Sticky columns taller than the viewport either clipped
+   their own content (the vol charts) or slid over the full-width answers row below them. */
+.center { display: grid; gap: 12px; min-width: 0; }
+.side { min-width: 0; }
+
+.sectionLabel {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 10.5px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3);
+}
+.sectionLabel span:last-child { letter-spacing: 0; text-transform: none; font-weight: 500; font-size: 11.5px; color: var(--ink-4); }
+.railActions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.railNote { font-size: 11.5px; line-height: 1.45; color: var(--ink-4); }
+
+/* ── at a glance: the answers, each linking to the workspace that owns it ── */
+.glancePanel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .018), transparent 90px), var(--surface);
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 10px 26px -20px rgba(0, 0, 0, .85);
+  transition: box-shadow .25s var(--ease), border-color .25s;
+}
+.glancePanel:hover { border-color: var(--line-2); box-shadow: 0 18px 38px -20px rgba(0, 0, 0, .95); }
+.glanceHead { display: flex; align-items: baseline; gap: 10px; padding: 13px 16px 8px; }
+.glanceTitle { font-family: var(--serif); font-size: 23px; font-weight: 400; line-height: 1; color: var(--ink); }
+.glanceMeta { margin-left: auto; font-size: 11.5px; color: var(--ink-3); }
+.glanceSections { display: grid; }
+.glanceSection { padding: 4px 16px 13px; min-width: 0; }
+.glanceSection + .glanceSection { border-top: 1px solid var(--line); }
+.glanceSectionHead {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px;
+  font-size: 10.5px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3);
+  text-decoration: none;
+}
+a.glanceSectionHead:hover { color: var(--amber-2); text-decoration: none; }
+.glanceGo { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--ink-4); }
+a.glanceSectionHead:hover .glanceGo { color: var(--amber-2); }
+
+.row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-height: 25px; }
+.rowLabel { font-size: 12.5px; color: var(--ink-2); min-width: 0; }
+.rowValue { font-family: var(--mono); font-size: 13px; font-weight: 500; color: var(--ink); white-space: nowrap; }
+.rowNote { margin-top: 5px; font-size: 12px; line-height: 1.45; color: var(--amber-2); }
+
+.big { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.bigValue { font-family: var(--mono); font-size: 19px; font-weight: 600; color: var(--ink); }
+.meter { height: 4px; margin: 6px 0 8px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+.meterFill { height: 100%; border-radius: 2px; background: var(--amber); transition: width .35s var(--ease); }
+
+/* the profit range, drawn against spot ±8% */
+.range { margin-top: 10px; }
+.rangeTrack { position: relative; height: 18px; }
+.rangeBase { position: absolute; left: 0; right: 0; top: 7px; height: 4px; border-radius: 2px; background: rgba(240, 106, 110, .28); }
+.rangeZone { position: absolute; top: 7px; height: 4px; border-radius: 2px; background: var(--green); }
+.rangeSpot { position: absolute; top: 2px; width: 2px; height: 14px; margin-left: -1px; border-radius: 1px; background: var(--amber); }
+.rangeLabels { position: relative; height: 15px; font-family: var(--mono); font-size: 10.5px; color: var(--ink-4); }
+.rangeLabels span { position: absolute; white-space: nowrap; }
+
+.scenario { display: grid; grid-template-columns: minmax(0, 1fr) 54px 72px; align-items: center; gap: 8px; width: 100%; min-height: 26px; text-align: left; }
+.scenarioName { font-size: 12.5px; line-height: 1.25; color: var(--ink-2); white-space: normal; overflow-wrap: anywhere; }
+.scenario:hover .scenarioName { color: var(--amber-2); }
+.scenarioTrack { display: flex; justify-content: flex-end; height: 4px; border-radius: 2px; background: var(--surface-3); }
+.scenarioBar { height: 4px; border-radius: 2px; background: var(--red); transition: width .35s var(--ease); }
+.scenarioValue { font-family: var(--mono); font-size: 12.5px; color: var(--red); text-align: right; }
+
+@media (max-width: 1540px) {
+  .build { grid-template-columns: 330px minmax(0, 1fr); }
+  .side { grid-column: 1 / -1; }
+  .glanceSections { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .glanceSection + .glanceSection { border-top: 1px solid var(--line); }
+}
+@media (max-width: 1100px) {
+  .build { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .rail { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+}
+@media (max-width: 767px) {
+  .build { padding: 10px; gap: 10px; }
+  .rail { grid-template-columns: minmax(0, 1fr); }
+  .glanceSections { grid-template-columns: minmax(0, 1fr); }
+}
