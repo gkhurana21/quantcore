@@ -23,6 +23,7 @@ import { num, pct } from '@/lib/format';
 import { linear, niceTicks } from '@/components/charts/scale';
 import { useElementWidth } from '@/components/ui/useElementWidth';
 import { cx, ui } from '@/components/ui/primitives';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { fmtMs } from '@/components/lab/labFormat';
 import l from '@/components/lab/lab.module.css';
 
@@ -152,7 +153,7 @@ export function GreeksLadder({ legs, market, wasm, active }: {
         </span>
       </div>
       {status ? <p className={ui.note}>{status}</p> : !points.length ? (
-        <p className={ui.note}>Solving a ladder of strikes on a finite-difference grid…</p>
+        <Skeleton shape="chart" height={190} label="Solving a ladder of strikes on a finite-difference grid…" />
       ) : (
         <div className={cx(!batch.current && l.stale)}>
           <div className={l.headline}>

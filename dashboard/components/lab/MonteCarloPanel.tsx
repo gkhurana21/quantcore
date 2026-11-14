@@ -9,6 +9,7 @@ import { days, num, pct, usdSigned } from '@/lib/format';
 import { linear, niceTicks, numTick, strikeTick } from '@/components/charts/scale';
 import { useElementWidth } from '@/components/ui/useElementWidth';
 import { Button, cx, Segmented } from '@/components/ui/primitives';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { SeedInput } from './SeedInput';
 import { fmtMs } from './labFormat';
 import l from './lab.module.css';
@@ -255,7 +256,10 @@ export function MonteCarloPanel({ legs, market, active }: { legs: Leg[]; market:
       </div>
 
       {!v ? (
-        <p className={l.intro}>Simulating paths…</p>
+        <div className={l.mcGrid} data-testid="mc-loading">
+          <div className={l.card}><Skeleton shape="chart" label="Simulating paths…" height={300} /></div>
+          <div className={l.card}><Skeleton shape="bars" label="Building the distribution…" height={300} /></div>
+        </div>
       ) : (
         <div className={cx(task.running && l.stale)}>
           <div className={l.mcGrid}>

@@ -16,6 +16,7 @@ import { legsKeyOf, marketKeyOf } from '@/lib/strategy/labels';
 import { signed, usd, usdSigned } from '@/lib/format';
 import type { Tone } from '@/components/ui/primitives';
 import { Badge, Button, cx, InfoTip, Segmented, ui } from '@/components/ui/primitives';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { ConvergenceChart, CrrChart } from './ConvergenceChart';
 import { EarlyExercise } from './EarlyExercise';
 import { GreeksLadder } from './GreeksLadder';
@@ -284,7 +285,10 @@ export function PricingLab({ legs, market, engine, wasm, active, task, taskKey, 
       </div>
 
       {!r ? (
-        <p className={l.intro} data-testid="loading">Running the first pricing pass…</p>
+        <div data-testid="loading" style={{ display: 'grid', gap: 14 }}>
+          <Skeleton shape="lines" lines={2} label="Running the first pricing pass…" />
+          <div className={l.card}><Skeleton shape="lines" lines={6} label="Pricing the portfolio three ways…" /></div>
+        </div>
       ) : (
         <div className={cx(task.running && l.stale)}>
           {head && (

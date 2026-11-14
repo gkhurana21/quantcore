@@ -12,6 +12,7 @@ import { num, pct, signed, usd, usdSigned } from '@/lib/format';
 import { linear, niceTicks, usdTick } from '@/components/charts/scale';
 import { useElementWidth } from '@/components/ui/useElementWidth';
 import { cx, Segmented, ui } from '@/components/ui/primitives';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { fmtMs } from '@/components/lab/labFormat';
 import r from './risk.module.css';
 
@@ -131,8 +132,8 @@ export function RiskPanel({ legs, market, conf, horizon, onConf, onHorizon, acti
                       {MC_SCENARIOS.toLocaleString('en-US')} seeded lognormal spot scenarios; every leg repriced with its
                       expiry shortened by the horizon.
                     </span></td>
-                  <td className={ui.num} data-testid="var-mc" data-value={res?.var ?? ''}>{res ? usd(res.var) : '…'}</td>
-                  <td className={ui.num} data-testid="es-mc" data-value={res?.es ?? ''}>{res ? usd(res.es) : '…'}</td>
+                  <td className={ui.num} data-testid="var-mc" data-value={res?.var ?? ''}>{res ? usd(res.var) : <Skeleton shape="inline" label="Simulating…" />}</td>
+                  <td className={ui.num} data-testid="es-mc" data-value={res?.es ?? ''}>{res ? usd(res.es) : <Skeleton shape="inline" label="Simulating…" />}</td>
                 </tr>
                 <tr>
                   <td><span className={r.method}>Monte Carlo, spot + implied vol</span>
@@ -140,8 +141,8 @@ export function RiskPanel({ legs, market, conf, horizon, onConf, onHorizon, acti
                       Same spot scenarios plus a correlated lognormal implied-vol shock (vol-of-vol {VOL_FACTOR.volOfVol * 100}%/yr,
                       ρ = {VOL_FACTOR.rho} with spot — illustrative equity-index values), so vega risk enters VaR.
                     </span></td>
-                  <td className={ui.num} data-testid="var-mc-2f" data-value={res2?.var ?? ''}>{res2 ? usd(res2.var) : '…'}</td>
-                  <td className={ui.num} data-testid="es-mc-2f" data-value={res2?.es ?? ''}>{res2 ? usd(res2.es) : '…'}</td>
+                  <td className={ui.num} data-testid="var-mc-2f" data-value={res2?.var ?? ''}>{res2 ? usd(res2.var) : <Skeleton shape="inline" label="Simulating…" />}</td>
+                  <td className={ui.num} data-testid="es-mc-2f" data-value={res2?.es ?? ''}>{res2 ? usd(res2.es) : <Skeleton shape="inline" label="Simulating…" />}</td>
                 </tr>
               </tbody>
             </table>
@@ -153,7 +154,7 @@ export function RiskPanel({ legs, market, conf, horizon, onConf, onHorizon, acti
         </div>
         <div className={cx(r.box, mc.running && 'stale')}>
           <div className={r.boxHead}><span>Simulated P&amp;L distribution · {label}</span><span>seed {MC_SEED}</span></div>
-          {res ? <PnlHistogram res={res} /> : <p className={ui.note}>Simulating scenarios…</p>}
+          {res ? <PnlHistogram res={res} /> : <Skeleton shape="bars" label="Simulating scenarios…" height={220} />}
         </div>
       </div>
 

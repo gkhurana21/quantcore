@@ -22,6 +22,7 @@ import { num, signed, usd, usdSigned } from '@/lib/format';
 import { linear, niceTicks, strikeTick } from '@/components/charts/scale';
 import { useElementWidth } from '@/components/ui/useElementWidth';
 import { Badge, Button, cx, ui } from '@/components/ui/primitives';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { fmtMs, fmtPaths } from './labFormat';
 import l from './lab.module.css';
 
@@ -185,7 +186,9 @@ export function EarlyExercise({ legs, market, wasm, active, lab, labCurrent }: {
         </span>
       </div>
       {status ? <p className={ui.note}>{status}</p> : !rows.length ? (
-        <p className={ui.note}>{items.length ? 'Solving each leg on a finite-difference grid…' : 'No leg has time left to expiry.'}</p>
+        items.length
+          ? <Skeleton shape="lines" lines={3} label="Solving each leg on a finite-difference grid…" />
+          : <p className={ui.note}>No leg has time left to expiry.</p>
       ) : (
         <div className={cx(!batch.current && l.stale)}>
           <div className={l.headline}>

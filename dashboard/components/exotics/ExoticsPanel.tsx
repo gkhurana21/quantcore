@@ -29,6 +29,7 @@ import { linear, niceTicks } from '@/components/charts/scale';
 import { useElementWidth } from '@/components/ui/useElementWidth';
 import type { Tone } from '@/components/ui/primitives';
 import { Badge, Button, cx, InfoTip, Segmented, SliderField, ui } from '@/components/ui/primitives';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { SeedInput } from '@/components/lab/SeedInput';
 import { fmtMs, fmtPaths, Z95 } from '@/components/lab/labFormat';
 import l from '@/components/lab/lab.module.css';
@@ -165,7 +166,7 @@ function runDetail(run: Run, what: string): string {
 const pendingRow = (id: string, model: string, status: string, cells: number, local = false): Row => ({
   id, model, detail: '', z: null, ms: null, verdict: { tone: 'muted', text: 'Pending' }, local,
   cells: Array.from({ length: cells }, (_, i) => (i === 0
-    ? <span key={i} className={css.pending}>{status}</span>
+    ? <span key={i} className={css.pending}>{/solving|simulating/.test(status) ? <><Skeleton shape="inline" label={status} /><span className="sr-only">{status}</span></> : status}</span>
     : <span key={i} className={css.dash}>—</span>)),
 });
 
