@@ -4,7 +4,7 @@
 // Risk, Engine. The bar switches them, the strip carries the market and the position through all
 // of them, and the analytics all live in lib/; components only compose and present them.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { bsGreeks } from '@/lib/quant/blackScholes';
 import { hasVolSurface, legSigma } from '@/lib/quant/volSurface';
 import type { Greeks, Leg, Market } from '@/lib/quant/types';
@@ -20,16 +20,23 @@ import { useEngine } from '@/lib/engine/useEngine';
 import { useWasmEngine } from '@/lib/engine/useWasmEngine';
 import { wasmLegGreeks } from '@/lib/engine/wasm';
 import { usdSigned } from '@/lib/format';
+import { introHiddenNow, setIntroHidden } from '@/lib/intro';
+import type { ShortcutAction } from '@/lib/shortcuts';
+import { isTypingTarget, keyHint, overlayIsOpen, readSingleKeys, resolveShortcut, stepIndex, writeSingleKeys } from '@/lib/shortcuts';
 import { cx, prefersReducedMotion, tabId, tabPanelId } from './ui/primitives';
 import { TopBar } from './layout/TopBar';
 import { PositionStrip } from './layout/PositionStrip';
 import { Sheet } from './layout/Sheet';
+import { ShortcutsDialog } from './layout/ShortcutsDialog';
+import type { ToastMessage } from './layout/Toast';
+import { Toast } from './layout/Toast';
 import type { Command } from './layout/CommandPalette';
 import { CommandPalette } from './layout/CommandPalette';
 import { MarketControls } from './builder/MarketControls';
 import { SurfaceControls } from './builder/SurfaceControls';
 import { ImportDialog } from './io/ImportDialog';
 import { BuildWorkspace } from './build/BuildWorkspace';
+import { IntroBand } from './build/IntroBand';
 import { WorkspaceView } from './workspace/WorkspaceView';
 import type { CalcSource, TileQuote } from './analytics/SummaryTiles';
 import { PricingLab } from './lab/PricingLab';
@@ -196,7 +203,10 @@ export default function Dashboard() {
   // ── sheets, palette and the importer ─────────────────────────────────────
   const [sheet, setSheet] = useState<{ which: 'market' | 'surface'; anchor: HTMLElement | null } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState('');
   const [importOpen, setImportOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const openPalette = useCallback((query = '') => { setPaletteQuery(query); setPaletteOpen(true); }, []);
   const closeSheet = useCallback(() => setSheet(null), []);
   const openMarket = useCallback((anchor: HTMLElement | null) => setSheet(s => (s?.which === 'market' ? null : { which: 'market', anchor })), []);
   const openSurface = useCallback((anchor: HTMLElement | null) => {
@@ -228,25 +238,6 @@ export default function Dashboard() {
   const glanceVar = useWorkerTask('mcvar', workspace === 'build'
     ? { legs, market, conf: 0.95, hDays: 1, nScen: MC_VAR_SCENARIOS, seed: MC_VAR_SEED } : null, varKey, 200);
 
-  // ── keyboard: number keys switch workspace, ⌘K opens the palette ─────────
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.altKey || e.repeat) return;
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setPaletteOpen(true);
-        return;
-      }
-      if (e.metaKey || e.ctrlKey) return;
-      const el = e.target as HTMLElement | null;
-      if (el?.closest('input, textarea, select, [contenteditable="true"]')) return;
-      const i = Number(e.key) - 1;
-      if (Number.isInteger(i) && i >= 0 && i < WORKSPACES.length) setTab(WORKSPACES[i].id);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [setTab]);
-
   // ── animated market moves (stress "apply") ───────────────────────────────
   const tweenRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tweenMarket = useCallback((from: Market, to: Market) => {
@@ -274,36 +265,60 @@ export default function Dashboard() {
     tweenMarket(market, to);
   };
 
+  // ── the intro band, the undo toast and the single-key switch ──────────────
+  // The band is always in the markup; a script in <head> hides it from <html data-intro="off"> before paint, and
+  // this reads the same attribute so React and the stylesheet agree (see lib/intro.ts).
+  const [introOn, setIntroOn] = useState(true);
+  useLayoutEffect(() => { if (introHiddenNow()) setIntroOn(false); }, []);
+  const dismissIntro = useCallback(() => { setIntroHidden(true); setIntroOn(false); }, []);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const clearToast = useCallback(() => setToast(null), []);
+  const [singleKeys, setSingleKeys] = useState(true);
+  useEffect(() => { setSingleKeys(readSingleKeys()); }, []);
+  const changeSingleKeys = useCallback((on: boolean) => { setSingleKeys(on); writeSingleKeys(on); }, []);
+
+  const resetWithUndo = useCallback(() => {
+    const before = { S: market.S, sigma: market.sigma, r: market.r, q: market.q };
+    const moved = before.S !== state.base.S || before.sigma !== state.base.sigma || before.r !== state.base.r || before.q !== state.base.q;
+    if (!moved) { setToast({ id: Date.now(), text: 'The market is already at its reference' }); return; }
+    dispatch({ type: 'resetMarket' });
+    setToast({ id: Date.now(), text: 'Market reset to its reference', undo: () => dispatch({ type: 'market', patch: before }) });
+  }, [market, state.base, dispatch]);
+
+  // `t`, the palette and the intro's own link all land on Build with the band showing and the dismissal forgotten
+  const showIntro = useCallback(() => { setIntroHidden(false); setIntroOn(true); showTab('build'); }, [showTab]);
+
+  // ── guided examples: the palette's "Try" group and the intro band run the same four ──
+  const examples = useMemo(() => [
+    { id: 'quick-condor', short: 'Iron condor on NVDA', label: 'Iron Condor on NVDA', meta: 'Price', glyph: '↗', keywords: 'example strategy nvda',
+      run: () => {
+        const nvda = findInstrument('NVDA');
+        if (nvda) dispatch({ type: 'instrument', instrument: nvda });
+        dispatch({ type: 'preset', name: 'Iron Condor' });
+        showTab('lab');
+      } },
+    { id: 'quick-covid', short: 'COVID-style crash', label: 'COVID-style crash on this position', meta: 'Stress', glyph: '↘', keywords: 'example scenario crash',
+      run: () => { setScenarioId('covid'); showTab('stress'); } },
+    { id: 'quick-paths', short: '200k-path Monte Carlo', label: '200k-path Monte Carlo convergence', meta: 'Price', glyph: '≈', keywords: 'example monte carlo convergence',
+      run: () => {
+        setTab('lab');
+        requestAnimationFrame(() => document.getElementById('convergence')?.scrollIntoView({
+          behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' }));
+      } },
+    { id: 'quick-var99', short: '99% VaR', label: '99% Value at Risk', meta: 'Risk', glyph: '%', keywords: 'example var risk',
+      run: () => { setVarConf(0.99); showTab('risk'); } },
+  ], [dispatch, showTab, setTab]);
+
   // ── everything the terminal can do, by name ──────────────────────────────
   const commands: Command[] = useMemo(() => {
     const out: Command[] = [];
     for (const [i, w] of WORKSPACES.entries()) {
       out.push({ id: `ws-${w.id}`, group: 'Workspaces', glyph: String(i + 1), label: w.label,
-                 meta: `key ${i + 1}`, keywords: w.nav, run: () => showTab(w.id) });
+                 hotkey: String(i + 1), keywords: w.nav, run: () => showTab(w.id) });
     }
-    out.push(
-      { id: 'quick-condor', group: 'Try', glyph: '↗', label: 'Iron Condor on NVDA', meta: 'Price',
-        testid: 'quick-condor', keywords: 'example preset nvda',
-        run: () => {
-          const nvda = findInstrument('NVDA');
-          if (nvda) dispatch({ type: 'instrument', instrument: nvda });
-          dispatch({ type: 'preset', name: 'Iron Condor' });
-          showTab('lab');
-        } },
-      { id: 'quick-covid', group: 'Try', glyph: '↘', label: 'COVID-style crash on this position', meta: 'Stress',
-        testid: 'quick-covid', keywords: 'example scenario crash',
-        run: () => { setScenarioId('covid'); showTab('stress'); } },
-      { id: 'quick-paths', group: 'Try', glyph: '≈', label: '200k-path Monte Carlo convergence', meta: 'Price',
-        testid: 'quick-paths', keywords: 'example monte carlo convergence',
-        run: () => {
-          setTab('lab');
-          requestAnimationFrame(() => document.getElementById('convergence')?.scrollIntoView({
-            behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' }));
-        } },
-      { id: 'quick-var99', group: 'Try', glyph: '%', label: '99% Value at Risk', meta: 'Risk',
-        testid: 'quick-var99', keywords: 'example var risk',
-        run: () => { setVarConf(0.99); showTab('risk'); } },
-    );
+    for (const x of examples) {
+      out.push({ id: x.id, group: 'Try', glyph: x.glyph, label: x.label, meta: x.meta, testid: x.id, keywords: x.keywords, run: x.run });
+    }
     for (const name of PRESETS) {
       out.push({ id: `preset-${name}`, group: 'Presets', glyph: '⌥', label: name, meta: 'build position',
                  keywords: 'strategy preset legs',
@@ -320,18 +335,55 @@ export default function Dashboard() {
                  run: () => { setScenarioId(sc.id); showTab('stress'); } });
     }
     out.push(
-      { id: 'cmd-import', group: 'Actions', glyph: '↑', label: 'Import a portfolio file', meta: 'CSV · XLSX · XLS',
+      { id: 'cmd-import', group: 'Actions', glyph: '↑', label: 'Import a portfolio file', meta: 'CSV · XLSX · XLS', hotkey: keyHint('import'),
         testid: 'cmd-import', keywords: 'upload csv excel', run: () => setImportOpen(true) },
-      { id: 'cmd-market', group: 'Actions', glyph: 'S', label: 'Market controls — spot, vol, rate, dividend',
+      { id: 'cmd-market', group: 'Actions', glyph: 'S', label: 'Market controls — spot, vol, rate, dividend', hotkey: keyHint('market'),
         testid: 'cmd-market', keywords: 'spot volatility rate dividend ticker',
         run: () => setSheet({ which: 'market', anchor: null }) },
-      { id: 'cmd-reset', group: 'Actions', glyph: '↺', label: 'Reset the market to its reference', testid: 'cmd-reset',
-        keywords: 'undo restore', run: () => dispatch({ type: 'resetMarket' }) },
-      { id: 'cmd-draw', group: 'Actions', glyph: '⟳', label: 'New Monte Carlo draw', testid: 'cmd-draw',
+      { id: 'cmd-surface', group: 'Actions', glyph: 'σ', label: 'Volatility surface — smile and term structure', hotkey: keyHint('surface'),
+        testid: 'cmd-surface', keywords: 'smile skew term structure ssvi', run: () => openSurface(null) },
+      { id: 'cmd-reset', group: 'Actions', glyph: '↺', label: 'Reset the market to its reference', hotkey: keyHint('reset'), testid: 'cmd-reset',
+        keywords: 'undo restore', run: resetWithUndo },
+      { id: 'cmd-draw', group: 'Actions', glyph: '⟳', label: 'New Monte Carlo draw', hotkey: keyHint('draw'), testid: 'cmd-draw',
         keywords: 'seed reseed random', run: () => setSeed(Math.floor(Math.random() * 1_000_000)) },
+      { id: 'cmd-intro', group: 'Actions', glyph: 'i', label: 'Show the introduction and examples', hotkey: keyHint('intro'), testid: 'cmd-intro',
+        keywords: 'welcome help about tour', run: showIntro },
+      { id: 'cmd-shortcuts', group: 'Actions', glyph: '?', label: 'Keyboard shortcuts', hotkey: keyHint('shortcuts'), testid: 'cmd-shortcuts',
+        keywords: 'keys hotkeys help single-key', run: () => setShortcutsOpen(true) },
     );
     return out;
-  }, [dispatch, showTab, setTab, state.searched]);
+  }, [dispatch, showTab, state.searched, examples, openSurface, resetWithUndo, showIntro]);
+
+  // ── keyboard: one table (lib/shortcuts.ts) says which key does what and when it is ignored ──
+  const runShortcut = (a: ShortcutAction) => {
+    switch (a.type) {
+      case 'workspace': showTab(WORKSPACES[a.index].id); break;
+      case 'step': showTab(WORKSPACES[stepIndex(WORKSPACES.findIndex(w => w.id === workspace), a.dir, WORKSPACES.length)].id); break;
+      case 'palette': openPalette(a.query); break;
+      case 'shortcuts': setShortcutsOpen(true); break;
+      case 'market': setSheet({ which: 'market', anchor: null }); break;
+      case 'surface': openSurface(null); break;
+      case 'import': setImportOpen(true); break;
+      case 'resetMarket': resetWithUndo(); break;
+      case 'newDraw': setSeed(Math.floor(Math.random() * 1_000_000)); break;
+      case 'intro':
+        if (workspace === 'build' && introOn) dismissIntro();
+        else showIntro();
+        break;
+    }
+  };
+  const latestShortcut = useRef(runShortcut);
+  useEffect(() => { latestShortcut.current = runShortcut; });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const action = resolveShortcut(e, { typing: isTypingTarget(e.target as Element | null), overlayOpen: overlayIsOpen(), singleKeys });
+      if (!action) return;
+      e.preventDefault();
+      latestShortcut.current(action);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [singleKeys]);
 
   // ── screen-reader summary (debounced) ────────────────────────────────────
   const [announce, setAnnounce] = useState('');
@@ -349,7 +401,7 @@ export default function Dashboard() {
       <a className={t.skip} href="#workspace">Skip to workspace</a>
 
       <TopBar instrument={state.instrument} dataMode={live.mode} engineStatus={engine.status} engineReason={engine.reason}
-              wasmStatus={wasm.status} workspace={workspace} onWorkspace={setTab} onCommand={() => setPaletteOpen(true)} />
+              wasmStatus={wasm.status} workspace={workspace} onWorkspace={setTab} onCommand={() => openPalette()} />
 
       <div className={t.scroller} data-scroller>
       <PositionStrip state={state} dispatch={dispatch} value={positionValue} pnl={quote.pnl} volModel={volModel}
@@ -368,6 +420,7 @@ export default function Dashboard() {
       <main id="workspace" className={t.main} tabIndex={-1}>
         {workspace === 'build' && (
           <div role="tabpanel" id={tabPanelId('ws', 'build')} aria-labelledby={tabId('ws', 'build')} data-testid="panel-build">
+            {introOn && <IntroBand examples={examples} onDismiss={dismissIntro} />}
             <BuildWorkspace state={state} dispatch={dispatch} live={live} quote={quote} analytics={analytics}
                             source={<SourceMeta quote={quote} />} mcVar={glanceVar.result}
                             lab={lab.result} labCurrent={lab.resultKey === labKey}
@@ -401,7 +454,9 @@ export default function Dashboard() {
         ))}
       </main>
 
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} initialQuery={paletteQuery} />
+      <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} singleKeys={singleKeys} onSingleKeys={changeSingleKeys} />
+      <Toast toast={toast} onDone={clearToast} />
       <ImportDialog open={importOpen} onOpen={() => setImportOpen(true)} onClose={() => setImportOpen(false)}
                     market={market} symbol={state.instrument.sym}
                     onApply={(imported, label) => dispatch({ type: 'importLegs', legs: imported, label })} />
@@ -412,6 +467,9 @@ export default function Dashboard() {
           are indicative.
         </span>
         <span>
+          <button type="button" className={t.footerKeys} onClick={() => setShortcutsOpen(true)} data-testid="footer-shortcuts">
+            Keyboard shortcuts <kbd>{keyHint('shortcuts')}</kbd>
+          </button>{' · '}
           C++17 · WebAssembly · pybind11 · Apple Metal · FastAPI · Next.js ·{' '}
           <a href="https://github.com/gkhurana21/quantcore" target="_blank" rel="noopener noreferrer">Source</a> ·{' '}
           <a href="https://gaurangkhurana.ca" target="_blank" rel="noopener noreferrer">Gaurang Khurana</a>

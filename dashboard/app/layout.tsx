@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import { IBM_Plex_Mono, Instrument_Sans, Instrument_Serif } from 'next/font/google';
 import './globals.css';
+import { INTRO_BOOT_SCRIPT } from '@/lib/intro';
 
 // Self-hosted at build time by next/font: the interface face, the tabular face every number is set in,
 // and the display face used only for workspace titles.
@@ -29,7 +30,12 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${sans.variable} ${mono.variable} ${serif.variable}`}>
+    // suppressHydrationWarning: the script below sets data-intro on <html> before React hydrates (see lib/intro.ts)
+    <html lang="en" className={`${sans.variable} ${mono.variable} ${serif.variable}`} suppressHydrationWarning>
+      <head>
+        {/* blocking on purpose: it hides a dismissed intro band before the first paint, so nothing shifts */}
+        <script dangerouslySetInnerHTML={{ __html: INTRO_BOOT_SCRIPT }} />
+      </head>
       <body>{children}</body>
     </html>
   );

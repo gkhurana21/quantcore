@@ -25,7 +25,7 @@ export function ImportDialog({ open, onOpen, onClose, market, symbol, onApply }:
   }, [open]);
 
   return (
-    <dialog ref={ref} className={io.dialog} aria-label="Import a portfolio" onClose={onClose}
+    <dialog ref={ref} className={io.dialog} aria-label="Import a portfolio" onCancel={onClose} onClose={() => { if (!ref.current?.open) onClose(); }}
             onClick={e => { if (e.target === ref.current) onClose(); }}>
       <div className={io.dialogInner}>
         <div className={io.dialogHead}>
