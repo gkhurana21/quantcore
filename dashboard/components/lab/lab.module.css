@@ -48,7 +48,7 @@
 
 .chartSvg { display: block; width: 100%; }
 .axis { font-family: var(--mono); font-size: 10.5px; fill: var(--ink-4); }
-.label { font-family: var(--mono); font-size: 10.5px; }
+.label { font-family: var(--mono); font-size: 10.5px; paint-order: stroke; stroke: var(--bg-raise); stroke-width: 3.5px; stroke-linejoin: round; }
 
 /* ── Monte Carlo view ──────────────────────────────────────────────── */
 .mcGrid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 14px; }

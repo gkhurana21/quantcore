@@ -78,7 +78,9 @@ const PathsChart = memo(function PathsChart({ v, legs, visible, replay }: {
                   y={single.call ? pad.t : Y(single.K)}
                   height={single.call ? Math.max(0, Y(single.K) - pad.t) : Math.max(0, height - pad.b - Y(single.K))}
                   fill="var(--green-soft)" />
-            <text x={pad.l + 6} y={single.call ? pad.t + 13 : height - pad.b - 6} className={l.label} fill="var(--green)">
+            <text x={pad.l + 6} y={single.call
+                ? (Y(single.K) - pad.t >= 22 ? pad.t + 13 : Y(single.K) + 15)
+                : (height - pad.b - Y(single.K) >= 22 ? height - pad.b - 6 : Y(single.K) - 7)} className={l.label} fill="var(--green)">
               ITM ({single.call ? 'S > K' : 'S < K'})
             </text>
           </g>

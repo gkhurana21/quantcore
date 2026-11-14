@@ -30,6 +30,20 @@ const PnlHistogram = memo(function PnlHistogram({ res }: { res: McVarResult }) {
   const maxN = Math.max(1, ...res.bins.map(b => b.n));
   const Y = linear(0, maxN * 1.12, height - pad.b, pad.t);
   const clampX = (v: number) => Math.min(width - pad.r, Math.max(pad.l, X(v)));
+  // no line may pass through a label: each label sits on whichever side of its own line leaves the other vertical lines outside it
+  const lines = [clampX(-res.var), clampX(-res.es), ...(res.lo < 0 && res.hi > 0 ? [X(0)] : [])];
+  const side = (x: number, text: string): { x: number; anchor: 'start' | 'end' } => {
+    const w = text.length * 6.6 + 6;
+    const free = (a: number, b: number) => a >= 2 && b <= width - 2 && !lines.some(l => Math.abs(l - x) > 0.5 && l > a - 2 && l < b + 2);
+    if (free(x + 4, x + 4 + w)) return { x: x + 4, anchor: 'start' };
+    if (free(x - 4 - w, x - 4)) return { x: x - 4, anchor: 'end' };
+    return { x: x + 4, anchor: 'start' };
+  };
+  const varText = `VaR ${usdTick(res.var)}`, esText = `ES ${usdTick(res.es)}`;
+  // the ES line lies beyond the VaR line, so its label prefers the outer (left) side
+  const vl = side(clampX(-res.var), varText);
+  const el = (() => { const w = esText.length * 6.6 + 6, x = clampX(-res.es);
+    return lines.some(l => Math.abs(l - x) > 0.5 && l > x - 4 - w - 2 && l < x - 2) || x - 4 - w < 2 ? side(x, esText) : { x: x - 4, anchor: 'end' as const }; })();
 
   return (
     <div ref={wrap} data-testid="var-hist">
@@ -45,9 +59,9 @@ const PnlHistogram = memo(function PnlHistogram({ res }: { res: McVarResult }) {
         })}
         {res.lo < 0 && res.hi > 0 && <line x1={X(0)} x2={X(0)} y1={pad.t} y2={height - pad.b} stroke="var(--line-3)" />}
         <line x1={clampX(-res.var)} x2={clampX(-res.var)} y1={pad.t - 4} y2={height - pad.b} stroke="var(--red)" strokeWidth={1.5} />
-        <text x={clampX(-res.var) + 4} y={pad.t + 6} className={r.label} fill="var(--red)">VaR {usdTick(res.var)}</text>
+        <text x={vl.x} y={pad.t + 6} textAnchor={vl.anchor} className={r.label} fill="var(--red)">{varText}</text>
         <line x1={clampX(-res.es)} x2={clampX(-res.es)} y1={pad.t + 12} y2={height - pad.b} stroke="var(--red)" strokeDasharray="4 3" />
-        <text x={clampX(-res.es) + 4} y={pad.t + 20} className={r.label} fill="var(--red)">ES {usdTick(res.es)}</text>
+        <text x={el.x} y={pad.t + 20} textAnchor={el.anchor} className={r.label} fill="var(--red)">{esText}</text>
         {niceTicks(res.lo, res.hi, width < 420 ? 3 : 5).map(t => (
           <text key={t} x={X(t)} y={height - 10} textAnchor="middle" className={r.axis}>{usdTick(t)}</text>
         ))}

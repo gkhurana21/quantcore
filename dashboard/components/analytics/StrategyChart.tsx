@@ -145,11 +145,15 @@ export const StrategyChart = memo(function StrategyChart({ legs, market, anchorS
       ? placeLabel(`max profit ${usdTick(analytics.maxProfit)}`, [[pad.l + plotW - 4, Y(analytics.maxProfit) - 5, 'end']], placed, within) : null;
     const maxL = mode === 'pnl' && !analytics.maxLossUnbounded && analytics.maxLoss > data.yLo && analytics.maxLoss < data.yHi
       ? placeLabel(`max loss ${usdTick(analytics.maxLoss)}`, [[pad.l + plotW - 4, Y(analytics.maxLoss) + 13, 'end']], placed, within) : null;
+    // vertical lines (strikes, spot) are obstacles too, so no line runs through a label
+    for (const k of strikes) placed.push({ x0: X(k) - 1, x1: X(k) + 1, y0: pad.t, y1: pad.t + plotH });
+    if (market.S >= lo && market.S <= hi) placed.push({ x0: X(market.S) - 1, x1: X(market.S) + 1, y0: pad.t, y1: pad.t + plotH });
     const be = mode === 'pnl' ? analytics.breakevens.filter(b => b > lo && b < hi).map(b => {
       const text = `B/E ${num(b, b >= 100 ? 1 : 2)}`;
       const x = X(b), yBelow = Math.min(y0 + 16, pad.t + plotH - 4), yAbove = Math.max(pad.t + 10, y0 - 12);
       return { b, text, ...placeLabel(text, [[x, yBelow, 'middle'], [x, yAbove, 'middle'], [x, yBelow + 13, 'middle'],
-        [x, yAbove - 13, 'middle']], placed, within) };
+        [x, yAbove - 13, 'middle'], [x + 7, yBelow, 'start'], [x - 7, yBelow, 'end'], [x + 7, yAbove, 'start'],
+        [x - 7, yAbove, 'end']], placed, within) };
     }) : [];
     const spotText = fmtValue(mode, spotVal);
     const sx = X(market.S), sy = Y(spotVal), flip = sx > width - 150;

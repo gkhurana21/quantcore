@@ -30,7 +30,7 @@
 
 .chartSvg { display: block; width: 100%; }
 .axis { font-family: var(--mono); font-size: 10.5px; fill: var(--ink-4); }
-.label { font-family: var(--mono); font-size: 10.5px; }
+.label { font-family: var(--mono); font-size: 10.5px; paint-order: stroke; stroke: var(--bg-raise); stroke-width: 3.5px; stroke-linejoin: round; }
 
 @media (max-width: 1000px) {
   .grid, .bottom, .head { grid-template-columns: 1fr; }

@@ -59,7 +59,7 @@
 .chartSvg:focus-visible { outline: 2px solid var(--amber-2); outline-offset: 2px; }
 .axisText { font-family: var(--mono); font-size: 10.5px; fill: var(--ink-4); }
 .axisUnit { font-family: var(--sans); font-size: 10.5px; fill: var(--ink-3); font-weight: 600; letter-spacing: .04em; }
-.markerText { font-family: var(--mono); font-size: 10.5px; }
+.markerText { font-family: var(--mono); font-size: 10.5px; paint-order: stroke; stroke: var(--surface); stroke-width: 3.5px; stroke-linejoin: round; }
 .crosshair { filter: drop-shadow(0 0 3px rgba(245, 199, 126, .85)) drop-shadow(0 0 8px rgba(245, 199, 126, .45)); }
 .dataPath { filter: drop-shadow(0 0 5px rgba(229, 169, 71, .32)); }
 .spotPulse { transform-box: fill-box; transform-origin: center; animation: spotPing 2.4s var(--ease) infinite; pointer-events: none; }

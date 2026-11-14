@@ -66,15 +66,15 @@ export const ConvergenceChart = memo(function ConvergenceChart({ checkpoints, re
         <path d={envPath(1)} fill="none" stroke="var(--ink-4)" strokeDasharray="3 4" />
         <path d={envPath(-1)} fill="none" stroke="var(--ink-4)" strokeDasharray="3 4" />
         <line x1={pad.l} x2={width - pad.r} y1={Y(reference)} y2={Y(reference)} stroke="var(--blue)" strokeWidth={1.4} />
-        <text x={width - pad.r - 4} y={Y(reference) - 6} textAnchor="end" className={l.label} fill="var(--blue)">
-          BS {usd(reference, Math.max(2, dec))}
-        </text>
         <path d={line} fill="none" stroke="var(--amber)" strokeWidth={2} strokeLinejoin="round" />
         {checkpoints.map(c => (
           <circle key={c.paths} cx={xN(c.paths)} cy={Y(c.price)} r={3.2} fill="var(--amber-2)" stroke="var(--bg)" strokeWidth={1.5}>
             <title>{`${fmtPaths(c.paths)} paths: ${usd(c.price, 2)} ± ${usd(Z95 * c.se, 2)} (95% CI)`}</title>
           </circle>
         ))}
+              <text x={pad.l + 6} y={Y(reference) - 6} textAnchor="start" className={l.label} fill="var(--blue)">
+          BS {usd(reference, Math.max(2, dec))}
+        </text>
       </svg>
       <div className={l.legend} aria-hidden="true">
         <span><i className={l.sw} style={{ background: 'var(--amber)' }} />MC running estimate</span>
