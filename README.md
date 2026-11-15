@@ -25,13 +25,15 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/gkhurana21/quantcore/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/gkhurana21/quantcore/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
-[Features](#-what-it-does) • [Try it](#-try-it) • [Under the hood](#-under-the-hood) • [Limitations](#limitations) • [Technical reference](docs/TECHNICAL.md)
+[Features](#-what-it-does) • [Try it](#-try-it) • [Under the hood](#-under-the-hood) • [Limitations](#limitations) • [Walkthrough](docs/WALKTHROUGH.md) • [Technical reference](docs/TECHNICAL.md)
 
 </div>
 
 ---
 
-![QuantCore's Build workspace: an iron condor on SPY with its Greeks tiles, payoff chart and P&L surface. The tiles are priced by the C++ core running as WebAssembly.](docs/terminal.webp)
+![A 30-second tour driven from the keyboard: an iron condor on SPY built, then priced three ways, simulated, stressed with a COVID-style crash and measured with four VaR methods, all by the C++ core running as WebAssembly in the browser.](docs/demo.gif)
+
+<sub>Thirty seconds, keyboard only: Build, then <code>]</code> Price, <code>3</code> Simulate, <code>4</code> Exotics, <code>5</code> Stress, <code>6</code> Risk, <code>?</code> shortcuts and <code>/</code> the palette. Recorded from the exported site by <code>npm run demo</code>.</sub>
 
 <table>
 <tr>
@@ -173,7 +175,8 @@ the C++ core on Linux with its acceptance gate and the WebSocket protocol check.
   computes in float32 and reduces in float64.
 
 Every model, the WebSocket protocol, the benchmark method and the project layout are in the
-[technical reference](docs/TECHNICAL.md).
+[technical reference](docs/TECHNICAL.md). The [walkthrough](docs/WALKTHROUGH.md) explains the design decisions, how
+each headline number was measured, the hard problems and what fixed them, and the questions the project raises.
 
 ## Limitations
 
@@ -186,6 +189,12 @@ Every model, the WebSocket protocol, the benchmark method and the project layout
 * Stress scenarios are illustrative shocks, not historical replays. VaR is a single-underlying model.
 
 The full list is in the [technical reference](docs/TECHNICAL.md#limitations).
+
+## Status
+
+Finished in November 2026. The live terminal, the C++ engine and the test suites are complete, and CI runs on
+every push. Ideas that would extend it (multi-asset VaR, historical stress replays, Heston, portfolios on the GPU) are
+listed at the end of the [walkthrough](docs/WALKTHROUGH.md#limits-and-what-would-come-next).
 
 ## License
 

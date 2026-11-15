@@ -4,6 +4,8 @@ The long-form reference for [QuantCore](../README.md): every tab in full, the ar
 numbers behind them, the WebSocket protocol, benchmarks, the full quickstart, the test suites, build and deploy
 notes, the project layout and the complete list of limitations. The [README](../README.md) is the short version.
 
+![The Build workspace: an iron condor on SPY with its Greeks tiles, payoff chart and P&L surface, priced by the C++ core running as WebAssembly.](terminal.webp)
+
 ## Contents
 
 [Features in full](#features-in-full) · [Architecture](#architecture) · [Models](#models) · [WebSocket protocol](#websocket-protocol) · [Benchmarks](#benchmarks) · [Quickstart](#quickstart) · [Testing](#testing) · [Build & deploy](#build--deploy) · [Project layout](#project-layout) · [Limitations](#limitations)
@@ -348,6 +350,7 @@ npm run test:e2e:engine                # the same with the native engine started
 npm test                               # unit, then e2e
 npm run build && npm run scan:ui       # the two layout scanners over the export, intro band shown and dismissed
 npm run screenshots                    # regenerate docs/terminal.webp and docs/screens/* from the export
+npm run demo                           # re-record docs/demo.gif, the README's 30-second tour (needs ffmpeg)
 python3 ../server/protocol_check.py    # every WebSocket message type against the bindings
 ```
 

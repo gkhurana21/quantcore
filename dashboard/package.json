@@ -13,7 +13,8 @@
     "test:e2e": "playwright test",
     "test:e2e:engine": "QC_ENGINE=1 playwright test",
     "scan:ui": "node scripts/overlap-scan.mjs && node scripts/occlusion-scan.mjs",
-    "screenshots": "node scripts/screenshots.mjs"
+    "screenshots": "node scripts/screenshots.mjs",
+    "demo": "node scripts/demo.mjs"
   },
   "dependencies": {
     "next": "^15.5.25",
