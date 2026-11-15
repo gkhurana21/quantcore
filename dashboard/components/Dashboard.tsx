@@ -278,12 +278,23 @@ export default function Dashboard() {
   const changeSingleKeys = useCallback((on: boolean) => { setSingleKeys(on); writeSingleKeys(on); }, []);
 
   const toastSeq = useRef(0);
+  const latestMarket = useRef(market);
+  useEffect(() => { latestMarket.current = market; });
   const resetWithUndo = useCallback(() => {
     const before = { S: market.S, sigma: market.sigma, r: market.r, q: market.q };
     const moved = before.S !== state.base.S || before.sigma !== state.base.sigma || before.r !== state.base.r || before.q !== state.base.q;
     if (!moved) { setToast({ id: ++toastSeq.current, text: 'The market is already at its reference' }); return; }
+    const reset = { S: state.base.S, sigma: state.base.sigma, r: state.base.r, q: state.base.q };
     dispatch({ type: 'resetMarket' });
-    setToast({ id: ++toastSeq.current, text: 'Market reset to its reference', undo: () => dispatch({ type: 'market', patch: before }) });
+    setToast({ id: ++toastSeq.current, text: 'Market reset to its reference', undo: () => {
+      // Undo restores the old market only if nobody has touched it since the reset; otherwise it would wipe those edits.
+      const now = latestMarket.current;
+      if (now.S !== reset.S || now.sigma !== reset.sigma || now.r !== reset.r || now.q !== reset.q) {
+        setToast({ id: ++toastSeq.current, text: 'The market changed after the reset, so nothing was undone' });
+        return;
+      }
+      dispatch({ type: 'market', patch: before });
+    } });
   }, [market, state.base, dispatch]);
 
   // `t`, the palette and the intro's own link all land on Build with the band showing and the dismissal forgotten

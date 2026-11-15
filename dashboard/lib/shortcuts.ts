@@ -108,8 +108,9 @@ export function overlayIsOpen(doc: { querySelector(selector: string): unknown } 
  * What a key press should do, or null to leave it alone.
  *
  *  - The ⌘K / Ctrl+K chord always works, in a field or over an overlay, and with the single-key switch off.
- *  - A bare key (Shift allowed, so `?` works) is ignored while typing, while an overlay is open, with Ctrl, ⌘ or
- *    Alt held, on key repeat, and when the single-key switch is off.
+ *  - A bare key is ignored while typing, while an overlay is open, with Ctrl, ⌘ or Alt held, on key repeat, and
+ *    when the single-key switch is off. Shift is allowed for symbols (`?` is Shift+/) but not on a letter, so
+ *    Shift+R does not reset the market; Caps Lock sends no Shift, so its capitals still work.
  *  - Escape is not handled here: the dialogs and the sheet close themselves on it.
  */
 export function resolveShortcut(e: KeyLike, ctx: KeyContext): ShortcutAction | null {
@@ -121,6 +122,7 @@ export function resolveShortcut(e: KeyLike, ctx: KeyContext): ShortcutAction | n
     return chord ? chord.act(key) : null;
   }
   if (!ctx.singleKeys || ctx.typing || ctx.overlayOpen) return null;
+  if (e.shiftKey && /^[a-z]$/.test(key)) return null;
   const hit = SHORTCUTS.find(s => !s.chord && s.keys.includes(key));
   return hit ? hit.act(key) : null;
 }

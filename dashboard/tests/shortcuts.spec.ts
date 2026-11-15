@@ -73,9 +73,12 @@ test.describe('key → action', () => {
     expect(press('Escape')).toBeNull();           // dialogs and the sheet close themselves
   });
 
-  test('letters work with Shift or Caps Lock on', () => {
-    expect(press('R', { shiftKey: true })).toEqual({ type: 'resetMarket' });
-    expect(press('M')).toEqual({ type: 'market' });
+  test('letters work with Caps Lock on, but not with Shift held', () => {
+    expect(press('M')).toEqual({ type: 'market' });                 // Caps Lock: a capital with no Shift
+    expect(press('R', { shiftKey: true })).toBeNull();               // Shift+R must not reset the market
+    for (const k of SHORTCUTS.filter(s => !s.chord).flatMap(s => s.keys).filter(k => /^[a-z]$/.test(k))) {
+      expect(press(k.toUpperCase(), { shiftKey: true }), `Shift+${k} fired`).toBeNull();
+    }
   });
 
   test('⌘K and Ctrl+K open the palette', () => {

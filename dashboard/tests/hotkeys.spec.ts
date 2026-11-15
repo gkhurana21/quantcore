@@ -119,6 +119,29 @@ test.describe('keyboard shortcuts', () => {
     expect(Date.now() - shown).toBeGreaterThan(3_500);
   });
 
+  test('Shift+R does not reset, and Undo never overwrites an edit made after the reset', async ({ page }) => {
+    await open(page);
+    const spot = page.getByTestId('spot-display');
+    const before = await spot.textContent();
+    await page.keyboard.press('m');
+    await setRange(page, 'spot-input', 800);
+    await page.keyboard.press('Escape');
+
+    await page.keyboard.press('Shift+R');
+    await expect(spot).toHaveText('800.00');
+    await expect(page.getByTestId('toast')).toBeHidden();
+
+    await page.keyboard.press('r');
+    await expect(spot).toHaveText(before!);
+    await page.keyboard.press('m');
+    await setRange(page, 'spot-input', 700);                // a new edit while the undo toast is still up
+    await page.keyboard.press('Escape');
+    await expect(spot).toHaveText('700.00');
+    await page.getByTestId('toast-undo').click();
+    await expect(spot).toHaveText('700.00');                // the edit survives
+    await expect(page.getByTestId('toast')).toContainText('nothing was undone');
+  });
+
   test('n draws again and t shows or hides the intro band', async ({ page }) => {
     await open(page);
     await page.keyboard.press('n');                      // no error, no navigation

@@ -20,7 +20,7 @@ export function Toast({ toast, onDone, ms = 5000 }: { toast: ToastMessage | null
       <span>{toast.text}</span>
       {toast.undo && (
         <button type="button" className={s.toastUndo} data-testid="toast-undo"
-                onClick={() => { toast.undo?.(); onDone(); }}>
+                onClick={() => { const undo = toast.undo; onDone(); undo?.(); }}>
           Undo
         </button>
       )}
