@@ -123,7 +123,7 @@ pip install pybind11 numpy scipy yfinance fastapi uvicorn websockets
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=$(which python3)
 cmake --build build --parallel
 ./build/tests/phase1_validation        # the C++ acceptance gate
-python server/ws_server.py 8765        # start the engine
+python server/ws_server.py 8765        # start the engine (keeps running; use a second terminal for the next line)
 cd dashboard && npm install && npm run dev   # http://localhost:3000, badge turns "Connected"
 ```
 
