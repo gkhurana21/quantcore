@@ -162,7 +162,8 @@ the C++ core on Linux with its acceptance gate and the WebSocket protocol check.
   Greeks tiles and runs the Monte Carlo and finite-difference solves in a Web Worker. Charts, stress and VaR use
   TypeScript versions of the same models, which the unit tests hold to 1e-12 of the C++ results.
 * **The WebAssembly build is reproducible.** A manifest records the compiler version, flags and a SHA-256 of the
-  module and every source. The unit tests, which CI runs, fail if a source changes without a rebuild.
+  module and every source. The unit tests fail if a source changes without a rebuild, and a CI job rebuilds the module
+  with the pinned Emscripten and requires a byte-identical result.
 * **Models:** Black-Scholes-Merton with analytic Greeks, an arbitrage-free SSVI volatility surface, Dupire local
   volatility, a Cox-Ross-Rubinstein lattice, a local-volatility finite-difference solver, and Longstaff-Schwartz
   Monte Carlo with an Andersen-Broadie upper bound for American options.
