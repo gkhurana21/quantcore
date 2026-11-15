@@ -36,6 +36,17 @@ function engineCall(S: number, K: number, r: number, sigma: number, T: number): 
   return Number(execSync(`${py} -c '${script}'`).toString().trim());
 }
 
+// The native C++ core's price for the reference call (S 756.48, K 755, r 4.5%, vol 13.8%, T 0.129), recorded with
+// quantcore.bs_full so the WebAssembly check below runs where the native module is not built (CI's web job). Where
+// it is importable, the test also checks that this record still equals a live call.
+const NATIVE_REF_CALL = 18.006294972555665;
+function nativeRefCall(): number {
+  let live: number;
+  try { live = engineCall(756.48, 755, 0.045, 0.138, 0.129); } catch { return NATIVE_REF_CALL; }   // module not built here
+  expect(live, 'the recorded native price no longer matches quantcore.bs_full: re-record NATIVE_REF_CALL').toBe(NATIVE_REF_CALL);
+  return NATIVE_REF_CALL;
+}
+
 function watchErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on('pageerror', e => errors.push(`pageerror: ${e.message}`));
@@ -447,7 +458,7 @@ test.describe('robustness: engine resilience', () => {
     await expect(page.locator(tid('wasm-status'))).toHaveText('Ready', { timeout: 15_000 });
     await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'wasm', { timeout: 15_000 });
     await expect(page.locator(tid('calc-source'))).toHaveText('C++ · WebAssembly');
-    const ref = engineCall(756.48, 755, 0.045, 0.138, 0.129);
+    const ref = nativeRefCall();
     const shown = Number(await page.locator(tid('price')).getAttribute('data-value'));
     expect(Math.abs(shown - ref)).toBeLessThanOrEqual(1e-12 * ref);
 
