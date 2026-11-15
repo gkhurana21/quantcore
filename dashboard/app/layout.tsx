@@ -32,11 +32,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     // suppressHydrationWarning: the script below sets data-intro on <html> before React hydrates (see lib/intro.ts)
     <html lang="en" className={`${sans.variable} ${mono.variable} ${serif.variable}`} suppressHydrationWarning>
-      <head>
-        {/* blocking on purpose: it hides a dismissed intro band before the first paint, so nothing shifts */}
+      <body>
+        {/* Blocking on purpose and first in <body>: it hides a dismissed intro band before anything below it is
+            parsed or painted, so nothing shifts. Not in an explicit <head>: Netlify injects an HTML comment into the
+            served <head>, and React then fails to hydrate an explicit one (error #418) and re-renders the page. */}
         <script dangerouslySetInnerHTML={{ __html: INTRO_BOOT_SCRIPT }} />
-      </head>
-      <body>{children}</body>
+        {children}
+      </body>
     </html>
   );
 }

@@ -1,6 +1,6 @@
 // The first-visit intro band: whether it was dismissed, remembered in localStorage.
 //
-// The band is in the page's HTML on every load. A tiny blocking script in <head> (INTRO_BOOT_SCRIPT, inlined by
+// The band is in the page's HTML on every load. A tiny blocking script at the start of <body> (INTRO_BOOT_SCRIPT, inlined by
 // app/layout.tsx) sets data-intro="off" on <html> before the first paint when the visitor dismissed it, and the
 // stylesheet hides the band from that attribute. React reads the same attribute, so server and client markup
 // agree, nothing shifts after load, and no height has to be reserved. Storage can throw (private windows,
@@ -9,7 +9,7 @@
 export const INTRO_STORAGE = 'qc-intro-dismissed';
 export const INTRO_ATTR = 'data-intro';
 
-/** Runs in <head> before paint. Keep it tiny and free of anything that can throw outside the try. */
+/** Runs first in <body>, before paint. Keep it tiny and free of anything that can throw outside the try. */
 export const INTRO_BOOT_SCRIPT =
   `try{if(localStorage.getItem('${INTRO_STORAGE}')==='1')document.documentElement.setAttribute('${INTRO_ATTR}','off')}catch(e){}`;
 
