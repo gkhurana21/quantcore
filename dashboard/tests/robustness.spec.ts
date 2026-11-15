@@ -18,6 +18,8 @@ import type { Page, WebSocketRoute } from '@playwright/test';
 import { execSync } from 'child_process';
 import path from 'path';
 import { mulberry32 } from '../lib/quant/rng';
+import { engineUp, isEngineRefusal, needsEngine, pythonBin } from './support/engine';
+import { goTab, withMarket } from './support/ui';
 
 const tid = (id: string) => `[data-testid="${id}"]`;
 const INSTRUMENTS = ['SPY', 'QQQ', 'AAPL', 'NVDA', 'TSLA'] as const;
@@ -28,7 +30,7 @@ const SCENARIOS = ['gfc', 'covid', 'volspike', 'rates', 'meltup', 'custom'] as c
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 function engineCall(S: number, K: number, r: number, sigma: number, T: number): number {
-  const py = '/Library/Developer/CommandLineTools/usr/bin/python3';
+  const py = pythonBin();
   const dir = path.resolve(__dirname, '..', '..', 'python');
   const script = `import sys; sys.path.insert(0, r"${dir}"); import quantcore; print(repr(quantcore.bs_full(0, ${S}, ${K}, ${r}, ${sigma}, ${T})["price"]))`;
   return Number(execSync(`${py} -c '${script}'`).toString().trim());
@@ -37,7 +39,7 @@ function engineCall(S: number, K: number, r: number, sigma: number, T: number): 
 function watchErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on('pageerror', e => errors.push(`pageerror: ${e.message}`));
-  page.on('console', m => { if (m.type() === 'error') errors.push(`console.error: ${m.text()}`); });
+  page.on('console', m => { if (m.type() === 'error' && !isEngineRefusal(m.text())) errors.push(`console.error: ${m.text()}`); });
   return errors;
 }
 
@@ -53,23 +55,31 @@ async function expectSane(page: Page, log: string[]) {
   const s = await page.evaluate(() => {
     const text = document.body.innerText;
     const m = /NaN|undefined|Infinity/.exec(text);
-    const tiles = ['price', 'delta', 'gamma', 'theta', 'vega', 'pnl']
+    // the Greeks tiles and the leg rows exist on Build only; every workspace shows the strip's value and P&L
+    const onBuild = document.querySelector('[data-testid="panel-build"]') != null;
+    const tiles = (onBuild ? ['price', 'delta', 'gamma', 'theta', 'vega', 'pnl'] : [])
       .map(id => [id, (document.querySelector(`[data-testid="${id}"]`)?.textContent ?? '').trim()]);
+    const strip = [...document.querySelectorAll('[aria-label="Current market"] [class*="metricValue"]')].map(e => (e.textContent ?? '').trim());
     return {
       bad: m ? text.slice(Math.max(0, m.index - 100), m.index + 40) : null,
       empty: tiles.filter(([, v]) => !v).map(([id]) => id),
+      stripEmpty: strip.length < 2 || strip.some(v => !v),
       signedZero: tiles.filter(([, v]) => /^[−-]\$?0(\.0+)?( sh)?$/.test(v)).map(([id, v]) => `${id} ${v}`),
       overflow: document.documentElement.scrollWidth - window.innerWidth,
+      onBuild,
       legs: document.querySelectorAll('[data-testid="leg-row"]').length,
     };
   });
   const ctx = `\nlast actions:\n  ${log.slice(-10).join('\n  ')}`;
   expect(s.bad, `rendered NaN/undefined/Infinity${ctx}`).toBeNull();
   expect(s.empty, `empty Greeks tile${ctx}`).toEqual([]);
+  expect(s.stripEmpty, `the strip's value or P&L is empty${ctx}`).toBe(false);
   expect(s.signedZero, `signed zero in a Greeks tile${ctx}`).toEqual([]);
   expect(s.overflow, `horizontal overflow${ctx}`).toBeLessThanOrEqual(1);
-  expect(s.legs, `leg count${ctx}`).toBeGreaterThanOrEqual(1);
-  expect(s.legs, `leg count${ctx}`).toBeLessThanOrEqual(8);
+  if (s.onBuild) {
+    expect(s.legs, `leg count${ctx}`).toBeGreaterThanOrEqual(1);
+    expect(s.legs, `leg count${ctx}`).toBeLessThanOrEqual(8);
+  }
 }
 
 async function open(page: Page) {
@@ -87,12 +97,18 @@ async function randomWalk(page: Page, seed: number, steps: number, errors: strin
     const tab = page.locator(tid(`tab-${t}`));
     if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click();
   };
+  // legs, presets, the smile and term controls and the chart modes live on Build; the market's ticker box is a sheet
+  const onBuild = () => ensureTab('build');
+  const closeDialogs = async () => {
+    if (await page.getByRole('dialog', { name: 'Import a portfolio' }).isVisible()) await page.keyboard.press('Escape');
+  };
   const clickIfEnabled = async (id: string) => {
     const el = page.locator(tid(id));
     if ((await el.count()) && (await el.isEnabled())) { await el.click(); return true; }
     return false;
   };
   const editCell = async (field: string, values: string[]) => {
+    await onBuild();
     const i = await legIndex();
     const v = pick(values);
     const cell = page.locator(tid(`leg-${i}-${field}`));
@@ -102,17 +118,20 @@ async function randomWalk(page: Page, seed: number, steps: number, errors: strin
   };
 
   const actions: [string, number, () => Promise<string>][] = [
-    ['instrument', 3, async () => { const s = pick(INSTRUMENTS); await page.locator(tid(`inst-${s}`)).click(); return s; }],
-    ['preset', 4, async () => { const p = pick(PRESETS); await page.locator(tid(`preset-${p}`)).click(); return p; }],
+    ['instrument', 3, async () => { const s = pick(INSTRUMENTS); await withMarket(page, () => page.locator(tid(`inst-${s}`)).click()); return s; }],
+    ['preset', 4, async () => { await onBuild(); const p = pick(PRESETS); await page.locator(tid(`preset-${p}`)).click(); return p; }],
     ['any ticker', 2, async () => {
       const sym = pick(['AMD', 'meta', 'BRK.B', 'X', 'f', '123', 'TOOLONGTICKER1']);
       const px = pick(['162.4', '$0.37', '25000', '1,234.5', '-3', 'abc', '']);
-      await page.locator(tid('ticker-input')).fill(sym);
-      await page.locator(tid('ticker-price')).fill(px);
-      const ok = await clickIfEnabled('ticker-submit');
+      const ok = await withMarket(page, async () => {
+        await page.locator(tid('ticker-input')).fill(sym);
+        await page.locator(tid('ticker-price')).fill(px);
+        return clickIfEnabled('ticker-submit');
+      });
       return `${sym} @ ${JSON.stringify(px)} ${ok}`;
     }],
     ['smile', 2, async () => {
+      await onBuild();
       const choice = pick(['Flat', 'Equity index', 'Single stock', 'Custom']);
       await page.locator(tid(`smile-${choice}`)).click();
       if (choice === 'Custom') {
@@ -122,6 +141,7 @@ async function randomWalk(page: Page, seed: number, steps: number, errors: strin
       return choice;
     }],
     ['term structure', 2, async () => {
+      await onBuild();
       const choice = pick(['Flat', 'Upward', 'Inverted', 'Custom']);
       await page.locator(tid(`term-${choice}`)).click();
       if (choice === 'Custom') {
@@ -130,17 +150,18 @@ async function randomWalk(page: Page, seed: number, steps: number, errors: strin
       }
       return choice;
     }],
-    ['add leg', 3, async () => String(await clickIfEnabled('add-leg'))],
-    ['remove leg', 2, async () => { const i = await legIndex(); return `${i} ${await clickIfEnabled(`leg-${i}-remove`)}`; }],
+    ['add leg', 3, async () => { await onBuild(); return String(await clickIfEnabled('add-leg')); }],
+    ['remove leg', 2, async () => { await onBuild(); const i = await legIndex(); return `${i} ${await clickIfEnabled(`leg-${i}-remove`)}`; }],
     ['strike', 3, async () => {
+      await onBuild();
       const spot = Number(await page.locator(tid('spot-display')).textContent());
       return editCell('strike', [String(Math.round(spot * (0.5 + u()))), String(+(spot * 1.03).toFixed(2)), '0', '-5', 'abc', '1e9', '']);
     }],
     ['qty', 2, () => editCell('qty', ['1', '3', '250', '0', '-3', '2.5', '99999', 'x'])],
     ['dte', 3, () => editCell('dte', ['1', '2', '30', '365', '1095', '0', '5000', 'x'])],
     ['premium', 3, () => editCell('premium', ['0', '0.01', '12.5', '1e6', '-1', ''])],
-    ['type', 2, async () => { const i = await legIndex(); const t = pick(['call', 'put']); await page.locator(tid(`leg-${i}-type-${t}`)).click(); return `${i} ${t}`; }],
-    ['side', 2, async () => { const i = await legIndex(); const s = pick(['buy', 'sell']); await page.locator(tid(`leg-${i}-side-${s}`)).click(); return `${i} ${s}`; }],
+    ['type', 2, async () => { await onBuild(); const i = await legIndex(); const t = pick(['call', 'put']); await page.locator(tid(`leg-${i}-type-${t}`)).click(); return `${i} ${t}`; }],
+    ['side', 2, async () => { await onBuild(); const i = await legIndex(); const s = pick(['buy', 'sell']); await page.locator(tid(`leg-${i}-side-${s}`)).click(); return `${i} ${s}`; }],
     ['spot', 3, async () => {
       const [lo, hi] = await page.locator(tid('spot-input')).evaluate(el => [Number((el as HTMLInputElement).min), Number((el as HTMLInputElement).max)]);
       const v = pick([lo, hi, lo + (hi - lo) * u()]);
@@ -149,9 +170,10 @@ async function randomWalk(page: Page, seed: number, steps: number, errors: strin
     ['vol', 3, async () => { const v = pick([0.01, 1.5, +(0.01 + 1.49 * u()).toFixed(3)]); await setRange(page, 'vol-input', v); return String(v); }],
     ['rate', 1, async () => { const v = pick([0, 0.15, +(0.15 * u()).toFixed(4)]); await setRange(page, 'rate-input', v); return String(v); }],
     ['dividend', 2, async () => { const v = pick([0, 0.08, +(0.08 * u()).toFixed(4)]); await setRange(page, 'q-input', v); return String(v); }],
-    ['reset market', 1, async () => String(await clickIfEnabled('reset-market'))],
-    ['chart mode', 2, async () => { const mode = pick(['pnl', 'delta', 'gamma', 'vega', 'theta']); await page.locator(tid(`chart-mode-${mode}`)).click(); return mode; }],
+    ['reset market', 1, async () => String(await withMarket(page, () => clickIfEnabled('reset-market')))],
+    ['chart mode', 2, async () => { await onBuild(); const mode = pick(['pnl', 'delta', 'gamma', 'vega', 'theta']); await page.locator(tid(`chart-mode-${mode}`)).click(); return mode; }],
     ['chart keys', 1, async () => {
+      await onBuild();
       await page.locator(`${tid('strategy-chart')} svg`).first().focus();
       for (const k of ['ArrowRight', 'ArrowRight', 'Home', 'End', 'ArrowLeft', 'Escape']) await page.keyboard.press(k);
       return 'arrows';
@@ -159,7 +181,7 @@ async function randomWalk(page: Page, seed: number, steps: number, errors: strin
     ['tab', 3, async () => { const t = pick(TABS); await page.locator(tid(`tab-${t}`)).click(); return t; }],
     ['keyboard tab', 1, async () => {
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-      const k = String(1 + Math.floor(u() * 5)); await page.keyboard.press(k); return k;
+      const k = String(1 + Math.floor(u() * 7)); await page.keyboard.press(k); return k;
     }],
     ['stress', 4, async () => {
       await ensureTab('stress');
@@ -194,6 +216,8 @@ async function randomWalk(page: Page, seed: number, steps: number, errors: strin
       await page.locator(tid(c)).click(); return c;
     }],
     ['upload sample', 1, async () => {
+      await onBuild();
+      await page.locator(tid('upload-open')).click();
       await page.locator(tid('sample-load')).click();
       const apply = u() < 0.6;
       await page.locator(tid(apply ? 'upload-apply' : 'upload-discard')).click();
@@ -205,9 +229,15 @@ async function randomWalk(page: Page, seed: number, steps: number, errors: strin
       await page.waitForTimeout(400);
       const discard = page.locator(tid('upload-discard'));
       if (await discard.count()) await discard.click();
+      await closeDialogs();
       return 'random bytes as .xlsx';
     }],
-    ['quick start', 1, async () => { const q = pick(['condor', 'covid', 'paths', 'var99']); await page.locator(tid(`quick-${q}`)).click(); return q; }],
+    ['quick start', 1, async () => {
+      const q = pick(['condor', 'covid', 'paths', 'var99']);
+      await page.locator(tid('open-palette')).click();          // the guided examples are in the command palette
+      await page.locator(tid(`quick-${q}`)).click();
+      return q;
+    }],
     ['engine', 1, async () => {
       await ensureTab('engine');
       return String(await clickIfEnabled('engine-price-portfolio'));
@@ -290,10 +320,13 @@ test.describe('robustness: edge cases', () => {
       await page.waitForTimeout(t === 'engine' ? 500 : 3000);
       await expectSane(page, [...log, t]);
     }
-    await page.locator(tid('tab-engine')).click();
-    await page.locator(tid('engine-price-portfolio')).click();
-    await expect(page.locator(tid('engine-agreement'))).toBeVisible({ timeout: 10_000 });
-    expect(Number(await page.locator(tid('engine-agreement')).getAttribute('data-value'))).toBeLessThan(1e-6);
+    // the native engine's batch pricing of these eight legs against the browser's (needs the engine)
+    if (engineUp()) {
+      await page.locator(tid('tab-engine')).click();
+      await page.locator(tid('engine-price-portfolio')).click();
+      await expect(page.locator(tid('engine-agreement'))).toBeVisible({ timeout: 10_000 });
+      expect(Number(await page.locator(tid('engine-agreement')).getAttribute('data-value'))).toBeLessThan(1e-6);
+    }
     expect(errors).toEqual([]);
   });
 
@@ -330,7 +363,7 @@ test.describe('robustness: edge cases', () => {
   test('stacked stress scenarios restore the original market and position', async ({ page }) => {
     const errors = watchErrors(page);
     await open(page);
-    await expect(page.locator(tid('ws-status'))).toHaveText('Connected', { timeout: 15_000 });
+    if (engineUp()) await expect(page.locator(tid('ws-status'))).toHaveText('Connected', { timeout: 15_000 });
     await page.locator(tid('tab-stress')).click();
     await page.locator(tid('scenario-covid')).click();
     await page.locator(tid('stress-apply')).click();
@@ -342,8 +375,10 @@ test.describe('robustness: edge cases', () => {
     await page.locator(tid('stress-restore')).click();
     await expect(page.locator(tid('spot-display'))).toHaveText('756.48');
     await expect(page.locator(tid('legs-source'))).toHaveText('Preset · Long Call');
+    await goTab(page, 'build');                                            // the leg rows and the tiles are on Build
     await expect(page.locator(tid('leg-0-dte'))).toHaveValue('47');
-    await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'engine-stream', { timeout: 10_000 });
+    // Build's tiles come from the native stream when the engine answers, from the C++ WebAssembly build otherwise
+    await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', engineUp() ? 'engine-stream' : 'wasm', { timeout: 10_000 });
     await expectSane(page, ['stacked stress']);
     expect(errors).toEqual([]);
   });
@@ -351,6 +386,7 @@ test.describe('robustness: edge cases', () => {
 
 test.describe('robustness: engine resilience', () => {
   test('an engine crash mid-session falls back to the WebAssembly engine and recovers', async ({ page }) => {
+    needsEngine();
     test.setTimeout(60_000);
     const errors = watchErrors(page);
     const sockets: WebSocketRoute[] = [];
@@ -392,10 +428,14 @@ test.describe('robustness: engine resilience', () => {
     await expect(page.locator(tid('engine-reconnect'))).toBeVisible();
     await expectSane(page, ['engine refused']);
 
-    refuse = false;
-    await page.locator(tid('engine-reconnect')).click();
-    await expect(page.locator(tid('ws-status'))).toHaveText('Connected', { timeout: 10_000 });
-    await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'engine-stream', { timeout: 10_000 });
+    // Reconnect succeeds only if an engine is there to answer it
+    if (engineUp()) {
+      refuse = false;
+      await page.locator(tid('engine-reconnect')).click();
+      await expect(page.locator(tid('ws-status'))).toHaveText('Connected', { timeout: 10_000 });
+      await goTab(page, 'build');
+      await expect(page.locator(tid('calc-source'))).toHaveAttribute('data-kind', 'engine-stream', { timeout: 10_000 });
+    }
     expect(errors).toEqual([]);
   });
 
@@ -425,15 +465,19 @@ test.describe('robustness: engine resilience', () => {
   });
 
   test('rapid spot scrubbing on the C++ stream settles on the exact engine price', async ({ page }) => {
+    needsEngine();
     const errors = watchErrors(page);
     await open(page);
     await expect(page.locator(tid('ws-status'))).toHaveText('Connected', { timeout: 15_000 });
     await page.locator(tid('spot-input')).evaluate(async el => {
       const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      // 400 moves, yielding to the event loop every 4th. A longer synchronous burst makes the dev build of React warn
+      // "Maximum update depth exceeded" (its counter of back-to-back passive-effect updates is dev-only and counts
+      // events dispatched in one task; the exported site does not warn), which says nothing about a person dragging.
       for (let i = 0; i < 400; i++) {
         set.call(el, String(650 + (i % 240) / 2));
         el.dispatchEvent(new Event('input', { bubbles: true }));
-        if (i % 25 === 0) await new Promise(r => setTimeout(r, 0));
+        if (i % 4 === 0) await new Promise(r => setTimeout(r, 0));
       }
       set.call(el, '771');
       el.dispatchEvent(new Event('input', { bubbles: true }));

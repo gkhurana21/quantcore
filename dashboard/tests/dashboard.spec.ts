@@ -20,13 +20,14 @@
 import { test, expect, Page } from '@playwright/test';
 import { execSync }           from 'child_process';
 import path                  from 'path';
+import { needsEngine, pythonBin } from './support/engine';
 
 // ── reference values from C++ engine (run synchronously in test setup) ──────
 // __dirname is dashboard/tests/  →  ../../python is quantcore/python/
 
 function engineBS(S: number, K: number, r: number, sigma: number, T: number,
                   call: boolean): { price: number; delta: number; vega: number } {
-  const py        = '/Library/Developer/CommandLineTools/usr/bin/python3';
+  const py        = pythonBin();
   const pythonDir = path.resolve(__dirname, '..', '..', 'python');
   const script    = [
     `import sys; sys.path.insert(0,r"${pythonDir}"); import quantcore, json`,
@@ -75,6 +76,7 @@ async function setSlider(page: Page, testid: string, value: number) {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 test.describe('QuantCore Dashboard — live update path', () => {
+  test.beforeEach(() => needsEngine());                      // the native engine is the system under test here
 
   test('1. dashboard loads, WebSocket connects, initial values are physically sane', async ({ page }) => {
     await page.goto('/');

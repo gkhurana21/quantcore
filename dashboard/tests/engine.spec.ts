@@ -11,10 +11,11 @@ import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { execSync } from 'child_process';
 import path from 'path';
+import { needsEngine, pythonBin } from './support/engine';
 
 /** Call price straight from the C++ bindings (protocol v3 engine supports q). */
 function engineCall(S: number, K: number, r: number, sigma: number, T: number, q: number): number {
-  const py = '/Library/Developer/CommandLineTools/usr/bin/python3';
+  const py = pythonBin();
   const dir = path.resolve(__dirname, '..', '..', 'python');
   const script = `import sys; sys.path.insert(0, r"${dir}"); import quantcore; print(repr(quantcore.bs_full(0, ${S}, ${K}, ${r}, ${sigma}, ${T}, ${q})["price"]))`;
   return Number(execSync(`${py} -c '${script}'`).toString().trim());
@@ -35,6 +36,7 @@ async function setRange(page: Page, testid: string, v: number) {
 }
 
 test.describe('C++ engine integration', () => {
+  test.beforeEach(() => needsEngine());
   test('10a. calculation source follows the portfolio, including a dividend yield', async ({ page }) => {
     await open(page);
     await expect(page.getByTestId('calc-source')).toHaveAttribute('data-kind', 'engine-stream', { timeout: 10_000 });

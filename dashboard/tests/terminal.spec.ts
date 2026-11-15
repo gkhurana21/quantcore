@@ -17,6 +17,8 @@
 import { test, expect } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import * as XLSX from 'xlsx';
+import { engineUp, needsEngine } from './support/engine';
+import { goTab, withMarket, withSurface } from './support/ui';
 
 async function open(page: Page) {
   await page.goto('/');
@@ -54,7 +56,7 @@ test.describe('QuantCore terminal flows', () => {
   test('2. Switching instrument to NVDA reprices the position', async ({ page }) => {
     await open(page);
     const spyPrice = await value(page.getByTestId('price'));
-    await page.getByTestId('inst-NVDA').click();
+    await withMarket(page, () => page.getByTestId('inst-NVDA').click());
     await expect(page.getByTestId('spot-display')).toHaveText('142.35');
     await expect(page.getByTestId('instrument-name')).toHaveText('NVIDIA Corp.');
     await expect.poll(() => value(page.getByTestId('price'))).not.toBeCloseTo(spyPrice, 1);
@@ -66,13 +68,13 @@ test.describe('QuantCore terminal flows', () => {
 
   test('3. Pricing Models Lab compares BS, CRR and Monte Carlo honestly', async ({ page }) => {
     await open(page);
-    await expect(page.getByTestId('tab-lab')).toHaveAttribute('aria-selected', 'true');
+    const tile = await value(page.getByTestId('price'));             // the Greeks tile is on Build; the Lab is on Price
+    await goTab(page, 'lab');
     for (const id of ['bs', 'crr', 'mc10k', 'mc50k', 'mc200k']) {
       await expect(page.getByTestId(`lab-row-${id}`)).toBeVisible({ timeout: 15_000 });
     }
     const bs = await value(page.getByTestId('lab-value-bs'));
     const crr = await value(page.getByTestId('lab-value-crr'));
-    const tile = await value(page.getByTestId('price'));
     expect(bs).toBeCloseTo(tile * 1000, 0);                        // 10 contracts × 100 shares
     expect(Math.abs(crr - bs) / bs).toBeLessThan(0.005);
 
@@ -197,12 +199,14 @@ test.describe('QuantCore terminal flows', () => {
 
   test('10. Any ticker can be priced from a manually entered price', async ({ page }) => {
     await open(page);
-    await page.getByTestId('ticker-input').fill('amd');
-    await page.getByTestId('ticker-price').fill('$162.40');
-    await page.getByTestId('ticker-submit').click();
-    await expect(page.getByTestId('instrument-name')).toHaveText('AMD · manual price');
+    await withMarket(page, async () => {
+      await page.getByTestId('ticker-input').fill('amd');
+      await page.getByTestId('ticker-price').fill('$162.40');
+      await page.getByTestId('ticker-submit').click();
+      await expect(page.getByTestId('instrument-name')).toHaveText('AMD · manual price');
+      await expect(page.getByTestId('inst-AMD')).toHaveAttribute('aria-checked', 'true');
+    });
     await expect(page.getByTestId('data-status')).toHaveText('Manual price');   // never labelled as a snapshot or live
-    await expect(page.getByTestId('inst-AMD')).toHaveAttribute('aria-checked', 'true');
     await expect(page.getByTestId('spot-display')).toHaveText('162.40');
     await expect(page.getByTestId('vol-display')).toHaveText('30.0%');
     await expect(page.getByTestId('leg-0-strike')).toHaveValue('162.5');   // ATM on the 2.5 strike grid
@@ -211,16 +215,18 @@ test.describe('QuantCore terminal flows', () => {
     await expect(page.getByTestId('breakevens')).toHaveAttribute('data-count', '2');
 
     // invalid prices are reported and not applied
-    await page.getByTestId('ticker-input').fill('TSLA');
-    await page.getByTestId('ticker-price').fill('-5');
-    await page.getByTestId('ticker-submit').click();
-    await expect(page.getByTestId('ticker-msg')).toContainText('positive number');
+    await withMarket(page, async () => {
+      await page.getByTestId('ticker-input').fill('TSLA');
+      await page.getByTestId('ticker-price').fill('-5');
+      await page.getByTestId('ticker-submit').click();
+      await expect(page.getByTestId('ticker-msg')).toContainText('positive number');
+    });
     await expect(page.getByTestId('instrument-name')).toHaveText('AMD · manual price');
 
     // switching away and back keeps the custom ticker available
-    await page.getByTestId('inst-SPY').click();
+    await withMarket(page, () => page.getByTestId('inst-SPY').click());
     await expect(page.getByTestId('data-status')).toHaveText('Snapshot · indicative');
-    await page.getByTestId('inst-AMD').click();
+    await withMarket(page, () => page.getByTestId('inst-AMD').click());
     await expect(page.getByTestId('spot-display')).toHaveText('162.40');
   });
 
@@ -276,7 +282,7 @@ test.describe('QuantCore terminal flows', () => {
     expect(up2).toBeGreaterThan(down2);
 
     // the smile is a model choice: it survives an instrument switch, and Flat restores one volatility
-    await page.getByTestId('inst-NVDA').click();
+    await withMarket(page, () => page.getByTestId('inst-NVDA').click());
     await expect(page.getByTestId('smile-Custom')).toHaveAttribute('aria-checked', 'true');
     await page.getByTestId('smile-Flat').click();
     await expect(page.getByTestId('smile-rho')).toHaveCount(0);
@@ -287,13 +293,13 @@ test.describe('QuantCore terminal flows', () => {
     await open(page);
     await page.getByTestId('preset-long-put').click();
     await page.getByTestId('smile-Equity index').click();
-    await page.getByTestId('tab-mc').click();
+    await goTab(page, 'mc');
     const hist = page.getByTestId('mc-hist');
     await expect(hist).toHaveAttribute('data-density', 'smile', { timeout: 20_000 });
     await expect(hist).toContainText('Smile-implied density');
     await expect(hist).toContainText('Lognormal at ATM σ');
     await expect(page.getByTestId('mc-pitm').locator('xpath=..')).toContainText('smile-implied');
-    await page.getByTestId('smile-Flat').click();
+    await withSurface(page, () => page.getByTestId('smile-Flat').click());
     await expect(hist).toHaveAttribute('data-density', 'lognormal', { timeout: 20_000 });
     await expect(hist).not.toContainText('Smile-implied density');
   });
@@ -302,6 +308,7 @@ test.describe('QuantCore terminal flows', () => {
     await page.routeWebSocket('ws://localhost:8765/ws', ws => ws.close({ code: 1000, reason: 'no native engine' }));
     await open(page);
     await page.getByTestId('preset-iron-condor').click();
+    await goTab(page, 'lab');
     await page.getByTestId('lab-row-mc200k').waitFor();
     await expect(page.getByTestId('lab-engine-backend')).toContainText('WebAssembly', { timeout: 15_000 });
     await page.getByTestId('lab-engine-run').click();
@@ -312,8 +319,10 @@ test.describe('QuantCore terminal flows', () => {
     expect(Number(await row.getAttribute('data-z'))).toBeLessThan(4);
 
     // with a surface, the local-vol check runs the same C++ kernel in WebAssembly
-    await page.getByTestId('smile-Equity index').click();
-    await page.getByTestId('term-Upward').click();
+    await withSurface(page, async () => {
+      await page.getByTestId('smile-Equity index').click();
+      await page.getByTestId('term-Upward').click();
+    });
     await page.getByTestId('lab-row-mc200k').waitFor();
     await expect(page.getByTestId('lab-localvol-backend')).toContainText('WebAssembly', { timeout: 15_000 });
     await page.getByTestId('lab-localvol-run').click();
@@ -331,15 +340,17 @@ test.describe('QuantCore terminal flows', () => {
     await page.getByTestId('smile-Equity index').click();
     await page.getByTestId('term-Upward').click();
 
-    // Pricing Lab: the local-vol diffusion reprices the condor within its standard error
+    // Pricing Lab: the local-vol diffusion reprices the condor within its standard error. On the native engine
+    // (protocol v6) the kernel runs there, on 1M paths; without it, the same kernel runs as WebAssembly in this tab, on 400k.
+    await goTab(page, 'lab');
     await page.getByTestId('lab-row-mc200k').waitFor();
     await page.getByTestId('lab-localvol-run').click();
     const row = page.getByTestId('lab-row-localvol');
-    await expect(row).toContainText('Local vol (Dupire) · C++ native · 1M', { timeout: 60_000 });   // the engine speaks v6
+    await expect(row).toContainText(`Local vol (Dupire) · ${engineUp() ? 'C++ native · 1M' : 'C++ WebAssembly · 400k'}`, { timeout: 60_000 });
     await expect(row).toHaveAttribute('data-z', /\d/, { timeout: 30_000 });
     expect(Number(await row.getAttribute('data-z'))).toBeLessThan(4);
 
-    await page.getByTestId('tab-mc').click();
+    await goTab(page, 'mc');
     const model = page.getByTestId('mc-path-model');
     await expect(model).toHaveAttribute('data-model', 'local-vol', { timeout: 20_000 });
     await expect(page.getByTestId('mc-intro')).toContainText('Dupire');
@@ -348,11 +359,13 @@ test.describe('QuantCore terminal flows', () => {
     expect(await n('data-local-down') - await n('data-local-atm')).toBeGreaterThan(await n('data-implied-down') - await n('data-implied-atm'));
 
     // flat again: GBM paths and no local-vol card; the Lab's local-vol check disappears with the surface
-    await page.getByTestId('smile-Flat').click();
-    await page.getByTestId('term-Flat').click();
+    await withSurface(page, async () => {
+      await page.getByTestId('smile-Flat').click();
+      await page.getByTestId('term-Flat').click();
+    });
     await expect(model).toHaveAttribute('data-model', 'gbm', { timeout: 20_000 });
     await expect(lv).toHaveCount(0);
-    await page.getByTestId('tab-lab').click();
+    await goTab(page, 'lab');
     await expect(page.getByTestId('lab-localvol')).toHaveCount(0);
   });
 
@@ -406,7 +419,7 @@ test.describe('QuantCore terminal flows', () => {
     await expect(ref).toContainText('Reiner–Rubinstein closed form', { timeout: 30_000 });
 
     // equity skew: local vol reprices the vanilla on its own paths and cheapens the down-and-out call
-    await page.getByTestId('smile-Equity index').click();
+    await withSurface(page, () => page.getByTestId('smile-Equity index').click());
     const local = page.getByTestId('exo-row-local');
     await expect(local).toHaveAttribute('data-z', /\d/, { timeout: 90_000 });
     expect(Number(await local.getAttribute('data-z'))).toBeLessThan(4);
@@ -425,11 +438,12 @@ test.describe('QuantCore terminal flows', () => {
   });
 
   test('18. With the native engine, exotics simulate over protocol v7', async ({ page }) => {
+    needsEngine();
     test.setTimeout(90_000);
     await open(page);
-    await page.getByTestId('tab-exotics').click();
+    await goTab(page, 'exotics');
     await expect(page.getByTestId('exo-backend')).toContainText('native C++ engine', { timeout: 15_000 });
-    await page.getByTestId('term-Upward').click();
+    await withSurface(page, () => page.getByTestId('term-Upward').click());
     const local = page.getByTestId('exo-row-local');
     await expect(local).toHaveAttribute('data-z', /\d/, { timeout: 60_000 });
     await expect(local).toContainText('C++ native · 1M paths');
@@ -442,6 +456,7 @@ test.describe('QuantCore terminal flows', () => {
     await page.routeWebSocket('ws://localhost:8765/ws', ws => ws.close({ code: 1000, reason: 'no native engine' }));
     await open(page);
     await page.getByTestId('preset-long-put').click();
+    await goTab(page, 'lab');
     await page.getByTestId('lab-row-mc200k').waitFor();
 
     // flat market: American above the closed-form European, on the 512-step lattice, and a boundary below the strike
@@ -456,7 +471,7 @@ test.describe('QuantCore terminal flows', () => {
     expect(Number(await chart.getAttribute('data-points'))).toBeGreaterThan(30);
 
     // equity skew: the European under local volatility reprices the implied volatility; early exercise is worth less
-    await page.getByTestId('smile-Equity index').click();
+    await withSurface(page, () => page.getByTestId('smile-Equity index').click());
     await page.getByTestId('lab-row-mc200k').waitFor();
     await expect(row).toHaveAttribute('data-am-lv', /\d/, { timeout: 30_000 });
     expect(Math.abs(await n('data-eu-lv') - await n('data-bs')) / await n('data-bs')).toBeLessThan(2e-3);
@@ -475,7 +490,7 @@ test.describe('QuantCore terminal flows', () => {
     expect(await l('data-price')).toBeGreaterThan(await l('data-european'));
 
     // barrier: the PDE knock-out on the surface agrees with the local-vol Monte Carlo, and draws its curve
-    await page.getByTestId('tab-exotics').click();
+    await goTab(page, 'exotics');
     const pdeRow = page.getByTestId('exo-row-pde');
     await expect(page.getByTestId('exo-row-local')).toHaveAttribute('data-z', /\d/, { timeout: 90_000 });
     await expect(pdeRow).toHaveAttribute('data-mc-z', /\d/, { timeout: 30_000 });
@@ -487,6 +502,7 @@ test.describe('QuantCore terminal flows', () => {
     test.setTimeout(120_000);
     await page.routeWebSocket('ws://localhost:8765/ws', ws => ws.close({ code: 1000, reason: 'no native engine' }));
     await open(page);
+    await goTab(page, 'lab');
     await page.getByTestId('lab-row-mc200k').waitFor();
     await page.getByTestId('lab-ladder-row-15').waitFor({ timeout: 60_000 });
 
@@ -514,7 +530,7 @@ test.describe('QuantCore terminal flows', () => {
     expect(Math.min(...flat.map(p => p.bs)) / peak).toBeGreaterThan(0.005);
 
     // Equity skew: the level carries the smile with it, so the two definitions part company by a real margin
-    await page.getByTestId('smile-Equity index').click();
+    await withSurface(page, () => page.getByTestId('smile-Equity index').click());
     await page.getByTestId('lab-row-mc200k').waitFor();
     await expect
       .poll(async () => (await r('data-ratio-hi')) - (await r('data-ratio-lo')), { timeout: 60_000 })
@@ -566,7 +582,7 @@ test.describe('QuantCore terminal flows', () => {
 
     // a curve is a model choice: it survives an instrument switch, and Flat removes it
     await setRange(page, 'term-ratio', 2);
-    await page.getByTestId('inst-NVDA').click();
+    await withMarket(page, () => page.getByTestId('inst-NVDA').click());
     await expect(page.getByTestId('term-Custom')).toHaveAttribute('aria-checked', 'true');
     await expect(page.getByTestId('term-ratio-display')).toHaveText('2.00×');
     await page.getByTestId('term-Flat').click();
@@ -576,7 +592,7 @@ test.describe('QuantCore terminal flows', () => {
 
   test('9. Risk / VaR: headline, confidence and horizon scaling, Monte Carlo VaR', async ({ page }) => {
     await open(page);
-    await page.keyboard.press('5');                                // keyboard shortcut → Risk tab
+    await page.keyboard.press('6');                                // keyboard shortcut → Risk, the sixth workspace
     await expect(page.getByTestId('tab-risk')).toHaveAttribute('aria-selected', 'true');
     const headline = await value(page.getByTestId('var-95'));
     expect(headline).toBeGreaterThan(0);
