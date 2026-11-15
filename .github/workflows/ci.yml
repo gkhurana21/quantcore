@@ -14,7 +14,7 @@ jobs:
   # The terminal: lint, types, the pricing/risk/import unit tests, the static export, then the browser suite
   # against that export. The engine specs skip here (no native engine in this job) and say so in the log.
   web:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: Playwright's chromium does not install on ubuntu-latest (26.04) yet
     timeout-minutes: 30
     defaults:
       run:
@@ -50,7 +50,7 @@ jobs:
   # The C++17 core on Linux/gcc: the Metal kernel and Accelerate SIMD compile out, as in deploy/engine.Dockerfile.
   # Builds the pybind11 module too, then checks the WebSocket protocol against it.
   engine:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: Playwright's chromium does not install on ubuntu-latest (26.04) yet
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

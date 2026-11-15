@@ -15,6 +15,8 @@ if(APPLE)
 endif()
 
 add_library(quantcore_core STATIC ${CORE_SOURCES})
+# linked into the pybind11 shared module too, so it must be position-independent (macOS does this by default; Linux does not)
+set_target_properties(quantcore_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(quantcore_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
