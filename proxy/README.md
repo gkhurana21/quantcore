@@ -1,8 +1,8 @@
 # QuantCore data proxy
 
-The entire MVP backend ([PRD](../PRD.md) §11, decision 2): a small Go service that serves normalized, cached market data from [Alpaca's free Basic plan](https://alpaca.markets) to the static dashboard. The API keys never reach the browser; in-memory caching keeps the proxy well inside Alpaca's 200 req/min free limit.
+The entire MVP backend: a small Go service that serves normalized, cached market data from [Alpaca's free Basic plan](https://alpaca.markets) to the static dashboard. The API keys never reach the browser; in-memory caching keeps the proxy well inside Alpaca's 200 req/min free limit.
 
-Alpaca was chosen because a **paper-only account is a global email signup** — it works from Canada with no brokerage application (see PRD §11, decision 1). The free tier provides IEX stock quotes and the options *indicative* feed with Greeks/IV. Indicative data approximates real OPRA quotes — right for education and analysis, never for execution — and every response is labeled with its `feed`.
+Alpaca was chosen because a **paper-only account is a global email signup** — it works from Canada with no brokerage application. The free tier provides IEX stock quotes and the options *indicative* feed with Greeks/IV. Indicative data approximates real OPRA quotes — right for education and analysis, never for execution — and every response is labeled with its `feed`.
 
 ## Endpoints
 
