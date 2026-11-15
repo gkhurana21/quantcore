@@ -111,8 +111,8 @@ a.glanceSectionHead:hover .glanceGo { color: var(--amber-2); }
 .introClose { display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 6px; color: var(--ink-3); }
 .introClose:hover { background: var(--hover); color: var(--ink); }
 /* a desktop keeps it to one row (the sentence takes whatever the buttons and the hint leave); narrower, it wraps */
-@media (min-width: 1280px) { .intro { flex-wrap: nowrap; } .introTry { flex-wrap: nowrap; } }
-@media (max-width: 1279px) { .introHint { margin-left: 0; } }
+@media (min-width: 1440px) { .intro { flex-wrap: nowrap; } .introTry { flex-wrap: nowrap; } }
+@media (max-width: 1439px) { .introHint { margin-left: 0; } }
 @media (max-width: 767px) {
   .introWrap { padding: 10px 12px 0; }
   .intro { position: relative; padding: 10px 40px 10px 12px; }
