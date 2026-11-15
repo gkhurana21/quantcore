@@ -27,7 +27,7 @@ export function serveOut(port = 0) {
     let p = decodeURIComponent((req.url ?? '/').split('?')[0].split('#')[0]);
     if (p.endsWith('/')) p += 'index.html';
     const file = path.normalize(path.join(ROOT, p));
-    if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); res.end('not found'); return; }
+    if (!file.startsWith(ROOT + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); res.end('not found'); return; }
     res.writeHead(200, { 'content-type': TYPES[path.extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-store' });
     fs.createReadStream(file).pipe(res);
   });

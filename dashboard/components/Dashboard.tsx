@@ -277,12 +277,13 @@ export default function Dashboard() {
   useEffect(() => { setSingleKeys(readSingleKeys()); }, []);
   const changeSingleKeys = useCallback((on: boolean) => { setSingleKeys(on); writeSingleKeys(on); }, []);
 
+  const toastSeq = useRef(0);
   const resetWithUndo = useCallback(() => {
     const before = { S: market.S, sigma: market.sigma, r: market.r, q: market.q };
     const moved = before.S !== state.base.S || before.sigma !== state.base.sigma || before.r !== state.base.r || before.q !== state.base.q;
-    if (!moved) { setToast({ id: Date.now(), text: 'The market is already at its reference' }); return; }
+    if (!moved) { setToast({ id: ++toastSeq.current, text: 'The market is already at its reference' }); return; }
     dispatch({ type: 'resetMarket' });
-    setToast({ id: Date.now(), text: 'Market reset to its reference', undo: () => dispatch({ type: 'market', patch: before }) });
+    setToast({ id: ++toastSeq.current, text: 'Market reset to its reference', undo: () => dispatch({ type: 'market', patch: before }) });
   }, [market, state.base, dispatch]);
 
   // `t`, the palette and the intro's own link all land on Build with the band showing and the dismissal forgotten
@@ -357,7 +358,7 @@ export default function Dashboard() {
   // ── keyboard: one table (lib/shortcuts.ts) says which key does what and when it is ignored ──
   const runShortcut = (a: ShortcutAction) => {
     switch (a.type) {
-      case 'workspace': showTab(WORKSPACES[a.index].id); break;
+      case 'workspace': if (WORKSPACES[a.index]) showTab(WORKSPACES[a.index].id); break;
       case 'step': showTab(WORKSPACES[stepIndex(WORKSPACES.findIndex(w => w.id === workspace), a.dir, WORKSPACES.length)].id); break;
       case 'palette': openPalette(a.query); break;
       case 'shortcuts': setShortcutsOpen(true); break;
