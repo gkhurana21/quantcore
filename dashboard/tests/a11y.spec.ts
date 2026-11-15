@@ -32,3 +32,34 @@ test.describe('accessibility (axe-core, WCAG 2.1 A/AA)', () => {
     expect(serious).toEqual([]);
   });
 });
+
+test.describe('accessibility of the intro band, the shortcuts sheet and the palette', () => {
+  test.use({ storageState: { cookies: [], origins: [] } });         // a first visit, so the intro band is showing
+
+  test('no serious or critical violations with each of them open', async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.goto('/');
+    await expect(page.getByTestId('intro-band')).toBeVisible({ timeout: 20_000 });
+    const found: string[] = [];
+    const audit = async (where: string) => {
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      for (const v of results.violations) {
+        if (v.impact === 'serious' || v.impact === 'critical') {
+          found.push(`[${where}] ${v.id} (${v.impact}) ${v.help}: ` + v.nodes.slice(0, 3).map(n => n.target.join(' ')).join(' | '));
+        }
+      }
+    };
+    await audit('intro band');
+
+    await page.keyboard.press('?');
+    await expect(page.getByTestId('shortcuts-dialog')).toBeVisible();
+    await audit('shortcuts sheet');
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('shortcuts-dialog')).toBeHidden();
+
+    await page.keyboard.press('/');
+    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+    await audit('command palette');
+    expect(found).toEqual([]);
+  });
+});

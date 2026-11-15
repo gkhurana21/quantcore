@@ -74,7 +74,7 @@ export function PositionStrip({ state, dispatch, value, pnl, volModel, onOpenMar
   return (
     <div className={s.stripWrap}>
       <div className={s.strip} role="group" aria-label="Current market">
-        <button type="button" ref={tickerRef} className={cx(s.ticker, spot.scrubbing && s.scrubActive)} {...spot.handlers}
+        <button type="button" ref={tickerRef} className={cx(s.ticker, spot.scrubbing && s.scrubActive)} {...spot.handlers} data-testid="strip-ticker"
                 aria-label={`${inst.sym} at ${num(m.S, 2)} — drag to move spot, click for the market controls`}>
           <span className={s.tickerTop}>
             <span className={s.tickerSym}>{inst.sym}</span>

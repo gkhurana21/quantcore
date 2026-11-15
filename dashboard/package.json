@@ -8,8 +8,12 @@
     "start": "next start --port 3000",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "playwright test",
-    "test:unit": "playwright test -c playwright.unit.config.ts"
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "playwright test -c playwright.unit.config.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:engine": "QC_ENGINE=1 playwright test",
+    "scan:ui": "node scripts/overlap-scan.mjs && node scripts/occlusion-scan.mjs",
+    "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {
     "next": "^15.5.25",

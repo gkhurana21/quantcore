@@ -119,7 +119,7 @@ export function TopBar({ instrument, dataMode, engineStatus, engineReason, wasmS
         </nav>
 
         <div className={s.right}>
-          <button type="button" className={s.command} onClick={onCommand}
+          <button type="button" className={s.command} onClick={onCommand} data-testid="open-palette"
                   aria-label="Search tickers, presets, scenarios and actions — Command K">
             <Icon name="search" size={15} />
             <span className={s.commandText}>Tickers, presets, scenarios</span>

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
+import { keyHint } from '@/lib/shortcuts';
 import s from './layout.module.css';
 
 export interface Command {
@@ -12,6 +13,8 @@ export interface Command {
   /** One or two characters in the leading square — a ticker, a number key, an arrow. */
   glyph: string;
   keywords?: string;
+  /** The key that does the same thing, shown as a keycap. Read from lib/shortcuts so it cannot drift. */
+  hotkey?: string;
   testid?: string;
   run: () => void;
 }
@@ -26,8 +29,10 @@ const matches = (c: Command, q: string) => {
  * ⌘K: everything the terminal can do, by name — workspaces, presets, tickers, scenarios and the
  * guided examples that used to sit in a row of "try this" buttons under the bar.
  */
-export function CommandPalette({ open, onClose, commands }: {
+export function CommandPalette({ open, onClose, commands, initialQuery = '' }: {
   open: boolean; onClose: () => void; commands: Command[];
+  /** Text the search box starts with each time the palette opens — "Presets" for the P key. */
+  initialQuery?: string;
 }) {
   const dialog = useRef<HTMLDialogElement | null>(null);
   const input = useRef<HTMLInputElement | null>(null);
@@ -49,12 +54,13 @@ export function CommandPalette({ open, onClose, commands }: {
     const d = dialog.current;
     if (!d) return;
     if (open && !d.open) {
-      setQuery('');
+      setQuery(initialQuery);
       setActive(0);
       d.showModal();
-      requestAnimationFrame(() => input.current?.focus());
+      requestAnimationFrame(() => { input.current?.focus(); if (initialQuery) input.current?.select(); });
     }
     if (!open && d.open) d.close();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- the query is read when the palette opens, not when it changes
   }, [open]);
 
   useEffect(() => { setActive(0); }, [query]);
@@ -66,8 +72,9 @@ export function CommandPalette({ open, onClose, commands }: {
   };
 
   return (
+    // `close` fires a task after Escape; if the palette was reopened in between, that stale event must not close it again
     <dialog ref={dialog} className={s.paletteDialog} aria-label="Command palette"
-            onClose={onClose}
+            onCancel={onClose} onClose={() => { if (!dialog.current?.open) onClose(); }}
             onClick={e => { if (e.target === dialog.current) onClose(); }}>
       <div className={s.palette}>
         <div className={s.paletteHead}>
@@ -96,6 +103,7 @@ export function CommandPalette({ open, onClose, commands }: {
                     <span className={s.paletteIcon} aria-hidden="true">{c.glyph}</span>
                     <span className={s.paletteLabel}>{c.label}</span>
                     {c.meta && <span className={s.paletteMeta}>{c.meta}</span>}
+                    {c.hotkey && <kbd className={s.kbd} aria-label={`shortcut ${c.hotkey}`}>{c.hotkey}</kbd>}
                   </button>
                 );
               })}
@@ -105,7 +113,10 @@ export function CommandPalette({ open, onClose, commands }: {
         </div>
 
         <div className={s.paletteFoot}>
-          <span>↑ ↓ move</span><span>↵ run</span><span>1–7 switch workspace</span>
+          <span><kbd className={s.kbd}>↑</kbd><kbd className={s.kbd}>↓</kbd> move</span>
+          <span><kbd className={s.kbd}>↵</kbd> run</span>
+          <span><kbd className={s.kbd}>{keyHint('workspace')}</kbd> workspace</span>
+          <span><kbd className={s.kbd}>{keyHint('shortcuts')}</kbd> all shortcuts</span>
         </div>
       </div>
     </dialog>

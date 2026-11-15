@@ -82,3 +82,41 @@ a.glanceSectionHead:hover .glanceGo { color: var(--amber-2); }
   .rail { grid-template-columns: minmax(0, 1fr); }
   .glanceSections { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ── the first-visit intro band ───────────────────────────────────── */
+.introWrap { width: 100%; max-width: 2200px; margin: 0 auto; padding: 12px 16px 0; }
+:global(html[data-intro='off']) .introWrap { display: none; }
+.intro {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; padding: 8px 10px 8px 14px;
+  background: linear-gradient(90deg, var(--amber-soft), rgba(255, 255, 255, .012) 62%), var(--surface);
+  border: 1px solid var(--line-2); border-left: 2px solid var(--amber); border-radius: var(--radius);
+}
+.introText { margin: 0; min-width: 0; flex: 1 1 220px; font-size: 13px; line-height: 1.4; color: var(--ink-2); }
+.introText strong { font-weight: 600; color: var(--ink); }
+.introTry { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; flex: 0 1 auto; }
+.introLabel { font-size: 10.5px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-4); margin-right: 2px; }
+.introBtn {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 9px; border-radius: 6px;
+  font-size: 12.5px; font-weight: 500; color: var(--ink); white-space: nowrap;
+  background: var(--surface-2); border: 1px solid var(--line-2); transition: border-color .15s, background-color .15s;
+}
+.introBtn:hover { border-color: var(--amber-line); background: var(--amber-soft); }
+.introTo { font-size: 11px; font-weight: 500; color: var(--amber-2); }
+.introTo::before { content: '→ '; color: var(--ink-4); }
+.introHint { margin: 0 0 0 auto; font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.introKbd {
+  display: inline-block; min-width: 18px; padding: 0 5px; font-family: var(--mono); font-size: 10.5px; line-height: 17px;
+  text-align: center; color: var(--ink-2); background: var(--bg-raise); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px;
+}
+.introClose { display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 6px; color: var(--ink-3); }
+.introClose:hover { background: var(--hover); color: var(--ink); }
+/* a desktop keeps it to one row (the sentence takes whatever the buttons and the hint leave); narrower, it wraps */
+@media (min-width: 1440px) { .intro { flex-wrap: nowrap; } .introTry { flex-wrap: nowrap; } }
+@media (max-width: 1439px) { .introHint { margin-left: 0; } }
+@media (max-width: 767px) {
+  .introWrap { padding: 10px 12px 0; }
+  .intro { position: relative; padding: 10px 40px 10px 12px; }
+  .introHint { display: none; }                                    /* no keyboard to press on a phone */
+  .introClose { position: absolute; top: 6px; right: 6px; }
+  .introTry { width: 100%; }
+}

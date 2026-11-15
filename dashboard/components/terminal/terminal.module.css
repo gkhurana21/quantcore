@@ -36,3 +36,10 @@
     margin-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
   }
 }
+
+.footerKeys { color: var(--ink-2); font-size: inherit; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-3); }
+.footerKeys:hover { color: var(--ink); text-decoration-color: currentColor; }
+.footerKeys kbd {
+  font-family: var(--mono); font-size: 10.5px; padding: 0 5px; margin-left: 2px; color: var(--ink-3);
+  border: 1px solid var(--line-2); border-radius: 4px; text-decoration: none; display: inline-block;
+}

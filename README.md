@@ -22,7 +22,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-15-000000?style=flat-square&logo=nextdotjs&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
 ![Go](https://img.shields.io/badge/Go-market%20data%20proxy-00ADD8?style=flat-square&logo=go&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-147%20unit%20passing-brightgreen?style=flat-square)
+[![CI](https://img.shields.io/github/actions/workflow/status/gkhurana21/quantcore/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/gkhurana21/quantcore/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
 [Features](#-what-it-does) • [Try it](#-try-it) • [Under the hood](#-under-the-hood) • [Limitations](#limitations) • [Technical reference](docs/TECHNICAL.md)
@@ -31,7 +31,20 @@
 
 ---
 
-![QuantCore terminal: an iron condor with Greeks, payoff chart, P&L surface and the Pricing Models Lab, running locally with the C++ engine connected](docs/terminal.png)
+![QuantCore's Build workspace: an iron condor on SPY with its Greeks tiles, payoff chart and P&L surface. The tiles are priced by the C++ core running as WebAssembly.](docs/terminal.webp)
+
+<table>
+<tr>
+<td width="38%" valign="top"><img src="docs/screens/risk.webp" alt="The Risk workspace: parametric, delta-gamma and Monte Carlo VaR for the same iron condor, side by side" /></td>
+<td width="38%" valign="top"><img src="docs/screens/exotics.webp" alt="The Exotics workspace: a barrier option priced by closed form, simulation and a PDE solve" /></td>
+<td width="24%" valign="top"><img src="docs/screens/phone.webp" alt="The Build workspace on a phone: the tab bar moves to the bottom and the panels stack" /></td>
+</tr>
+<tr>
+<td align="center"><sub><b>Risk.</b> Four VaR methods on one position.</sub></td>
+<td align="center"><sub><b>Exotics.</b> Barrier and Asian options, checked three ways.</sub></td>
+<td align="center"><sub><b>Phone.</b> Same terminal, stacked.</sub></td>
+</tr>
+</table>
 
 ## The problem
 
@@ -56,29 +69,45 @@ the native engine on your own Mac and the same terminal uses it, including a GPU
 
 ## ✨ What it does
 
+Seven workspaces, one position that all of them work on. Press `1` to `7`, or `[` and `]`, to move between them.
+
 <table>
 <tr>
-<td width="50%"><b>Strategy Builder.</b> Pick a ticker, a preset or up to eight custom legs, and a volatility surface with skew and term structure. Any US ticker loads live when the optional data proxy runs.</td>
-<td width="50%"><b>Greeks &amp; payoff.</b> Price, delta, gamma, theta and vega tiles, exact max profit, max loss and break-evens, a payoff chart, and a spot-by-vol P&amp;L surface.</td>
+<td width="50%"><b>1 Build.</b> Pick a ticker, a preset or up to eight custom legs, and a volatility surface with skew and term structure. Price, delta, gamma, theta and vega tiles, exact max profit, max loss and break-evens, a payoff chart, and a spot-by-vol P&amp;L surface. Any US ticker loads live when the optional data proxy runs.</td>
+<td width="50%"><b>2 Price.</b> The Pricing Models Lab. One portfolio priced by Black-Scholes, a binomial lattice and Monte Carlo. It shows the gaps, the error bars, and what early exercise adds to American options.</td>
 </tr>
 <tr>
-<td><b>Pricing Models Lab.</b> One portfolio priced by Black-Scholes, a binomial lattice and Monte Carlo. It shows the gaps, the error bars, and what early exercise adds to American options.</td>
-<td><b>Monte Carlo.</b> Animated risk-neutral paths, a terminal distribution against its analytic density, and simulated against analytic probability of finishing in the money.</td>
+<td><b>3 Simulate.</b> Animated risk-neutral paths, a terminal distribution against its analytic density, and simulated against analytic probability of finishing in the money.</td>
+<td><b>4 Exotics.</b> Barrier options (continuous or monitored on a schedule, with rebates) and Asian options, each checked against a second method.</td>
 </tr>
 <tr>
-<td><b>Exotics.</b> Barrier options (continuous or monitored on a schedule, with rebates) and Asian options, each checked against a second method.</td>
-<td><b>Stress Lab.</b> Credit crisis, crash, volatility spike, rate shock or your own shock, with P&amp;L by leg and every scenario side by side.</td>
+<td><b>5 Stress.</b> Credit crisis, crash, volatility spike, rate shock or your own shock, with P&amp;L by leg and every scenario side by side.</td>
+<td><b>6 Risk.</b> Parametric, delta-gamma and Monte Carlo VaR, with expected shortfall at 90, 95 and 99% over 1, 5 and 10 days.</td>
 </tr>
 <tr>
-<td><b>Risk / VaR.</b> Parametric, delta-gamma and Monte Carlo VaR, with expected shortfall at 90, 95 and 99% over 1, 5 and 10 days.</td>
-<td><b>Portfolio Upload.</b> Drop in a CSV, XLSX or XLS. It is parsed in your browser with tolerant column names, a row-by-row preview and clear errors.</td>
-</tr>
-<tr>
-<td colspan="2"><b>C++ Engine.</b> See which engine produced each number. In the browser it is the WebAssembly build. Run it locally and you get live latency, engine-versus-browser agreement and 100k to 10M-path Monte Carlo on Metal.</td>
+<td><b>7 Engine.</b> See which engine produced each number. In the browser it is the WebAssembly build. Run it locally and you get live latency, engine-versus-browser agreement and 100k to 10M-path Monte Carlo on Metal.</td>
+<td><b>Import.</b> Drop in a CSV, XLSX or XLS (key <code>I</code>). It is parsed in your browser with tolerant column names, a row-by-row preview and clear errors.</td>
 </tr>
 </table>
 
-Every tile is labelled with the engine that produced it. The full description of each tab is in the
+### Keyboard
+
+Built for speed: nothing needs the mouse. The keys are single letters, they never fire while you type in a field, and the
+list below is the same table the app reads, so it cannot drift. `?` opens it in the terminal.
+
+| Key | Does | Key | Does |
+|---|---|---|---|
+| `1`-`7` | switch workspace | `M` | market controls: spot, vol, rate, dividend |
+| `[` `]` | previous, next workspace | `V` | volatility surface |
+| `⌘K` or `/` | command palette | `I` | import a portfolio file |
+| `P` | palette, on the presets | `R` | reset the market (undo for 5 s) |
+| `?` | all shortcuts | `N` | new Monte Carlo draw |
+| `Esc` | close any sheet or dialog | `T` | show or hide the intro band |
+
+A switch in the `?` sheet turns the single-key shortcuts off (`⌘K` and `Esc` stay), for anyone who uses voice control or
+a screen reader that collides with them.
+
+Every tile is labelled with the engine that produced it. The full description of each workspace is in the
 [technical reference](docs/TECHNICAL.md#features-in-full).
 
 ## ⚡ Try it
@@ -98,6 +127,16 @@ cd dashboard && npm install && npm run dev   # http://localhost:3000, badge turn
 
 The terminal also works without the engine. It then computes in the browser and the badge reads *Offline*. Live
 quotes, the full test commands and deployment are in the [technical reference](docs/TECHNICAL.md#quickstart).
+
+```bash
+cd dashboard
+npm run test:unit             # pricing, risk and import libraries, no browser
+npm run test:e2e              # the browser suite; the native-engine specs skip, with the reason printed
+npm run test:e2e:engine       # the same with the engine started and required (PYTHON=... picks the interpreter)
+```
+
+CI runs the lint, types, unit tests, the static export and the browser suite on every push and pull request, and builds
+the C++ core on Linux with its acceptance gate and the WebSocket protocol check.
 
 ## 🔧 Under the hood
 
@@ -123,8 +162,8 @@ quotes, the full test commands and deployment are in the [technical reference](d
   Greeks tiles and runs the Monte Carlo and finite-difference solves in a Web Worker. Charts, stress and VaR use
   TypeScript versions of the same models, which the unit tests hold to 1e-12 of the C++ results.
 * **The WebAssembly build is reproducible.** A manifest records the compiler version, flags and a SHA-256 of the
-  module and every source. The tests fail if a source changes without a rebuild, and CI rebuilds it and requires a
-  byte-identical result.
+  module and every source. The unit tests fail if a source changes without a rebuild, and a CI job rebuilds the module
+  with the pinned Emscripten and requires a byte-identical result.
 * **Models:** Black-Scholes-Merton with analytic Greeks, an arbitrage-free SSVI volatility surface, Dupire local
   volatility, a Cox-Ross-Rubinstein lattice, a local-volatility finite-difference solver, and Longstaff-Schwartz
   Monte Carlo with an Andersen-Broadie upper bound for American options.
