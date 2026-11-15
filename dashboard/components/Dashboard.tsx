@@ -385,6 +385,32 @@ export default function Dashboard() {
     return () => window.removeEventListener('keydown', onKey);
   }, [singleKeys]);
 
+  // ── ready signal ────────────────────────────────────────────────────────
+  // main[data-ready="true"] once the workspace on screen has no skeleton left and the WebAssembly engine is up
+  // (and a quarter second has passed since either changed). The screenshots script and the layout scanners wait
+  // on it rather than on a fixed delay, so what they capture is the finished page.
+  const mainRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const main = mainRef.current;
+    if (!main) return;
+    let last = '';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = () => {
+      const panel = main.querySelector('[role="tabpanel"]:not([hidden])');
+      const pending = wasm.status === 'loading' || !!panel?.querySelector('[data-skeleton]');
+      const key = `${panel?.id ?? ''}|${pending}`;
+      if (key === last) return;
+      last = key;
+      main.dataset.ready = 'false';
+      clearTimeout(timer);
+      if (!pending) timer = setTimeout(() => { main.dataset.ready = 'true'; }, 250);
+    };
+    const mo = new MutationObserver(settle);
+    mo.observe(main, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'data-skeleton'] });
+    settle();
+    return () => { mo.disconnect(); clearTimeout(timer); };
+  }, [wasm.status]);
+
   // ── screen-reader summary (debounced) ────────────────────────────────────
   const [announce, setAnnounce] = useState('');
   const pnlRounded = Math.round(quote.pnl);
@@ -417,7 +443,7 @@ export default function Dashboard() {
         </Sheet>
       )}
 
-      <main id="workspace" className={t.main} tabIndex={-1}>
+      <main id="workspace" ref={mainRef} className={t.main} tabIndex={-1}>
         {workspace === 'build' && (
           <div role="tabpanel" id={tabPanelId('ws', 'build')} aria-labelledby={tabId('ws', 'build')} data-testid="panel-build">
             {introOn && <IntroBand examples={examples} onDismiss={dismissIntro} />}

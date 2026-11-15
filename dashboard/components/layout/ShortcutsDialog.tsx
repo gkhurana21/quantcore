@@ -33,7 +33,7 @@ export function ShortcutsDialog({ open, onClose, singleKeys, onSingleKeys }: {
           </button>
         </div>
 
-        <div className={s.shortcutsBody}>
+        <div className={s.shortcutsBody} tabIndex={0} role="region" aria-label="All shortcuts">
           {SHORTCUT_GROUPS.map(group => (
             <section key={group} aria-label={group}>
               <h3 className={s.shortcutsGroup}>{group}</h3>
