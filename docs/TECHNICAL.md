@@ -407,8 +407,9 @@ python3 ../server/protocol_check.py    # every WebSocket message type against th
   Carlo convergence.
 - `tests/a11y.spec.ts` — axe-core WCAG 2.1 A/AA audit of the terminal and every research tab.
 
-Playwright starts the engine and the dev server itself. GitHub Actions (`.github/workflows/dashboard.yml`) runs lint,
-typecheck, the library unit tests and the production build on every push to `dashboard/`; `wasm.yml` rebuilds the
+Playwright starts the dev server itself, and the engine too under `npm run test:e2e:engine`. GitHub Actions
+(`.github/workflows/ci.yml`) runs lint, typecheck, the library unit tests, the production build and the browser suite on
+every push and pull request, and builds the C++ core on Linux with its acceptance gate; `wasm.yml` rebuilds the
 WebAssembly module with the Emscripten version pinned in its manifest and fails unless the result is byte-identical.
 
 ## Build & deploy
