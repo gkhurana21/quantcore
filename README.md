@@ -25,7 +25,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/gkhurana21/quantcore/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/gkhurana21/quantcore/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
-[Features](#-what-it-does) • [Try it](#-try-it) • [Under the hood](#-under-the-hood) • [Limitations](#limitations) • [Walkthrough](docs/WALKTHROUGH.md) • [Technical reference](docs/TECHNICAL.md)
+[Features](#-what-it-does) • [Try it](#-try-it) • [Under the hood](#-under-the-hood) • [Limitations](#limitations) • [Walkthrough](docs/WALKTHROUGH.md) • [PRD](docs/PRD.md) • [Technical reference](docs/TECHNICAL.md)
 
 </div>
 
