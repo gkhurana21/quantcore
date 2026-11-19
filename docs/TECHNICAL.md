@@ -350,7 +350,7 @@ npm run test:e2e:engine                # the same with the native engine started
 npm test                               # unit, then e2e
 npm run build && npm run scan:ui       # the two layout scanners over the export, intro band shown and dismissed
 npm run screenshots                    # regenerate docs/terminal.webp and docs/screens/* from the export
-npm run demo                           # re-record docs/demo.gif, the README's 30-second tour (needs ffmpeg)
+npm run demo                           # re-record docs/demo.gif, the README's 30-second demo (needs ffmpeg)
 python3 ../server/protocol_check.py    # every WebSocket message type against the bindings
 ```
 

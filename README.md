@@ -31,9 +31,9 @@
 
 ---
 
-![A 30-second tour driven from the keyboard: an iron condor on SPY built, then priced three ways, simulated, stressed with a COVID-style crash and measured with four VaR methods, all by the C++ core running as WebAssembly in the browser.](docs/demo.gif)
+![Thirty seconds on the real terminal. A dot bursts into a fan of price paths under the claim "One price from one model is a guess". Then an iron condor on SPY is built, priced by three models that agree, simulated, hit with a COVID-style crash, and measured by four risk models that do not agree, all by the C++ core running as WebAssembly in the browser.](docs/demo.gif)
 
-<sub>Thirty seconds, keyboard only: Build, then <code>]</code> Price, <code>3</code> Simulate, <code>4</code> Exotics, <code>5</code> Stress, <code>6</code> Risk, <code>?</code> shortcuts and <code>/</code> the palette. Recorded from the exported site by <code>npm run demo</code>.</sub>
+<sub>Thirty seconds on the real terminal, computing in the browser. Every number in a caption is read from the page as it records; only the opening fan is an illustration. Recorded from the exported site by <code>npm run demo</code>.</sub>
 
 <table>
 <tr>
