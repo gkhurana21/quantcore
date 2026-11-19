@@ -61,8 +61,7 @@ historical stress replays; stochastic-volatility models. The last three are list
 
 ## Release and operations
 
-- Live at <https://quantcore-gk.netlify.app>. The Netlify site is **not linked to GitHub**: a push does not deploy.
-  To deploy, run `NEXT_PUBLIC_PROXY_URL=disabled npm run build` in `dashboard/`, zip the contents of `dashboard/out`,
-  upload it on the Netlify project's Deploys page, then check that the live `index.html` carries the new build id and
-  loads with no page errors.
+- Live at <https://quantcore-gk.netlify.app>. The Netlify site is linked to GitHub: every push to `main` builds
+  `dashboard/` with the settings in `netlify.toml` and deploys it. The `Production` workflow then records the deployment
+  on GitHub, and marks it successful only once the live site's `/version.txt` names the pushed commit.
 - The README images and demo regenerate with `npm run screenshots` and `npm run demo`.

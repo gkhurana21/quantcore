@@ -325,19 +325,10 @@ The proxy is opt-in: without `NEXT_PUBLIC_PROXY_URL` the terminal makes no marke
 `/api/*` on the site's own origin (a TypeScript port in `lib/market/alpaca.ts`: same Alpaca calls, response shapes,
 cache lifetimes and errors, plus CDN caching and a per-client rate limit). It can only make read-only GET requests to
 Alpaca's stock snapshot, option snapshot and option-contract listing endpoints. Until its credentials are set,
-`/api/healthz` answers `not configured` and the terminal stays on labelled snapshot and manual prices. To enable it,
-set the keys in the Netlify site's environment (they never enter the repository or the browser) and redeploy:
-
-```bash
-# 1. keys into the site's environment (functions scope, production) — read from proxy/.env.local, never echoed
-(set -a; . proxy/.env.local; set +a
- npx netlify-cli env:set ALPACA_API_KEY_ID "$ALPACA_API_KEY_ID" --site 3fef089e-0253-49d3-b3dd-491f193362fb --context production --scope functions
- npx netlify-cli env:set ALPACA_API_SECRET_KEY "$ALPACA_API_SECRET_KEY" --site 3fef089e-0253-49d3-b3dd-491f193362fb --context production --scope functions)
-
-# 2. redeploy so the function picks them up
-(cd dashboard && NEXT_PUBLIC_PROXY_URL=/api npm run build)
-npx netlify-cli deploy --prod --no-build --dir dashboard/out --functions dashboard/netlify/functions --site 3fef089e-0253-49d3-b3dd-491f193362fb
-```
+`/api/healthz` answers `not configured`. The hosted build sets `NEXT_PUBLIC_PROXY_URL = "disabled"` in `netlify.toml`,
+so today the terminal never calls it and stays on labelled snapshot and manual prices. To enable it, set
+`ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` in the Netlify site's environment (functions scope; they never enter
+the repository or the browser), change `NEXT_PUBLIC_PROXY_URL` in `netlify.toml` to `"/api"`, and push.
 
 ## Testing
 
@@ -450,10 +441,11 @@ disallowed origin is refused at the handshake and clients without an `Origin` he
 scripts) still connect. On Render's free tier the service sleeps after ~15 minutes idle and takes
 roughly 50 s to wake; the terminal degrades to its in-browser WebAssembly engine meanwhile.
 
-`netlify.toml` builds `dashboard/` and publishes `out/` for Git-connected Netlify deploys; `dashboard/out` can also
-be uploaded directly with the market-data function (`NEXT_PUBLIC_PROXY_URL=/api npm run build`, then Netlify CLI
-`deploy --dir dashboard/out --functions dashboard/netlify/functions`). Without `NEXT_PUBLIC_PROXY_URL` a build makes no
-market-data requests at all.
+The Netlify site is linked to GitHub: every push to `main` builds `dashboard/` with the settings in `netlify.toml`,
+publishes `out/` with the market-data function, and writes the commit it built into `/version.txt`. The `Production`
+workflow (`.github/workflows/production.yml`) waits until that file names the pushed commit and records the result as
+a GitHub deployment, so the repository's Deployments list only shows commits the live site is actually serving. Without `NEXT_PUBLIC_PROXY_URL`, or with it set
+to `disabled`, a build makes no market-data requests at all.
 
 ## Project layout
 

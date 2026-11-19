@@ -1,0 +1,38 @@
+name: Production
+
+# Netlify builds and deploys every push to main by itself (the site is linked to this repository). This workflow
+# records that deployment on GitHub, and only marks it successful once the live site reports this exact commit in
+# /version.txt, which netlify.toml writes at build time. It is kept apart from CI so that the README's CI badge
+# reports the tests alone.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: production
+  cancel-in-progress: true
+
+jobs:
+  production:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment:
+      name: production
+      url: https://quantcore-gk.netlify.app
+    steps:
+      - name: Wait until the live site serves this commit
+        run: |
+          for i in $(seq 1 60); do
+            live=$(curl -fsS "https://quantcore-gk.netlify.app/version.txt?run=$GITHUB_RUN_ID-$i" || true)
+            if [ "$live" = "$GITHUB_SHA" ]; then echo "production serves $GITHUB_SHA"; exit 0; fi
+            sleep 20
+          done
+          echo "production never served $GITHUB_SHA (last saw '${live:-nothing}')"
+          exit 1
+      - name: The live page loads
+        run: |
+          code=$(curl -s -o page.html -w '%{http_code}' https://quantcore-gk.netlify.app/)
+          echo "HTTP $code"
+          test "$code" = 200
+          grep -q 'QuantCore' page.html
