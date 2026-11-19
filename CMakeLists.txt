@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(QuantCore VERSION 0.1.0 LANGUAGES CXX)
+project(QuantCore VERSION 1.0.0 LANGUAGES CXX)
 
 # The Metal kernel is Objective-C++ and only builds on Apple platforms; enabling the language
 # elsewhere fails configuration outright (no Objective-C++ compiler on Linux).
